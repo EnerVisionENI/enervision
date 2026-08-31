@@ -18,7 +18,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 
 API_BASE = "http://10.105.200.45:8000"
 DOSSIER_BRONZE = "etl/bronze"
-INTERVALLE_SECONDES = 2
+INTERVALLE_SECONDES = 60
 
 
 def recuperer_liste_sites():
