@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  front:
+    build:
+      context: .
+      dockerfile: front/Dockerfile
+    container_name: enervision-front
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    networks:
+      - enervision-network
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: enervision-api
+    ports:
+      - "8000:8000"
+    networks:
+      - enervision-network
+    environment:
+      - ENVIRONMENT=production
+    restart: unless-stopped
+
+  # Traefik reverse proxy (optionnel)
+  traefik:
+    image: traefik:v2.10
+    container_name: enervision-traefik
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./infra/traefik/traefik.yml:/traefik.yml:ro
+      - ./infra/traefik/acme.json:/acme.json
+    networks:
+      - enervision-network
+    restart: unless-stopped
+
+networks:
+  enervision-network:
+    driver: bridge
