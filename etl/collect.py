@@ -18,7 +18,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 
 API_BASE = "http://10.105.200.45:8000"
 DOSSIER_BRONZE = "etl/bronze"
-INTERVALLE_SECONDES = 60
+INTERVALLE_SECONDES = 2
 
 
 def recuperer_liste_sites():
@@ -36,10 +36,11 @@ def recuperer_mesure(site_id):
 
 
 def chemin_fichier_du_jour(site_id, dossier=DOSSIER_BRONZE):
-    """Un fichier JSONL par site et par jour, ex : bronze/SITE001_2026-08-31.jsonl"""
+    """Un dossier par site, un fichier JSONL par jour dedans, ex : bronze/SITE001/2026-08-31.jsonl"""
     date_du_jour = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    os.makedirs(dossier, exist_ok=True)
-    return os.path.join(dossier, f"{site_id}_{date_du_jour}.jsonl")
+    dossier_site = os.path.join(dossier, site_id)
+    os.makedirs(dossier_site, exist_ok=True)
+    return os.path.join(dossier_site, f"{date_du_jour}.jsonl")
 
 
 def ajouter_mesure(site_id, mesure):
