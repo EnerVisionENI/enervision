@@ -1,0 +1,42 @@
+# Secrets — jamais commités
+.env
+.env.*
+*.pem
+*.key
+infra/keycloak/realm-export.json
+
+# Python (api, etl, ml)
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node / front (Vue ou React)
+front/node_modules/
+front/dist/
+front/.vite/
+*.log
+npm-debug.log*
+
+# Docker
+*.pid
+
+# MLflow (artefacts locaux, pas les runs trackés)
+mlruns/
+mlartifacts/
+
+# Data locale (ne jamais commiter de données, même de test)
+*.parquet
+*.jsonl
+data/
+tmp/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
