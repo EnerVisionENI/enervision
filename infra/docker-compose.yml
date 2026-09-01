@@ -1,4 +1,4 @@
-version: "3.9"
+version: '3.8'
 
 services:
   postgres:
@@ -17,25 +17,65 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - enervision-network
+
+  front:
+    build:
+      context: ..
+      dockerfile: front/Dockerfile
+    container_name: enervision-front
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    networks:
+      - enervision-network
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
 
   api:
     build:
       context: ..
       dockerfile: api/Dockerfile
-    container_name: ev007-api
-    restart: unless-stopped
+    container_name: enervision-api
+    ports:
+      - "8000:8000"
     env_file:
       - ./postgres/.env
       - ../api/.env
     environment:
+      - ENVIRONMENT=production
       # Réseau interne Compose : écrase les valeurs host (localhost:5433) de api/.env.
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-    ports:
-      - "8000:8000"
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - enervision-network
+    restart: unless-stopped
+
+  # Traefik reverse proxy (optionnel)
+  traefik:
+    image: traefik:v2.10
+    container_name: enervision-traefik
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./traefik/traefik.yml:/traefik.yml:ro
+      - ./traefik/acme.json:/acme.json
+    networks:
+      - enervision-network
+    restart: unless-stopped
+
+networks:
+  enervision-network:
+    driver: bridge
 
 volumes:
   pgdata:
