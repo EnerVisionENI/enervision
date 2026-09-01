@@ -7,8 +7,13 @@ services:
     environment:
       - API_BASE=http://10.105.200.45:8000
       - DOSSIER_BRONZE=bronze
+      - PYTHONUNBUFFERED=1
     volumes:
       - ./bronze:/app/bronze
+      - ./silver:/app/silver
+      - ./gold:/app/gold
+      - ./quarantine:/app/quarantine
+      - ./manifests:/app/manifests
     restart: unless-stopped
     healthcheck:
       interval: 60s

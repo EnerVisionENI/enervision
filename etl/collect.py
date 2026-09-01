@@ -12,6 +12,8 @@ Usage :
 
 import json
 import os
+import subprocess
+import sys
 from datetime import datetime, timezone
 import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -19,6 +21,9 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 API_BASE = os.environ.get("API_BASE", "http://10.105.200.45:8000")
 DOSSIER_BRONZE = os.environ.get("DOSSIER_BRONZE", "etl/bronze")
 INTERVALLE_SECONDES = int(os.environ.get("INTERVALLE_SECONDES", "60"))
+
+SCRIPT_QUALITY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quality.py")
+LANCER_QUALITY = os.environ.get("LANCER_QUALITY", "1") == "1"
 
 
 def recuperer_liste_sites():
@@ -50,6 +55,22 @@ def ajouter_mesure(site_id, mesure):
         f.write(json.dumps(mesure, ensure_ascii=False) + "\n")
 
 
+def lancer_quality():
+    """Lance quality.py (bronze -> silver/gold) juste après la collecte.
+    Une erreur du traitement ne doit pas interrompre le planificateur."""
+    try:
+        resultat = subprocess.run(
+            [sys.executable, SCRIPT_QUALITY],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if resultat.stdout.strip():
+            print(resultat.stdout.strip())
+    except subprocess.CalledProcessError as erreur:
+        print(f"quality.py a échoué (code {erreur.returncode}) : {erreur.stderr.strip()}")
+
+
 def cycle_collecte():
     """Un cycle : interroge chaque site, ajoute sa mesure au fichier du jour.
     Appelé automatiquement par le planificateur toutes les 60 secondes."""
@@ -61,6 +82,9 @@ def cycle_collecte():
         except requests.RequestException as erreur:
             print(f"{site_id} : erreur de collecte, {erreur}")
     print(f"Cycle terminé, {len(sites)} sites collectés")
+
+    if LANCER_QUALITY:
+        lancer_quality()
 
 
 def main():
