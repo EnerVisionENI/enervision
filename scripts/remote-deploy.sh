@@ -15,6 +15,11 @@ fi
 
 cd "${DEPLOY_PATH}"
 
+if [ ! -d ".git" ]; then
+  echo "No git repository found in ${DEPLOY_PATH}. Clone the repository there before running this script." >&2
+  exit 1
+fi
+
 echo "Fetching latest..."
 git fetch --all --prune
 
