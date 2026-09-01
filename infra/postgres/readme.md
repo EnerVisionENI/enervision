@@ -29,3 +29,10 @@ docker exec -i ev006-postgres psql -U ev_admin -d ev_monitoring < init.sql
 \`\`\`bash
 docker exec -it ev006-postgres psql -U ev_admin -d ev_monitoring -c "\dt"
 \`\`\`
+
+### Connexion externe (DBeaver, etc.)
+Le conteneur expose PostgreSQL sur le port hôte **5433** (et non 5432) pour éviter tout conflit avec une instance PostgreSQL déjà installée en local. Connecte-toi avec :
+- Host: `localhost`
+- Port: `5433`
+- Database: `ev_monitoring`
+- User / Password: valeurs de `.env`
