@@ -18,6 +18,9 @@ RUN npm run build
 # Production stage - Nginx
 FROM nginx:alpine
 
+# Patch OS packages regardless of when the base image tag was last rebuilt
+RUN apk update && apk upgrade --no-cache
+
 # Copy nginx config
 COPY infra/nginx.conf /etc/nginx/conf.d/default.conf
 
