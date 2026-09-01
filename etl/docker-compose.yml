@@ -1,6 +1,7 @@
 services:
   etl-collect:
     build:
+      context: .
       dockerfile: Dockerfile
     container_name: enervision-etl-collect
     environment:
