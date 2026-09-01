@@ -1,0 +1,1 @@
+# Polling /alerts -> table alerts  postgresql (24h)
