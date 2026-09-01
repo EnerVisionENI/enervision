@@ -20,6 +20,56 @@ services:
     networks:
       - enervision-network
 
+  minio:
+    image: minio/minio:latest
+    container_name: enervision-minio
+    restart: unless-stopped
+    env_file:
+      - ./minio/.env
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    networks:
+      - enervision-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: enervision-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - ./minio/.env
+    entrypoint: ["/bin/sh", "/init-buckets.sh"]
+    volumes:
+      - ./minio/init-buckets.sh:/init-buckets.sh:ro
+    networks:
+      - enervision-network
+    restart: "no"
+
+  audit-sync:
+    image: rclone/rclone:latest
+    container_name: enervision-audit-sync
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - ./audit-sync/.env
+    entrypoint: ["/bin/sh", "/sync-audit-to-azure.sh"]
+    volumes:
+      - ./audit-sync/sync-audit-to-azure.sh:/sync-audit-to-azure.sh:ro
+    networks:
+      - enervision-network
+
   front:
     build:
       context: ..
@@ -79,3 +129,4 @@ networks:
 
 volumes:
   pgdata:
+  miniodata:
