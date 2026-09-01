@@ -1,0 +1,5 @@
+# Les scripts shell sont exécutés dans des conteneurs Linux : ils doivent garder
+# des fins de ligne LF même sur un checkout Windows (core.autocrlf=true), sinon
+# le shell voit "set -e\r" et échoue.
+*.sh   text eol=lf
+*.bash text eol=lf
