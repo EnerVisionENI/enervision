@@ -40,3 +40,12 @@ tmp/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Données collectées par le script ETL, générées localement,ne doivent jamais partir sur Git,
+# uniquement le code qui les produit
+bronze/
+__pycache__/
+*.pyc
+.env
+.git/
+ 
