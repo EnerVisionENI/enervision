@@ -5,38 +5,54 @@
 Le dépôt contient une pipeline GitHub Actions dans `.github/workflows/deploy-dev.yml`.
 
 - Sur chaque pull request vers `dev`, la pipeline lance les tests API et le build frontend.
-- Quand la PR est mergée dans `dev`, la pipeline déploie automatiquement sur le serveur.
+- Sur chaque push vers `dev` (donc aussi après un merge de PR), la pipeline déploie automatiquement sur le serveur.
 
-### Secrets à créer dans GitHub
+Le serveur de déploiement (`10.105.200.44`) n'est joignable que depuis le réseau interne : le job `deploy`
+tourne donc sur un **runner GitHub Actions self-hosted installé directement sur ce serveur**, plutôt que sur
+un runner hébergé (`ubuntu-latest`) qui ne pourrait pas l'atteindre en SSH. Le job fait simplement un
+`actions/checkout` (qui met à jour le dépôt local du runner) puis lance `docker compose up -d --build`.
 
-Ajoute ces secrets dans **Settings > Secrets and variables > Actions** :
+### Installer le runner self-hosted sur le serveur
 
-- `DEPLOY_HOST` : IP ou nom de domaine du serveur
-- `DEPLOY_USER` : utilisateur SSH
-- `DEPLOY_SSH_KEY` : clé privée SSH sans passphrase, autorisée sur le serveur
-- `DEPLOY_PORT` : port SSH, par défaut `22`
-- `DEPLOY_PATH` : chemin du dépôt sur le serveur, par exemple `/srv/enervision`
+1. Sur GitHub : **Settings > Actions > Runners > New self-hosted runner**, choisir Linux.
+2. Suivre les commandes affichées (elles contiennent un token à usage unique, à copier depuis la page) pour
+   télécharger, configurer (`./config.sh --url ... --token ...`) et installer le runner comme service
+   (`sudo ./svc.sh install && sudo ./svc.sh start`) directement sur `10.105.200.44`.
+3. Vérifier que le runner apparaît "Idle" dans la liste des runners du repo.
+
+Aucun secret SSH n'est nécessaire avec cette approche (plus de `DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_SSH_KEY`
+/ `DEPLOY_PORT` / `DEPLOY_PATH`) : le job s'exécute déjà sur la machine cible.
 
 ### Préparation du serveur
 
-Le serveur doit déjà contenir :
+Le serveur (et donc le runner) doit avoir :
 
-1. Le dépôt cloné dans `DEPLOY_PATH`
-2. Docker et Docker Compose installés
-3. Les fichiers `.env` de production déjà présents et non versionnés
-4. Le dépôt configuré pour suivre la branche `dev`
+1. Docker et Docker Compose installés, avec l'utilisateur du runner autorisé à utiliser Docker
+   (membre du groupe `docker`).
+2. Les fichiers `.env` de production déjà présents et non versionnés, **dans le dossier de travail du
+   runner** (celui où `actions/checkout` place le dépôt, typiquement `~/actions-runner/_work/enervision/enervision`) :
+   - `infra/postgres/.env`
+   - `api/.env`
 
-Exemple de première mise en place :
+   Le step `actions/checkout` est configuré avec `clean: false` pour ne pas supprimer ces fichiers non
+   versionnés entre deux déploiements.
+
+Première mise en place (sur le serveur, une fois le runner installé et lancé une première fois pour créer
+le dossier de travail) :
 
 ```bash
-git clone <url-du-repo> /srv/enervision
-cd /srv/enervision
-git checkout dev
+cd ~/actions-runner/_work/enervision/enervision
+mkdir -p infra/postgres
+# copier/éditer infra/postgres/.env et api/.env avec les valeurs de prod
 cd infra
 docker compose up -d --build
 ```
 
-Ensuite, chaque merge vers `dev` fera simplement un `git reset --hard origin/dev` puis un `docker compose up -d --build`.
+Ensuite, chaque push sur `dev` refera automatiquement le `checkout` + `docker compose up -d --build`.
+
+> Si un jour le serveur devient joignable depuis Internet (VPN site-to-site, IP publique, etc.), on peut
+> repasser le job `deploy` sur `ubuntu-latest` avec une connexion SSH classique (secrets `DEPLOY_HOST`,
+> `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PORT`, `DEPLOY_PATH`).
 
 ## Commandes de déploiement
 

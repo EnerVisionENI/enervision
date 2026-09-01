@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - dev
+      - ev-021---auto-deploy-dev # TODO: retirer avant de merger dans dev, sert juste à tester le déploiement
   workflow_dispatch:
 
 concurrency:
@@ -66,29 +67,24 @@ jobs:
     needs:
       - test-api
       - build-front
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/ev-021---auto-deploy-dev')
+    runs-on: self-hosted
 
     steps:
-      - name: Deploy through SSH
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          script_stop: true
-          script: |
-            set -e
-            cd "${{ secrets.DEPLOY_PATH }}"
+          # Ne pas supprimer les fichiers non versionnés (.env) présents sur le runner.
+          clean: false
 
-            git fetch origin dev
-            git reset --hard origin/dev
+      - name: Deploy with docker compose
+        run: |
+          set -e
 
-            if docker compose version >/dev/null 2>&1; then
-              DOCKER_COMPOSE="docker compose"
-            else
-              DOCKER_COMPOSE="docker-compose"
-            fi
+          if docker compose version >/dev/null 2>&1; then
+            DOCKER_COMPOSE="docker compose"
+          else
+            DOCKER_COMPOSE="docker-compose"
+          fi
 
-            $DOCKER_COMPOSE -f infra/docker-compose.yml up -d --build --remove-orphans
+          $DOCKER_COMPOSE -f infra/docker-compose.yml up -d --build --remove-orphans
