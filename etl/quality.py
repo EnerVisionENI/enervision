@@ -1,34 +1,41 @@
-"""Bronze -> Silver/Gold ETL for EnerVision.
+"""Bronze -> Silver/Gold ETL for EnerVision, 100 % sur MinIO (S3-compatible).
 
-This script reads append-only JSONL bronze files, validates and normalizes
-records, writes cleaned silver batches as Parquet, generates gold aggregates,
-and stores malformed rows in quarantine.
+Lit les objets de mesure bruts du bucket bronze (un objet JSON par mesure, écrit par
+collect.py), valide et normalise, écrit des batches silver en Parquet, reconstruit les
+agrégats gold daily/hourly, et pousse les enregistrements invalides en quarantaine.
+Aucune donnée n'est écrite sur disque : buckets uniquement.
 
-Output layout (defaults):
-	bronze/      raw JSONL files
-	silver/      cleaned Parquet batches
-	gold/        aggregated Parquet batches
-	quarantine/  invalid JSON or schema failures
-	manifests/   incremental processing state
+Buckets :
+	bronze       objets bruts        {site_id}/{YYYY-MM-DD}/{HHMMSS}.json
+	silver       batches nettoyés    record_date=…/site_id=…/batch_*.parquet
+	gold         agrégats            daily|hourly/record_date=…/site_id=…/*.parquet
+	quarantine   rejets              {YYYY-MM-DD}/{source_key}__{stamp}.json  (1 objet / rejet)
+	manifests    état incrémental    etl_state.json  (liste des clés bronze déjà traitées)
 
-Usage:
+Environment :
+	MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY          (obligatoires)
+	MINIO_BUCKET_BRONZE / _SILVER / _GOLD / _QUARANTINE / _MANIFESTS  (défauts homonymes)
+	MINIO_USE_SSL                                              (défaut "false")
+
+Usage :
 	python quality.py
-	python quality.py --bronze-dir bronze --silver-dir silver --gold-dir gold
+	python quality.py --bronze-bucket bronze --silver-bucket silver --gold-bucket gold
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import math
 import os
-import sys
-from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
+import boto3
 import pandas as pd
+from botocore.client import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 
 NUMERIC_COLUMNS = [
@@ -51,31 +58,24 @@ OPTIONAL_NUMERIC_COLUMNS = [
 
 MANDATORY_COLUMNS = ["timestamp", "site_id"]
 
-
-@dataclass(slots=True)
-class FileState:
-	offset: int = 0
-	size: int = 0
-	mtime: float = 0.0
-	last_processed_at: str | None = None
+PARQUET_CONTENT_TYPE = "application/vnd.apache.parquet"
+JSON_CONTENT_TYPE = "application/json"
 
 
 def build_parser() -> argparse.ArgumentParser:
-	parser = argparse.ArgumentParser(description="Process EnerVision bronze JSONL files.")
-	parser.add_argument("--bronze-dir", default=os.environ.get("DOSSIER_BRONZE", "bronze"))
-	parser.add_argument("--silver-dir", default=os.environ.get("DOSSIER_SILVER", "silver"))
-	parser.add_argument("--gold-dir", default=os.environ.get("DOSSIER_GOLD", "gold"))
+	parser = argparse.ArgumentParser(description="EnerVision ETL bronze -> silver/gold, 100 % MinIO.")
+	parser.add_argument("--bronze-bucket", default=os.environ.get("MINIO_BUCKET_BRONZE", "bronze"))
+	parser.add_argument("--bronze-prefix", default=os.environ.get("MINIO_PREFIX_BRONZE", ""))
+	parser.add_argument("--silver-bucket", default=os.environ.get("MINIO_BUCKET_SILVER", "silver"))
+	parser.add_argument("--gold-bucket", default=os.environ.get("MINIO_BUCKET_GOLD", "gold"))
+	parser.add_argument("--quarantine-bucket", default=os.environ.get("MINIO_BUCKET_QUARANTINE", "quarantine"))
+	parser.add_argument("--manifests-bucket", default=os.environ.get("MINIO_BUCKET_MANIFESTS", "manifests"))
+	parser.add_argument("--state-key", default=os.environ.get("ETL_STATE_KEY", "etl_state.json"))
 	parser.add_argument(
-		"--quarantine-dir",
-		default=os.environ.get("DOSSIER_QUARANTINE", "quarantine"),
-	)
-	parser.add_argument(
-		"--manifest-dir",
-		default=os.environ.get("DOSSIER_MANIFESTS", "manifests"),
-	)
-	parser.add_argument(
-		"--state-file",
-		default=os.environ.get("ETL_STATE_FILE", "manifests/etl_state.json"),
+		"--max-objects",
+		type=int,
+		default=int(os.environ.get("ETL_MAX_OBJECTS", "0")),
+		help="Nombre max d'objets bronze traités par exécution (0 = pas de limite).",
 	)
 	return parser
 
@@ -84,90 +84,122 @@ def utc_now_iso() -> str:
 	return datetime.now(timezone.utc).isoformat()
 
 
-def ensure_dir(path: Path) -> None:
-	path.mkdir(parents=True, exist_ok=True)
+def run_stamp() -> str:
+	return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
 
 
-def load_state(path: Path) -> dict[str, FileState]:
-	if not path.exists():
-		return {}
+# --------------------------------------------------------------------------- S3
+
+def make_s3_client() -> Any:
+	"""Client S3 pointé sur MinIO, même configuration que collect.py."""
+	endpoint = os.environ["MINIO_ENDPOINT"]
+	use_ssl = os.environ.get("MINIO_USE_SSL", "false").lower() == "true"
+	return boto3.client(
+		"s3",
+		endpoint_url=f"{'https' if use_ssl else 'http'}://{endpoint}",
+		aws_access_key_id=os.environ["MINIO_ACCESS_KEY"],
+		aws_secret_access_key=os.environ["MINIO_SECRET_KEY"],
+		config=Config(signature_version="s3v4"),
+		region_name="us-east-1",
+	)
+
+
+def ensure_bucket(s3: Any, bucket: str) -> None:
+	"""Crée le bucket s'il n'existe pas (no-op sinon). init-buckets.sh le fait déjà
+	à la création de l'infra ; ce garde-fou évite un échec si l'ETL démarre avant."""
 	try:
-		raw = json.loads(path.read_text(encoding="utf-8"))
+		s3.head_bucket(Bucket=bucket)
+		return
+	except ClientError:
+		pass
+	try:
+		s3.create_bucket(Bucket=bucket)
+	except ClientError as exc:
+		if exc.response.get("Error", {}).get("Code") not in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+			raise
+
+
+def s3_list_keys(s3: Any, bucket: str, prefix: str = "") -> list[str]:
+	keys: list[str] = []
+	paginator = s3.get_paginator("list_objects_v2")
+	for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+		for obj in page.get("Contents", []):
+			keys.append(obj["Key"])
+	return keys
+
+
+def s3_get_bytes(s3: Any, bucket: str, key: str) -> bytes | None:
+	try:
+		return s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+	except ClientError as exc:
+		if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+			return None
+		raise
+
+
+def s3_put_bytes(s3: Any, bucket: str, key: str, data: bytes, content_type: str) -> None:
+	s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+
+
+def s3_put_parquet(s3: Any, bucket: str, key: str, df: pd.DataFrame) -> None:
+	buffer = io.BytesIO()
+	df.to_parquet(buffer, index=False)
+	s3.put_object(Bucket=bucket, Key=key, Body=buffer.getvalue(), ContentType=PARQUET_CONTENT_TYPE)
+
+
+def s3_read_parquet(s3: Any, bucket: str, key: str) -> pd.DataFrame:
+	body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+	return pd.read_parquet(io.BytesIO(body))
+
+
+# ------------------------------------------------------------------------ state
+
+def load_state(s3: Any, bucket: str, key: str) -> set[str]:
+	"""Ensemble des clés d'objets bronze déjà traitées lors des exécutions précédentes."""
+	body = s3_get_bytes(s3, bucket, key)
+	if body is None:
+		return set()
+	try:
+		raw = json.loads(body.decode("utf-8"))
 	except json.JSONDecodeError:
-		return {}
-
-	state: dict[str, FileState] = {}
-	for key, value in raw.items():
-		try:
-			state[key] = FileState(
-				offset=int(value.get("offset", 0)),
-				size=int(value.get("size", 0)),
-				mtime=float(value.get("mtime", 0.0)),
-				last_processed_at=value.get("last_processed_at"),
-			)
-		except (TypeError, ValueError):
-			continue
-	return state
+		return set()
+	processed = raw.get("processed", [])
+	if not isinstance(processed, list):
+		return set()
+	return {str(k) for k in processed}
 
 
-def save_state(path: Path, state: dict[str, FileState]) -> None:
-	ensure_dir(path.parent)
-	payload = {key: asdict(value) for key, value in sorted(state.items())}
-	tmp_path = path.with_suffix(path.suffix + ".tmp")
-	tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-	tmp_path.replace(path)
+def save_state(s3: Any, bucket: str, key: str, processed: set[str]) -> None:
+	payload = {
+		"last_run_at": utc_now_iso(),
+		"processed_count": len(processed),
+		"processed": sorted(processed),
+	}
+	s3_put_bytes(s3, bucket, key, json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"), JSON_CONTENT_TYPE)
 
 
-def discover_bronze_files(bronze_dir: Path) -> list[Path]:
-	if not bronze_dir.exists():
-		return []
-	return sorted(path for path in bronze_dir.rglob("*.jsonl") if path.is_file())
+# ------------------------------------------------------------------ bronze read
+
+def fetch_record(s3: Any, bucket: str, key: str) -> dict[str, Any]:
+	"""Télécharge un objet bronze et le décode en dict de mesure.
+	Renvoie {"_parse_error": ..., "_raw_line": ...} si le contenu n'est pas du JSON objet valide."""
+	body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+	try:
+		text = body.decode("utf-8")
+	except UnicodeDecodeError as exc:
+		return {"_parse_error": f"UnicodeDecodeError: {exc}", "_raw_line": body.decode("utf-8", errors="replace")}
+
+	try:
+		payload = json.loads(text)
+	except json.JSONDecodeError as exc:
+		return {"_parse_error": f"JSONDecodeError: {exc.msg}", "_raw_line": text}
+
+	if not isinstance(payload, dict):
+		return {"_parse_error": "objet JSON inattendu (pas un dict)", "_raw_line": text}
+	return payload
 
 
-def read_jsonl_batch(path: Path, start_offset: int) -> tuple[list[dict[str, Any]], int]:
-	records: list[dict[str, Any]] = []
-	with path.open("rb") as handle:
-		if start_offset > 0:
-			handle.seek(start_offset)
-
-		while True:
-			line_start = handle.tell()
-			raw = handle.readline()
-			if not raw:
-				break
-
-			try:
-				text = raw.decode("utf-8").strip()
-			except UnicodeDecodeError as exc:
-				records.append(
-					{
-						"_parse_error": str(exc),
-						"_raw_line": raw.decode("utf-8", errors="replace").strip(),
-						"_line_offset": line_start,
-					}
-				)
-				continue
-
-			if not text:
-				continue
-
-			try:
-				payload = json.loads(text)
-			except json.JSONDecodeError as exc:
-				records.append(
-					{
-						"_parse_error": f"JSONDecodeError: {exc.msg}",
-						"_raw_line": text,
-						"_line_offset": line_start,
-					}
-				)
-				continue
-
-			payload["_line_offset"] = line_start
-			records.append(payload)
-
-	return records, path.stat().st_size
-
+# ---------------------------------------------------------------- normalisation
 
 def parse_timestamp(value: Any) -> pd.Timestamp | None:
 	if value is None:
@@ -242,14 +274,11 @@ def compute_quality_score(row: dict[str, Any]) -> int:
 
 def normalize_record(
 	record: dict[str, Any],
-	source_file: Path,
-	source_offset: int,
-	source_mtime: float,
+	source_key: str,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
 	if record.get("_parse_error"):
 		return None, {
-			"source_file": str(source_file),
-			"source_offset": source_offset,
+			"source_key": source_key,
 			"error_type": "parse_error",
 			"error_message": record["_parse_error"],
 			"raw_line": record.get("_raw_line"),
@@ -259,8 +288,7 @@ def normalize_record(
 	missing_mandatory = [column for column in MANDATORY_COLUMNS if record.get(column) in (None, "")]
 	if missing_mandatory:
 		return None, {
-			"source_file": str(source_file),
-			"source_offset": source_offset,
+			"source_key": source_key,
 			"error_type": "missing_mandatory_fields",
 			"error_message": ", ".join(missing_mandatory),
 			"raw_record": record,
@@ -270,8 +298,7 @@ def normalize_record(
 	timestamp = parse_timestamp(record.get("timestamp"))
 	if timestamp is None:
 		return None, {
-			"source_file": str(source_file),
-			"source_offset": source_offset,
+			"source_key": source_key,
 			"error_type": "invalid_timestamp",
 			"error_message": f"Invalid timestamp: {record.get('timestamp')}",
 			"raw_record": record,
@@ -291,9 +318,7 @@ def normalize_record(
 		"humidity_percent": safe_float(record.get("humidity_percent")),
 		"null_reasons": normalize_null_reasons(record.get("null_reasons")),
 		"data_quality": record.get("data_quality") or "unknown",
-		"source_file": str(source_file),
-		"source_offset": source_offset,
-		"source_mtime": pd.to_datetime(source_mtime, unit="s", utc=True),
+		"source_key": source_key,
 		"ingested_at": pd.Timestamp.now(tz="UTC"),
 	}
 	normalized["record_date"] = normalized["timestamp"].date().isoformat()
@@ -306,27 +331,7 @@ def normalize_record(
 	return normalized, None
 
 
-def write_parquet(df: pd.DataFrame, output_path: Path) -> None:
-	ensure_dir(output_path.parent)
-	df.to_parquet(output_path, index=False)
-
-
-def write_parquet_overwrite(df: pd.DataFrame, output_path: Path) -> None:
-	"""Ecrit un fichier Parquet en écrasant l'existant, via un tmp + rename atomique
-	pour qu'un lecteur ne voie jamais un fichier à moitié écrit."""
-	ensure_dir(output_path.parent)
-	tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-	df.to_parquet(tmp_path, index=False)
-	tmp_path.replace(output_path)
-
-
-def build_silver_output_dir(root: Path, row: pd.Series) -> Path:
-	return root / f"record_date={row['record_date']}" / f"site_id={row['site_id']}"
-
-
-def build_gold_output_dir(root: Path, row: pd.Series, grain: str) -> Path:
-	return root / f"grain={grain}" / f"record_date={row['record_date']}" / f"site_id={row['site_id']}"
-
+# -------------------------------------------------------------------- agrégats
 
 def aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
 	daily = (
@@ -401,164 +406,162 @@ def add_simple_anomalies(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def rebuild_gold_partition(
-	silver_root: Path,
-	gold_root: Path,
+	s3: Any,
+	silver_bucket: str,
+	gold_bucket: str,
 	record_date: Any,
 	site_id: Any,
 ) -> None:
 	"""Recalcule le gold daily/hourly d'une partition (record_date, site_id) à partir
-	de TOUS les batches silver de cette partition, puis écrit un seul fichier par grain
-	(écrasé à chaque passage). Le gold reste donc toujours un agrégat complet et unique,
-	même si le silver reste en micro-batches append-only."""
-	partition_dir = silver_root / f"record_date={record_date}" / f"site_id={site_id}"
-	silver_files = sorted(partition_dir.glob("*.parquet"))
-	if not silver_files:
+	de TOUS les batches silver de cette partition, puis écrase un unique objet par grain.
+	Le gold reste un agrégat complet et unique par partition, même si le silver est en
+	micro-batches append-only. put_object étant atomique, pas besoin de tmp + rename."""
+	prefix = f"record_date={record_date}/site_id={site_id}/"
+	silver_keys = sorted(k for k in s3_list_keys(s3, silver_bucket, prefix) if k.endswith(".parquet"))
+	if not silver_keys:
 		return
 
 	partition_df = pd.concat(
-		(pd.read_parquet(path) for path in silver_files),
+		(s3_read_parquet(s3, silver_bucket, k) for k in silver_keys),
 		ignore_index=True,
 	)
 
-	daily_dir = gold_root / "daily" / f"record_date={record_date}" / f"site_id={site_id}"
-	hourly_dir = gold_root / "hourly" / f"record_date={record_date}" / f"site_id={site_id}"
-
-	# Purge des anciens fichiers batch (daily_*.parquet / hourly_*.parquet) éventuels,
-	# pour garantir exactement un fichier par partition.
-	for stale in daily_dir.glob("*.parquet"):
-		stale.unlink()
-	for stale in hourly_dir.glob("*.parquet"):
-		stale.unlink()
-
-	write_parquet_overwrite(aggregate_daily(partition_df), daily_dir / "daily.parquet")
-	write_parquet_overwrite(aggregate_hourly(partition_df), hourly_dir / "hourly.parquet")
+	s3_put_parquet(
+		s3, gold_bucket,
+		f"daily/record_date={record_date}/site_id={site_id}/daily.parquet",
+		aggregate_daily(partition_df),
+	)
+	s3_put_parquet(
+		s3, gold_bucket,
+		f"hourly/record_date={record_date}/site_id={site_id}/hourly.parquet",
+		aggregate_hourly(partition_df),
+	)
 
 
-def quarantine_file_path(quarantine_root: Path, source_file: Path) -> Path:
-	relative = source_file.as_posix().replace("/", "_")
-	return quarantine_root / f"{relative}.jsonl"
-
-
-def append_quarantine(quarantine_root: Path, source_file: Path, bad_rows: Iterable[dict[str, Any]]) -> int:
-	bad_rows = list(bad_rows)
+def write_quarantine(s3: Any, bucket: str, bad_rows: list[dict[str, Any]]) -> int:
+	"""Un objet JSON par enregistrement rejeté (S3 n'a pas d'append) :
+	{YYYY-MM-DD}/{source_key aplati}__{stamp}_{i}.json"""
 	if not bad_rows:
 		return 0
 
-	ensure_dir(quarantine_root)
-	path = quarantine_file_path(quarantine_root, source_file)
-	with path.open("a", encoding="utf-8") as handle:
-		for row in bad_rows:
-			handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+	day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+	stamp = run_stamp()
+	for index, row in enumerate(bad_rows):
+		flat_source = str(row.get("source_key", "unknown")).replace("/", "_")
+		key = f"{day}/{flat_source}__{stamp}_{index}.json"
+		s3_put_bytes(
+			s3, bucket, key,
+			json.dumps(row, ensure_ascii=False, default=str).encode("utf-8"),
+			JSON_CONTENT_TYPE,
+		)
 	return len(bad_rows)
 
 
-def process_file(
-	source_file: Path,
-	bronze_root: Path,
-	silver_root: Path,
-	gold_root: Path,
-	quarantine_root: Path,
-	state: dict[str, FileState],
-) -> tuple[int, int, int]:
-	relative_key = source_file.relative_to(bronze_root).as_posix()
-	file_stat = source_file.stat()
-	current_state = state.get(relative_key, FileState())
-	start_offset = current_state.offset if file_stat.st_size >= current_state.offset else 0
-
-	raw_rows, current_size = read_jsonl_batch(source_file, start_offset)
-	if not raw_rows:
-		state[relative_key] = FileState(
-			offset=current_size,
-			size=current_size,
-			mtime=file_stat.st_mtime,
-			last_processed_at=current_state.last_processed_at,
-		)
-		return 0, 0, 0
-
+def process_batch(
+	s3: Any,
+	records: list[tuple[str, dict[str, Any]]],
+	*,
+	silver_bucket: str,
+	gold_bucket: str,
+	quarantine_bucket: str,
+) -> tuple[int, int]:
+	"""records : (clé bronze, mesure décodée). Renvoie (lignes_silver, quarantined)."""
 	silver_rows: list[dict[str, Any]] = []
 	quarantine_rows: list[dict[str, Any]] = []
 
-	for row in raw_rows:
-		source_offset = int(row.get("_line_offset", start_offset))
-		normalized, quarantine_row = normalize_record(row, source_file, source_offset, file_stat.st_mtime)
+	for source_key, record in records:
+		normalized, quarantine_row = normalize_record(record, source_key)
 		if normalized is not None:
 			silver_rows.append(normalized)
 		elif quarantine_row is not None:
 			quarantine_rows.append(quarantine_row)
 
-	if silver_rows:
-		silver_df = pd.DataFrame(silver_rows)
-		silver_df = add_simple_anomalies(silver_df)
+	quarantine_count = write_quarantine(s3, quarantine_bucket, quarantine_rows)
 
-		touched_partitions: set[tuple[Any, Any]] = set()
-		for (record_date, site_id), group in silver_df.groupby(["record_date", "site_id"], dropna=False):
-			output_dir = silver_root / f"record_date={record_date}" / f"site_id={site_id}"
-			batch_name = f"{source_file.stem}_{start_offset}_{current_size}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.parquet"
-			write_parquet(group, output_dir / batch_name)
-			touched_partitions.add((record_date, site_id))
+	if not silver_rows:
+		return 0, quarantine_count
 
-		# Gold recalculé depuis l'intégralité du silver de chaque partition touchée :
-		# un seul daily.parquet / hourly.parquet par (record_date, site_id), toujours à jour.
-		for record_date, site_id in sorted(touched_partitions, key=lambda item: (str(item[0]), str(item[1]))):
-			rebuild_gold_partition(silver_root, gold_root, record_date, site_id)
+	silver_df = pd.DataFrame(silver_rows)
+	silver_df = add_simple_anomalies(silver_df)
 
-	quarantine_count = append_quarantine(quarantine_root, source_file, quarantine_rows)
+	stamp = run_stamp()
+	touched_partitions: set[tuple[Any, Any]] = set()
+	for (record_date, site_id), group in silver_df.groupby(["record_date", "site_id"], dropna=False):
+		key = f"record_date={record_date}/site_id={site_id}/batch_{stamp}.parquet"
+		s3_put_parquet(s3, silver_bucket, key, group)
+		touched_partitions.add((record_date, site_id))
 
-	state[relative_key] = FileState(
-		offset=current_size,
-		size=current_size,
-		mtime=file_stat.st_mtime,
-		last_processed_at=utc_now_iso(),
-	)
-	return len(silver_rows), quarantine_count, len(raw_rows)
+	# Gold recalculé depuis l'intégralité du silver de chaque partition touchée.
+	for record_date, site_id in sorted(touched_partitions, key=lambda item: (str(item[0]), str(item[1]))):
+		rebuild_gold_partition(s3, silver_bucket, gold_bucket, record_date, site_id)
+
+	return len(silver_rows), quarantine_count
 
 
 def main() -> int:
-	parser = build_parser()
-	args = parser.parse_args()
+	args = build_parser().parse_args()
 
-	bronze_root = Path(args.bronze_dir)
-	silver_root = Path(args.silver_dir)
-	gold_root = Path(args.gold_dir)
-	quarantine_root = Path(args.quarantine_dir)
-	manifest_dir = Path(args.manifest_dir)
-	state_file = Path(args.state_file)
+	try:
+		s3 = make_s3_client()
+	except KeyError as exc:
+		print(f"Variable d'environnement MinIO manquante : {exc}")
+		return 1
 
-	ensure_dir(silver_root)
-	ensure_dir(gold_root)
-	ensure_dir(quarantine_root)
-	ensure_dir(manifest_dir)
+	for bucket in (args.silver_bucket, args.gold_bucket, args.quarantine_bucket, args.manifests_bucket):
+		try:
+			ensure_bucket(s3, bucket)
+		except (BotoCoreError, ClientError) as exc:
+			print(f"Bucket '{bucket}' indisponible : {exc}")
+			return 1
 
-	state = load_state(state_file)
-	files = discover_bronze_files(bronze_root)
+	processed = load_state(s3, args.manifests_bucket, args.state_key)
 
-	if not files:
-		print(f"Aucun fichier bronze trouvé dans {bronze_root}")
+	try:
+		all_keys = sorted(
+			key for key in s3_list_keys(s3, args.bronze_bucket, args.bronze_prefix) if key.endswith(".json")
+		)
+	except (BotoCoreError, ClientError) as exc:
+		print(f"Impossible de lister le bucket bronze '{args.bronze_bucket}' : {exc}")
+		return 1
+
+	new_keys = [key for key in all_keys if key not in processed]
+	if args.max_objects > 0:
+		new_keys = new_keys[: args.max_objects]
+
+	if not new_keys:
+		print(
+			f"Traitement terminé | objets_bronze={len(all_keys)} | nouveaux=0 | "
+			f"lignes_silver=0 | quarantined=0"
+		)
 		return 0
 
-	total_silver = 0
-	total_quarantine = 0
-	total_raw = 0
+	records: list[tuple[str, dict[str, Any]]] = []
+	fetch_errors = 0
+	for key in new_keys:
+		try:
+			records.append((key, fetch_record(s3, args.bronze_bucket, key)))
+		except (BotoCoreError, ClientError) as exc:
+			fetch_errors += 1
+			print(f"{key} : lecture impossible, {exc}")
 
-	for source_file in files:
-		silver_count, quarantine_count, raw_count = process_file(
-			source_file=source_file,
-			bronze_root=bronze_root,
-			silver_root=silver_root,
-			gold_root=gold_root,
-			quarantine_root=quarantine_root,
-			state=state,
-		)
-		total_silver += silver_count
-		total_quarantine += quarantine_count
-		total_raw += raw_count
+	silver_count, quarantine_count = process_batch(
+		s3,
+		records,
+		silver_bucket=args.silver_bucket,
+		gold_bucket=args.gold_bucket,
+		quarantine_bucket=args.quarantine_bucket,
+	)
 
-	save_state(state_file, state)
+	# Un objet lu (même mis en quarantaine) est marqué traité : pas de nouvelle tentative.
+	# Les objets dont la lecture S3 a échoué ne sont PAS marqués et repasseront au prochain run.
+	processed.update(key for key, _ in records)
+	save_state(s3, args.manifests_bucket, args.state_key, processed)
 
 	print(
 		"Traitement terminé | "
-		f"fichiers={len(files)} | lignes_lues={total_raw} | "
-		f"lignes_silver={total_silver} | quarantined={total_quarantine}"
+		f"objets_bronze={len(all_keys)} | nouveaux={len(new_keys)} | "
+		f"lus={len(records)} | erreurs_lecture={fetch_errors} | "
+		f"lignes_silver={silver_count} | quarantined={quarantine_count}"
 	)
 	return 0
 

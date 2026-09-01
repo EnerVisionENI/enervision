@@ -4,19 +4,18 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: enervision-etl-collect
+    # Aucun volume : bronze, silver, gold, quarantine et l'état incrémental
+    # vivent tous dans MinIO. Rien n'est écrit sur le disque hôte.
     environment:
       - API_BASE=http://10.105.200.45:8000
-      - DOSSIER_BRONZE=bronze
       - PYTHONUNBUFFERED=1
-    volumes:
-      - ./bronze:/app/bronze
-      - ./silver:/app/silver
-      - ./gold:/app/gold
-      - ./quarantine:/app/quarantine
-      - ./manifests:/app/manifests
       - INTERVALLE_SECONDES=60
       - MINIO_ENDPOINT=minio:9000
       - MINIO_BUCKET_BRONZE=bronze
+      - MINIO_BUCKET_SILVER=silver
+      - MINIO_BUCKET_GOLD=gold
+      - MINIO_BUCKET_QUARANTINE=quarantine
+      - MINIO_BUCKET_MANIFESTS=manifests
       - MINIO_BUCKET_AUDIT=audit
       - MINIO_USE_SSL=false
     env_file:
