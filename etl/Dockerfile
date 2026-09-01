@@ -1,5 +1,9 @@
 FROM python:3.12.9-slim
 
+# Sans ça, les print() de collect.py restent bufferisés et n'apparaissent jamais
+# dans `podman logs` / `docker logs` (rien à voir avec le pipeline lui-même).
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 # Dépendances installées avant le code, pour profiter du cache Docker
@@ -15,8 +19,8 @@ USER appuser
 
 HEALTHCHECK --interval=60s --timeout=5s --start-period=15s \
     CMD python -c "\
-import glob, time, sys; \
-fichiers = glob.glob('/app/bronze/*/*.jsonl'); \
-sys.exit(0 if fichiers and (time.time() - max(__import__('os').path.getmtime(f) for f in fichiers)) < 150 else 1)"
+import os, time, sys; \
+chemin = os.environ.get('HEARTBEAT_PATH', '/tmp/heartbeat'); \
+sys.exit(0 if os.path.exists(chemin) and (time.time() - os.path.getmtime(chemin)) < 150 else 1)"
 
 CMD ["python", "collect.py"]
