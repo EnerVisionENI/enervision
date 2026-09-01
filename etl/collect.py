@@ -16,9 +16,9 @@ from datetime import datetime, timezone
 import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
 
-API_BASE = "http://10.105.200.45:8000"
-DOSSIER_BRONZE = "etl/bronze"
-INTERVALLE_SECONDES = 60
+API_BASE = os.environ.get("API_BASE", "http://10.105.200.45:8000")
+DOSSIER_BRONZE = os.environ.get("DOSSIER_BRONZE", "etl/bronze")
+INTERVALLE_SECONDES = int(os.environ.get("INTERVALLE_SECONDES", "60"))
 
 
 def recuperer_liste_sites():
