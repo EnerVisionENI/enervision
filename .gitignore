@@ -1,6 +1,7 @@
 # Secrets — jamais commités
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 infra/keycloak/realm-export.json
