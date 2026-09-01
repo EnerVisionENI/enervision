@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    TIMESTAMP DEFAULT now()
 );
 
+INSERT INTO users (email, password_hash, role)
+VALUES (
+    'admin@enervision.io',
+    crypt('admin', gen_salt('bf')),
+    'admin'
+)
+ON CONFLICT (email) DO NOTHING;
+
 CREATE INDEX IF NOT EXISTS idx_alerts_site_id ON alerts(site_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
 CREATE INDEX IF NOT EXISTS idx_sensors_site_id ON sensors_status(site_id);
