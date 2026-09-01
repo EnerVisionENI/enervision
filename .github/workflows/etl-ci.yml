@@ -38,7 +38,7 @@ jobs:
     needs: test
     steps:
       - name: Recuperer le code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Construire l'image
         run: docker build -t enervision-etl-collect:${{ github.sha }} ./etl
