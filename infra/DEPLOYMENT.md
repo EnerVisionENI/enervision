@@ -5,38 +5,59 @@
 Le dépôt contient une pipeline GitHub Actions dans `.github/workflows/deploy-dev.yml`.
 
 - Sur chaque pull request vers `dev`, la pipeline lance les tests API et le build frontend.
-- Quand la PR est mergée dans `dev`, la pipeline déploie automatiquement sur le serveur.
+- Sur chaque push vers `dev` (donc aussi après un merge de PR), la pipeline déploie automatiquement sur le serveur.
 
-### Secrets à créer dans GitHub
+Le serveur de déploiement (`10.105.200.44`) n'est joignable que depuis le réseau interne : le job `deploy`
+tourne donc sur un **runner GitHub Actions self-hosted installé directement sur ce serveur**, plutôt que sur
+un runner hébergé (`ubuntu-latest`) qui ne pourrait pas l'atteindre en SSH. Le job fait un `actions/checkout`,
+restaure les fichiers `.env` de prod depuis un dossier stable, puis lance `docker compose up -d --build`
+(ou `docker-compose` si le plugin `docker compose` v2 n'est pas installé).
 
-Ajoute ces secrets dans **Settings > Secrets and variables > Actions** :
+### Installer le runner self-hosted sur le serveur
 
-- `DEPLOY_HOST` : IP ou nom de domaine du serveur
-- `DEPLOY_USER` : utilisateur SSH
-- `DEPLOY_SSH_KEY` : clé privée SSH sans passphrase, autorisée sur le serveur
-- `DEPLOY_PORT` : port SSH, par défaut `22`
-- `DEPLOY_PATH` : chemin du dépôt sur le serveur, par exemple `/srv/enervision`
+1. Sur GitHub : **Settings > Actions > Runners > New self-hosted runner**, choisir Linux.
+2. Suivre les commandes affichées (elles contiennent un token à usage unique, à copier depuis la page) pour
+   télécharger et extraire le runner sur `10.105.200.44`.
+3. Configurer le runner **avec un utilisateur non-root** dédié (`config.sh` refuse de s'exécuter en root) :
+   membre du groupe `docker`, propriétaire du dossier du runner.
+4. Installer et démarrer le service depuis ce dossier : `./svc.sh install <user> && ./svc.sh start`.
+5. Vérifier que le runner apparaît "Idle" dans la liste des runners du repo.
+
+Aucun secret SSH n'est nécessaire avec cette approche (plus de `DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_SSH_KEY`
+/ `DEPLOY_PORT` / `DEPLOY_PATH`) : le job s'exécute déjà sur la machine cible.
 
 ### Préparation du serveur
 
-Le serveur doit déjà contenir :
+Le serveur (et donc le runner) doit avoir :
 
-1. Le dépôt cloné dans `DEPLOY_PATH`
-2. Docker et Docker Compose installés
-3. Les fichiers `.env` de production déjà présents et non versionnés
-4. Le dépôt configuré pour suivre la branche `dev`
+1. Docker et Docker Compose installés (`docker compose` v2 ou, à défaut, `docker-compose` v1), avec
+   l'utilisateur du runner membre du groupe `docker`.
+2. Les fichiers `.env` de production stockés **en dehors du dossier de travail du runner** (`_work/...`) :
+   ce dossier est recréé par `actions/checkout` au tout premier run (il vide le contenu existant avant de
+   cloner, même avec `clean: false`, qui ne protège que les runs suivants une fois un `.git` déjà en place).
+   Les stocker par exemple dans `/opt/enervision-secrets/` (lisible uniquement par l'utilisateur du runner) :
+   - `/opt/enervision-secrets/postgres.env` → copié vers `infra/postgres/.env` à chaque déploiement
+   - `/opt/enervision-secrets/api.env` → copié vers `api/.env` à chaque déploiement
 
-Exemple de première mise en place :
+   Le step *Restore production env files* du workflow fait cette copie avant `docker compose up`.
+
+Première mise en place (sur le serveur) :
 
 ```bash
-git clone <url-du-repo> /srv/enervision
-cd /srv/enervision
-git checkout dev
-cd infra
-docker compose up -d --build
+mkdir -p /opt/enervision-secrets
+nano /opt/enervision-secrets/postgres.env   # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+nano /opt/enervision-secrets/api.env        # copie de api/.env.example avec les valeurs de prod
+chown -R <user_runner>:<user_runner> /opt/enervision-secrets
+chmod 700 /opt/enervision-secrets
+chmod 600 /opt/enervision-secrets/*.env
 ```
 
-Ensuite, chaque merge vers `dev` fera simplement un `git reset --hard origin/dev` puis un `docker compose up -d --build`.
+Ensuite, chaque push sur `dev` refera automatiquement le `checkout`, la restauration des `.env`, puis
+`docker compose up -d --build`.
+
+> Si un jour le serveur devient joignable depuis Internet (VPN site-to-site, IP publique, etc.), on peut
+> repasser le job `deploy` sur `ubuntu-latest` avec une connexion SSH classique (secrets `DEPLOY_HOST`,
+> `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PORT`, `DEPLOY_PATH`).
 
 ## Commandes de déploiement
 
