@@ -30,7 +30,7 @@
         <div class="stat-icon">📈</div>
         <div class="stat-info">
           <p class="stat-label">Efficacité</p>
-          <p class="stat-value">92%</p>
+          <p class="stat-value">99.9%</p>
         </div>
       </div>
     </div>
