@@ -3,14 +3,14 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
+# Copy package files from the frontend app
 COPY front/package*.json ./
 
 # Install dependencies
 RUN npm ci
 
 # Copy source code
-COPY front/ .
+COPY front/. .
 
 # Build the Vue app
 RUN npm run build
