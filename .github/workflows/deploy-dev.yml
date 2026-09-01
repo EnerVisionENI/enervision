@@ -30,6 +30,13 @@ jobs:
         run: |
           scp -o StrictHostKeyChecking=yes scripts/remote-deploy.sh ${SSH_USER}@${SSH_HOST}:/tmp/remote-deploy.sh
 
+      - name: Make remote script executable
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes ${SSH_USER}@${SSH_HOST} "chmod +x /tmp/remote-deploy.sh"
+
       - name: Execute remote deploy script
         env:
           SSH_USER: ${{ secrets.SSH_USER }}
