@@ -28,8 +28,8 @@ git reset --hard "origin/${BRANCH}"
 
 echo "Pulling and (re)starting services with Docker Compose..."
 if command -v docker > /dev/null 2>&1; then
-  docker compose pull || docker-compose pull
-  docker compose up -d --build --remove-orphans || docker-compose up -d --build --remove-orphans
+docker compose -f infra/docker-compose.yml pull || docker-compose -f infra/docker-compose.yml pull
+docker compose -f infra/docker-compose.yml up -d --build --remove-orphans || docker-compose -f infra/docker-compose.yml up -d --build --remove-orphans
 else
   echo "Docker not found on the server; aborting." >&2
   exit 2
