@@ -1,0 +1,44 @@
+name: EV-003 - ETL build et test
+
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - "etl/**"
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - "etl/**"
+
+jobs:
+  test:
+    name: Tests unitaires etl
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./etl
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v7
+
+      - name: Installer Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Installer les dependances
+        run: pip install -r requirements.txt
+
+      - name: Lancer les tests
+        run: pytest tests/ -v
+
+  build:
+    name: Build de l'image Docker
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v7
+
+      - name: Construire l'image
+        run: docker build -t enervision-etl-collect:${{ github.sha }} ./etl
