@@ -83,6 +83,7 @@ jobs:
           cp /opt/enervision-secrets/api.env api/.env
           cp /opt/enervision-secrets/minio.env infra/minio/.env
           cp /opt/enervision-secrets/audit-sync.env infra/audit-sync/.env
+          cp /opt/enervision-secrets/etl.env etl/.env
 
       - name: Deploy with docker compose
         run: |
