@@ -1,9 +1,9 @@
 name: Trivy Docker Image Scan
 
 on:
-  pull_request:
-  push:
-    branches: [main, dev]
+  workflow_run:
+    workflows: ["EV-003 - ETL build et test"]
+    types: [completed]
   schedule:
     # Rescan main daily to catch new CVEs published against unchanged images.
     - cron: "17 3 * * *"
@@ -19,6 +19,7 @@ permissions:
 jobs:
   trivy-scan:
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     strategy:
       fail-fast: false
       matrix:
