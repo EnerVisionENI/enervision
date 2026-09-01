@@ -35,8 +35,10 @@ def recuperer_mesure(site_id):
     return reponse.json()
 
 
-def chemin_fichier_du_jour(site_id, dossier=DOSSIER_BRONZE):
+def chemin_fichier_du_jour(site_id, dossier=None):
     """Un dossier par site, un fichier JSONL par jour dedans, ex : bronze/SITE001/2026-08-31.jsonl"""
+    if dossier is None:
+        dossier = DOSSIER_BRONZE
     date_du_jour = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     dossier_site = os.path.join(dossier, site_id)
     os.makedirs(dossier_site, exist_ok=True)
