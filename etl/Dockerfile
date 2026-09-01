@@ -11,7 +11,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY collect.py .
+COPY collect.py quality.py .
 
 # Utilisateur non-root, bonne pratique de sécurité pour un conteneur
 RUN useradd --create-home appuser

@@ -35,6 +35,10 @@ mlartifacts/
 *.jsonl
 data/
 tmp/
+etl/silver/
+etl/gold/
+etl/quarantine/
+etl/manifests/
 
 # IDE / OS
 .vscode/
