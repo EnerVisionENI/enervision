@@ -3,7 +3,7 @@ version: '3.8'
 services:
   front:
     build:
-      context: .
+      context: ..
       dockerfile: front/Dockerfile
     container_name: enervision-front
     ports:
@@ -18,8 +18,8 @@ services:
 
   api:
     build:
-      context: ./api
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: api/Dockerfile
     container_name: enervision-api
     ports:
       - "8000:8000"
