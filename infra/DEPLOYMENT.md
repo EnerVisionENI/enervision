@@ -1,5 +1,43 @@
 # Déploiement EnerVision avec Nginx
 
+## CI/CD automatique
+
+Le dépôt contient une pipeline GitHub Actions dans `.github/workflows/deploy-dev.yml`.
+
+- Sur chaque pull request vers `dev`, la pipeline lance les tests API et le build frontend.
+- Quand la PR est mergée dans `dev`, la pipeline déploie automatiquement sur le serveur.
+
+### Secrets à créer dans GitHub
+
+Ajoute ces secrets dans **Settings > Secrets and variables > Actions** :
+
+- `DEPLOY_HOST` : IP ou nom de domaine du serveur
+- `DEPLOY_USER` : utilisateur SSH
+- `DEPLOY_SSH_KEY` : clé privée SSH sans passphrase, autorisée sur le serveur
+- `DEPLOY_PORT` : port SSH, par défaut `22`
+- `DEPLOY_PATH` : chemin du dépôt sur le serveur, par exemple `/srv/enervision`
+
+### Préparation du serveur
+
+Le serveur doit déjà contenir :
+
+1. Le dépôt cloné dans `DEPLOY_PATH`
+2. Docker et Docker Compose installés
+3. Les fichiers `.env` de production déjà présents et non versionnés
+4. Le dépôt configuré pour suivre la branche `dev`
+
+Exemple de première mise en place :
+
+```bash
+git clone <url-du-repo> /srv/enervision
+cd /srv/enervision
+git checkout dev
+cd infra
+docker compose up -d --build
+```
+
+Ensuite, chaque merge vers `dev` fera simplement un `git reset --hard origin/dev` puis un `docker compose up -d --build`.
+
 ## Commandes de déploiement
 
 ### 1. Dépendances système
