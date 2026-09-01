@@ -77,6 +77,12 @@ jobs:
           # Ne pas supprimer les fichiers non versionnés (.env) présents sur le runner.
           clean: false
 
+      - name: Restore production env files
+        run: |
+          set -e
+          cp /opt/enervision-secrets/postgres.env infra/postgres/.env
+          cp /opt/enervision-secrets/api.env api/.env
+
       - name: Deploy with docker compose
         run: |
           set -e
