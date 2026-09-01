@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS users (
     user_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email         VARCHAR(150) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
-    role          VARCHAR(20) NOT NULL DEFAULT 'viewer', -- viewer | operator | admin
+    role          VARCHAR(20) NOT NULL DEFAULT 'viewer', -- viewer | admin
     created_at    TIMESTAMP DEFAULT now()
 );
 
