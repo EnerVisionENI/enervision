@@ -5,52 +5,56 @@
       <p>Plateforme de suivi énergétique</p>
     </header>
 
-    <nav class="navbar">
-      <button 
-        v-for="item in navItems" 
-        :key="item"
-        @click="activeTab = item"
-        :class="{ active: activeTab === item }"
+    <nav v-if="authenticated" class="navbar">
+      <router-link
+        v-for="item in navItems"
+        :key="item.path"
+        :to="item.path"
         class="nav-button"
+        active-class="active"
       >
-        {{ item }}
+        {{ item.label }}
+      </router-link>
+
+      <button class="nav-button logout" @click="handleLogout">
+        Déconnexion
       </button>
     </nav>
 
     <main class="main-content">
-      <component :is="currentComponent" />
+      <router-view />
     </main>
   </div>
 </template>
 
-<script>
-import { ref, computed } from 'vue'
-import Dashboard from './components/Dashboard.vue'
-import Analytics from './components/Analytics.vue'
-import Settings from './components/Settings.vue'
+<script setup>
+import { ref, onMounted } from "vue";
+import { useRouter } from "vue-router";
+import { logout, isAuthenticated } from "./auth/auth";
 
-export default {
-  name: 'App',
-  components: {
-    Dashboard,
-    Analytics,
-    Settings
-  },
-  setup() {
-    const activeTab = ref('Dashboard')
-    const navItems = ['Dashboard', 'Analytics', 'Settings']
+const router = useRouter();
+const authenticated = ref(false);
 
-    const currentComponent = computed(() => {
-      return activeTab.value
-    })
+const navItems = [
+  { path: "/", label: "Dashboard" },
+  { path: "/consumption", label: "Consommation" },
+  { path: "/alerts", label: "Alertes" },
+  { path: "/predictions", label: "Prédictions" },
+  { path: "/sensors", label: "Capteurs" },
+];
 
-    return {
-      activeTab,
-      navItems,
-      currentComponent
-    }
-  }
+function refreshAuth() {
+  authenticated.value = isAuthenticated();
 }
+
+function handleLogout() {
+  logout();
+  authenticated.value = false;
+  router.push("/login");
+}
+
+onMounted(refreshAuth);
+router.afterEach(refreshAuth); // met à jour le nav après chaque navigation (ex: login)
 </script>
 
 <style>
@@ -113,6 +117,8 @@ body {
   cursor: pointer;
   transition: all 0.3s ease;
   font-weight: 500;
+  text-decoration: none;
+  display: inline-block;
 }
 
 .nav-button:hover {
@@ -124,6 +130,14 @@ body {
   background: white;
   color: #667eea;
   box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+}
+
+.nav-button.logout {
+  background: rgba(255, 0, 0, 0.25);
+}
+
+.nav-button.logout:hover {
+  background: rgba(255, 0, 0, 0.4);
 }
 
 .main-content {
