@@ -70,6 +70,15 @@ jobs:
         with:
           image-ref: enervision-${{ matrix.name }}:scan
           format: table
+          output: trivy-${{ matrix.name }}.table.txt
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
+
+      - name: Publish results to job summary
+        if: always()
+        run: |
+          echo "### Trivy scan: ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat trivy-${{ matrix.name }}.table.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
