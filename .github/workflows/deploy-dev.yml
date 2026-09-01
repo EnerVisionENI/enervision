@@ -1,47 +1,94 @@
-
-name: Deploy dev to server
+name: CI/CD dev
 
 on:
+  pull_request:
+    branches:
+      - dev
   push:
-    branches: [dev]
+    branches:
+      - dev
+  workflow_dispatch:
+
+concurrency:
+  group: enervision-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  deploy:
-    name: Deploy to server
+  test-api:
+    name: API tests
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Start ssh-agent and add key
-        uses: webfactory/ssh-agent@v0.8.0
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          python-version: '3.12'
 
-      - name: Add server to known_hosts
-        run: echo "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-
-      - name: Copy deploy script to server
-        env:
-          SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      - name: Install API dependencies
         run: |
-          scp -o StrictHostKeyChecking=yes scripts/remote-deploy.sh ${SSH_USER}@${SSH_HOST}:/tmp/remote-deploy.sh
+          python -m pip install --upgrade pip
+          pip install -r api/requirements.txt
 
-      - name: Make remote script executable
-        env:
-          SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-        run: |
-          ssh -o StrictHostKeyChecking=yes ${SSH_USER}@${SSH_HOST} "chmod +x /tmp/remote-deploy.sh"
+      - name: Run API tests
+        run: pytest api/tests -q
 
-      - name: Execute remote deploy script
-        env:
-          SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          DEPLOY_BRANCH: dev
-        run: |
-          ssh -o StrictHostKeyChecking=yes ${SSH_USER}@${SSH_HOST} "bash /tmp/remote-deploy.sh '${DEPLOY_PATH}' '${DEPLOY_BRANCH}'"
+  build-front:
+    name: Frontend build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: front
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: front
+        run: npm run build
+
+  deploy:
+    name: Deploy on server
+    needs:
+      - test-api
+      - build-front
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy through SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+            cd "${{ secrets.DEPLOY_PATH }}"
+
+            git fetch origin dev
+            git reset --hard origin/dev
+
+            if docker compose version >/dev/null 2>&1; then
+              DOCKER_COMPOSE="docker compose"
+            else
+              DOCKER_COMPOSE="docker-compose"
+            fi
+
+            $DOCKER_COMPOSE -f infra/docker-compose.yml up -d --build --remove-orphans
