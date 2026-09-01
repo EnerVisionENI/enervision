@@ -49,7 +49,7 @@ jobs:
           tags: enervision-${{ matrix.name }}:scan
 
       - name: Trivy scan (full report, JSON)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: enervision-${{ matrix.name }}:scan
           format: json
@@ -66,7 +66,7 @@ jobs:
           retention-days: 30
 
       - name: Trivy scan (fail on CRITICAL/HIGH)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: enervision-${{ matrix.name }}:scan
           format: table
