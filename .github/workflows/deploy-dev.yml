@@ -95,3 +95,4 @@ jobs:
           fi
 
           $DOCKER_COMPOSE -f infra/docker-compose.yml up -d --build --remove-orphans
+          $DOCKER_COMPOSE -f etl/docker-compose.yml up -d --build --remove-orphans
