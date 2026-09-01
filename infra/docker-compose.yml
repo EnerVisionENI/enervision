@@ -8,15 +8,34 @@ services:
     env_file:
       - ./postgres/.env
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\""]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  api:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+    container_name: ev007-api
+    restart: unless-stopped
+    env_file:
+      - ./postgres/.env
+      - ../api/.env
+    environment:
+      # Réseau interne Compose : écrase les valeurs host (localhost:5433) de api/.env.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pgdata:

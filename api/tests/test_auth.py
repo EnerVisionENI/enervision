@@ -1,0 +1,77 @@
+from api.tests.conftest import auth_headers, make_user
+
+
+def test_login_success(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+
+    response = client.post("/auth/login", data={"username": "viewer@enervision.fr", "password": "password123"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["token_type"] == "bearer"
+    assert body["access_token"]
+
+
+def test_login_wrong_password(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+
+    response = client.post("/auth/login", data={"username": "viewer@enervision.fr", "password": "wrong"})
+
+    assert response.status_code == 401
+
+
+def test_me_requires_token(client):
+    response = client.get("/auth/me")
+
+    assert response.status_code == 401
+
+
+def test_me_returns_current_user(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+
+    response = client.get("/auth/me", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["email"] == "viewer@enervision.fr"
+    assert response.json()["role"] == "viewer"
+
+
+def test_create_user_requires_admin(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+
+    response = client.post(
+        "/auth/users",
+        json={"email": "new@enervision.fr", "password": "password123", "role": "viewer"},
+        headers=headers,
+    )
+
+    assert response.status_code == 403
+
+
+def test_admin_can_create_user(client, db_session):
+    make_user(db_session, "admin@enervision.fr", "password123", "admin")
+    headers = auth_headers(client, "admin@enervision.fr", "password123")
+
+    response = client.post(
+        "/auth/users",
+        json={"email": "new@enervision.fr", "password": "password123", "role": "operator"},
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["role"] == "operator"
+
+
+def test_cannot_create_duplicate_email(client, db_session):
+    make_user(db_session, "admin@enervision.fr", "password123", "admin")
+    headers = auth_headers(client, "admin@enervision.fr", "password123")
+
+    response = client.post(
+        "/auth/users",
+        json={"email": "admin@enervision.fr", "password": "password123", "role": "viewer"},
+        headers=headers,
+    )
+
+    assert response.status_code == 409
