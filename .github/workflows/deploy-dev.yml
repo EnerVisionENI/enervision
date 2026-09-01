@@ -7,7 +7,6 @@ on:
   push:
     branches:
       - dev
-      - ev-021---auto-deploy-dev # TODO: retirer avant de merger dans dev, sert juste à tester le déploiement
   workflow_dispatch:
 
 concurrency:
@@ -67,7 +66,7 @@ jobs:
     needs:
       - test-api
       - build-front
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/ev-021---auto-deploy-dev')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: self-hosted
 
     steps:
