@@ -1,14 +1,13 @@
 services:
   etl-collect:
     build:
-      context: ./etl
       dockerfile: Dockerfile
     container_name: enervision-etl-collect
     environment:
       - API_BASE=http://10.105.200.45:8000
       - DOSSIER_BRONZE=bronze
     volumes:
-      - ./etl/bronze:/app/bronze
+      - ./bronze:/app/bronze
     restart: unless-stopped
     healthcheck:
       interval: 60s
