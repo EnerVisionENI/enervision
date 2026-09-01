@@ -146,7 +146,12 @@ def main():
     print(f"Mesures déposées sur MinIO, bucket {MINIO_BUCKET_BRONZE}/")
 
     scheduler = BlockingScheduler()
-    scheduler.add_job(cycle_collecte, "interval", seconds=INTERVALLE_SECONDES, next_run_time=datetime.now())
+    scheduler.add_job(
+        cycle_collecte,
+        "interval",
+        seconds=INTERVALLE_SECONDES,
+        next_run_time=datetime.now(timezone.utc),
+    )
 
     try:
         scheduler.start()
