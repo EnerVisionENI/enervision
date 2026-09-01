@@ -81,6 +81,8 @@ jobs:
           set -e
           cp /opt/enervision-secrets/postgres.env infra/postgres/.env
           cp /opt/enervision-secrets/api.env api/.env
+          cp /opt/enervision-secrets/minio.env infra/minio/.env
+          cp /opt/enervision-secrets/audit-sync.env infra/audit-sync/.env
 
       - name: Deploy with docker compose
         run: |
