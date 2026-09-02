@@ -3,6 +3,7 @@ import { isAuthenticated } from "../auth/auth";
 
 import LoginView from "../views/LoginView.vue";
 import DashboardView from "../views/DashboardView.vue";
+import AlertsView from "../views/AlertsView.vue";
 import NotFoundView from "../views/error/NotFoundView.vue";
 
 const routes = [
@@ -12,6 +13,12 @@ const routes = [
     name: "dashboard",
     component: DashboardView,
     meta: { requiresAuth: true, nav: "Dashboard" },
+  },
+  {
+    path: "/alertes",
+    name: "alerts",
+    component: AlertsView,
+    meta: { requiresAuth: true, nav: "Alertes" },
   },
   {
     path: "/:pathMatch(.*)*",
