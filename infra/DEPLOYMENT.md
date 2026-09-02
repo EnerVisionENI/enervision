@@ -20,11 +20,32 @@ derrière des profils Compose :
 | Profil | Services | |
 |--------|----------|---|
 | _(aucun)_ | `postgres`, `minio`, `minio-init`, `api`, `front` | toujours démarrés |
-| `etl`   | `etl-collect`, `etl-alerts`, `etl-sites` | collecte mesures + alertes + sites |
+| `etl`   | `etl-bootstrap`, `etl-collect`, `etl-alerts`, `etl-sites` | rattrapage initial, puis collecte mesures + alertes + sites |
 | `audit` | `audit-sync`  | synchro MinIO → Azure Blob |
 | `proxy` | `traefik`     | reverse proxy TLS |
 
 En local : `docker compose up -d --build` suffit pour le cœur de la stack ; ajouter `--profile etl` au besoin.
+
+### Rattrapage initial de l'ETL (`etl-bootstrap`)
+
+Au premier `up` du profil `etl`, le conteneur **one-shot `etl-bootstrap`** :
+
+1. rejoue l'historique de consommation (`history.py`, `HISTORY_MOIS` mois, pas `HISTORY_PAS_MINUTES` min — défauts 13 mois / 60 min) dans la couche bronze ;
+2. draine bronze → silver/gold par tranches (`quality.py`, `BOOTSTRAP_DRAIN_CHUNK` objets par passage) ;
+3. passe en `phase=live`.
+
+`etl-collect` a `depends_on: etl-bootstrap: condition: service_completed_successfully` : la **collecte temps réel ne démarre qu'une fois le rattrapage terminé**. Si le bootstrap échoue, il passe en `phase=error` et sort en 1 → `etl-collect` ne démarre pas (voulu).
+
+L'état vit dans la table Postgres **`etl_status`** (ligne unique `id = 1`, colonnes `phase` / `bronze_total` / `bronze_done` / `message`). Il rend `etl-bootstrap` **idempotent** : si `phase=live`, le conteneur ressort aussitôt, un redéploiement ne relance donc rien.
+
+```sql
+-- suivre l'avancement
+SELECT phase, bronze_done, bronze_total, message, updated_at FROM etl_status;
+-- reforcer un rattrapage complet
+UPDATE etl_status SET phase = 'pending' WHERE id = 1;
+```
+
+> Le rattrapage peut durer plusieurs minutes à quelques dizaines de minutes selon `HISTORY_PAS_MINUTES` (pas plus fin = plus d'objets). `etl-bootstrap` tourne avec sa propre limite mémoire (1 Go) car il exécute le pipeline pandas ; `etl-collect` reste à 256 Mo (≈ 7 objets/cycle).
 
 ### Installer le runner self-hosted sur le serveur
 

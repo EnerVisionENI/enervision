@@ -26,6 +26,8 @@ Environment :
 Usage :
 	python quality.py
 	python quality.py --bronze-bucket bronze --silver-bucket silver --gold-bucket gold
+	python quality.py --fetch-workers 32   # gros rattrapage : lecture bronze en parallèle
+	python quality.py --fetch-workers 1    # forcer la lecture séquentielle
 """
 
 from __future__ import annotations
@@ -35,6 +37,8 @@ import io
 import json
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -84,6 +88,12 @@ def build_parser() -> argparse.ArgumentParser:
 		type=int,
 		default=int(os.environ.get("ETL_MAX_OBJECTS", "0")),
 		help="Nombre max d'objets bronze traités par exécution (0 = pas de limite).",
+	)
+	parser.add_argument(
+		"--fetch-workers",
+		type=int,
+		default=int(os.environ.get("ETL_FETCH_WORKERS", "16")),
+		help="Téléchargements bronze menés en parallèle (1 = séquentiel). Défaut 16.",
 	)
 	return parser
 
@@ -191,6 +201,48 @@ def fetch_record(s3: Any, bucket: str, key: str) -> dict[str, Any]:
 	if not isinstance(payload, dict):
 		return {"_parse_error": "objet JSON inattendu (pas un dict)", "_raw_line": text}
 	return payload
+
+
+def fetch_records(
+	s3: Any,
+	bucket: str,
+	keys: list[str],
+	*,
+	workers: int,
+) -> tuple[list[tuple[str, dict[str, Any]]], int]:
+	"""Télécharge et décode les objets bronze `keys`, en parallèle sur `workers`
+	threads (le coût dominant d'un gros run est le round-trip réseau, pas le CPU).
+
+	Renvoie (records, erreurs_lecture) :
+	  - records : (clé, mesure décodée), réordonnés dans l'ordre de `keys` pour que
+	    la suite du traitement soit déterministe quel que soit l'ordre d'arrivée ;
+	  - erreurs_lecture : nombre d'objets dont le GET S3 a échoué. Ces clés sont
+	    simplement omises (comme dans la version séquentielle) : non marquées
+	    traitées, elles repasseront au prochain run.
+
+	Une erreur de décodage (JSON invalide, pas un dict) n'est PAS une erreur de
+	lecture : fetch_record la renvoie comme {"_parse_error": ...} et la clé part
+	en quarantaine, donc reste comptée dans records.
+	"""
+	if not keys:
+		return [], 0
+
+	workers = max(1, min(workers, len(keys)))
+	decoded: dict[str, dict[str, Any]] = {}
+	fetch_errors = 0
+
+	with ThreadPoolExecutor(max_workers=workers) as pool:
+		futures = {pool.submit(fetch_record, s3, bucket, key): key for key in keys}
+		for future in as_completed(futures):
+			key = futures[future]
+			try:
+				decoded[key] = future.result()
+			except (BotoCoreError, ClientError) as exc:
+				fetch_errors += 1
+				print(f"{key} : lecture impossible, {exc}")
+
+	ordered = [(key, decoded[key]) for key in keys if key in decoded]
+	return ordered, fetch_errors
 
 
 # ---------------------------------------------------------------- normalisation
@@ -489,6 +541,13 @@ def process_batch(
 		return 0, quarantine_count
 
 	silver_df = pd.DataFrame(silver_rows)
+	# Force les colonnes numériques en float64 : si un lot ne contient QUE des
+	# valeurs nulles (l'API mock injecte des null en rafale), pandas laisserait la
+	# colonne en dtype object rempli de None, et .abs()/.mean() en aval planteraient
+	# ("bad operand type for abs(): 'NoneType'"). errors="coerce" -> NaN.
+	for column in NUMERIC_COLUMNS:
+		if column in silver_df.columns:
+			silver_df[column] = pd.to_numeric(silver_df[column], errors="coerce")
 	silver_df = add_simple_anomalies(silver_df)
 
 	stamp = run_stamp()
@@ -512,21 +571,38 @@ def process_batch(
 	return len(silver_rows), quarantine_count
 
 
-def main(argv: list[str] | None = None) -> int:
+@dataclass
+class RunResult:
+	"""Compteurs d'un passage. `ok=False` + `message` sur les échecs de préparation
+	(env MinIO manquant, bucket indisponible, listing bronze impossible)."""
+	ok: bool
+	objets_bronze: int = 0
+	nouveaux: int = 0
+	lus: int = 0
+	erreurs_lecture: int = 0
+	lignes_silver: int = 0
+	quarantined: int = 0
+	processed_total: int = 0
+	message: str = ""
+
+
+def run(argv: list[str] | None = None) -> RunResult:
+	"""Un passage bronze -> silver/gold. N'imprime que les erreurs de lecture par
+	clé (dans fetch_records) ; le résumé et le code de sortie sont l'affaire de
+	main(). bootstrap.py appelle run() en boucle et exploite les compteurs
+	(objets_bronze, processed_total) pour suivre l'avancement du rattrapage."""
 	args = build_parser().parse_args(argv)
 
 	try:
 		s3 = storage.get_s3()
 	except KeyError as exc:
-		print(f"Variable d'environnement MinIO manquante : {exc}")
-		return 1
+		return RunResult(ok=False, message=f"Variable d'environnement MinIO manquante : {exc}")
 
 	for bucket in (args.silver_bucket, args.gold_bucket, args.quarantine_bucket, args.manifests_bucket):
 		try:
 			ensure_bucket(s3, bucket)
 		except (BotoCoreError, ClientError) as exc:
-			print(f"Bucket '{bucket}' indisponible : {exc}")
-			return 1
+			return RunResult(ok=False, message=f"Bucket '{bucket}' indisponible : {exc}")
 
 	processed = load_state(s3, args.manifests_bucket, args.state_key)
 
@@ -535,28 +611,18 @@ def main(argv: list[str] | None = None) -> int:
 			key for key in s3_list_keys(s3, args.bronze_bucket, args.bronze_prefix) if key.endswith(".json")
 		)
 	except (BotoCoreError, ClientError) as exc:
-		print(f"Impossible de lister le bucket bronze '{args.bronze_bucket}' : {exc}")
-		return 1
+		return RunResult(ok=False, message=f"Impossible de lister le bucket bronze '{args.bronze_bucket}' : {exc}")
 
 	new_keys = [key for key in all_keys if key not in processed]
 	if args.max_objects > 0:
 		new_keys = new_keys[: args.max_objects]
 
 	if not new_keys:
-		print(
-			f"Traitement terminé | objets_bronze={len(all_keys)} | nouveaux=0 | "
-			f"lignes_silver=0 | quarantined=0"
-		)
-		return 0
+		return RunResult(ok=True, objets_bronze=len(all_keys), nouveaux=0, processed_total=len(processed))
 
-	records: list[tuple[str, dict[str, Any]]] = []
-	fetch_errors = 0
-	for key in new_keys:
-		try:
-			records.append((key, fetch_record(s3, args.bronze_bucket, key)))
-		except (BotoCoreError, ClientError) as exc:
-			fetch_errors += 1
-			print(f"{key} : lecture impossible, {exc}")
+	records, fetch_errors = fetch_records(
+		s3, args.bronze_bucket, new_keys, workers=args.fetch_workers,
+	)
 
 	try:
 		pg_conn = postgres_writer.make_pg_connection()
@@ -582,11 +648,36 @@ def main(argv: list[str] | None = None) -> int:
 	processed.update(key for key, _ in records)
 	save_state(s3, args.manifests_bucket, args.state_key, processed)
 
+	return RunResult(
+		ok=True,
+		objets_bronze=len(all_keys),
+		nouveaux=len(new_keys),
+		lus=len(records),
+		erreurs_lecture=fetch_errors,
+		lignes_silver=silver_count,
+		quarantined=quarantine_count,
+		processed_total=len(processed),
+	)
+
+
+def main(argv: list[str] | None = None) -> int:
+	result = run(argv)
+	if not result.ok:
+		print(result.message)
+		return 1
+
+	if result.nouveaux == 0:
+		print(
+			f"Traitement terminé | objets_bronze={result.objets_bronze} | nouveaux=0 | "
+			f"lignes_silver=0 | quarantined=0"
+		)
+		return 0
+
 	print(
 		"Traitement terminé | "
-		f"objets_bronze={len(all_keys)} | nouveaux={len(new_keys)} | "
-		f"lus={len(records)} | erreurs_lecture={fetch_errors} | "
-		f"lignes_silver={silver_count} | quarantined={quarantine_count}"
+		f"objets_bronze={result.objets_bronze} | nouveaux={result.nouveaux} | "
+		f"lus={result.lus} | erreurs_lecture={result.erreurs_lecture} | "
+		f"lignes_silver={result.lignes_silver} | quarantined={result.quarantined}"
 	)
 	return 0
 
