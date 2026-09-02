@@ -4,6 +4,7 @@ import { isAuthenticated } from "../auth/auth";
 import LoginView from "../views/LoginView.vue";
 import DashboardView from "../views/DashboardView.vue";
 import NotFoundView from "../views/error/NotFoundView.vue";
+import SensorView from "../views/SensorView.vue";
 
 const routes = [
   { path: "/login", name: "login", component: LoginView },
@@ -12,6 +13,12 @@ const routes = [
     name: "dashboard",
     component: DashboardView,
     meta: { requiresAuth: true, nav: "Dashboard" },
+  },
+  {
+  path: "/capteurs",
+  name: "sensors",
+  component: SensorView,
+  meta: { requiresAuth: true, nav: "Capteurs" },
   },
   {
     path: "/:pathMatch(.*)*",
