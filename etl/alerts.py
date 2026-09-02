@@ -1,6 +1,6 @@
 """
 EV-032 : collecte des alertes depuis l'API Mock IoT, table `alerts` en PostgreSQL,
-planifiée toutes les 24h avec APScheduler (upsert sur alert_id).
+planifiée à intervalle régulier avec APScheduler (upsert sur alert_id).
 
 Installation :
     pip install -r requirements.txt
@@ -18,7 +18,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from psycopg2.extras import execute_values
 
 API_BASE = os.environ.get("API_BASE", "http://10.105.200.45:8000")
-INTERVALLE_SECONDES = int(os.environ.get("ALERTS_INTERVALLE_SECONDES", "60"))
+INTERVALLE_SECONDES = int(os.environ.get("ALERTS_INTERVALLE_SECONDES", "300"))
 
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = int(os.environ.get("POSTGRES_PORT", "5432"))
@@ -111,7 +111,7 @@ def marquer_vivant():
 
 def cycle_alertes():
     """Un cycle : récupère toutes les alertes de l'API, upsert en base.
-    Appelé automatiquement par le planificateur toutes les 24h."""
+    Appelé automatiquement par le planificateur toutes les INTERVALLE_SECONDES."""
     alertes = recuperer_alertes()
 
     conn = se_connecter_postgres()
