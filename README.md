@@ -102,7 +102,7 @@ CI/CD GitHub Actions sur push `dev` : voir [`infra/DEPLOYMENT.md`](infra/DEPLOYM
 
 ## Pistes connues (non traitées)
 
-- **Migrations DB** : le schéma vit dans [`infra/postgres/init.sql`](infra/postgres/init.sql)
+- **Migrations DB** : le schéma vit dans [`infra/postgres/init/`](infra/postgres/init/)
   (fait foi), les modèles SQLAlchemy ne couvrent que `users`. Introduire Alembic
   quand le modèle se stabilise.
 - **Endpoints `sites`** : `etl/collect.py` appelle `/api/v1/sites` et

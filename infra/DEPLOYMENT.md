@@ -176,7 +176,7 @@ compose.yaml              # Orchestration de TOUTE la stack (racine)
 
 infra/
 ├── nginx.conf            # Config serveur web (copiée dans l'image front)
-├── postgres/init.sql     # Schéma initial
+├── postgres/init/        # Schéma (rejoué dans l'ordre alphabétique)
 ├── minio/init-buckets.sh # Création des buckets
 ├── audit-sync/           # Script de synchro Azure
 └── traefik/              # Reverse proxy (profil "proxy")

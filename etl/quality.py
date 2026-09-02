@@ -1,9 +1,11 @@
-"""Bronze -> Silver/Gold ETL for EnerVision, 100 % sur MinIO (S3-compatible).
+"""Bronze -> Silver/Gold ETL for EnerVision, sur MinIO (S3-compatible) + PostgreSQL.
 
 Lit les objets de mesure bruts du bucket bronze (un objet JSON par mesure, écrit par
 collect.py), valide et normalise, écrit des batches silver en Parquet, reconstruit les
 agrégats gold daily/hourly, et pousse les enregistrements invalides en quarantaine.
-Aucune donnée n'est écrite sur disque : buckets uniquement.
+MinIO reste la source de vérité ; les mêmes lignes silver/gold sont répliquées dans
+PostgreSQL (voir postgres_writer.py) pour être interrogeables en SQL par l'API/dashboard.
+Une panne PostgreSQL n'interrompt pas l'écriture MinIO (voir process_batch).
 
 Buckets :
 	bronze       objets bruts        {site_id}/{YYYY-MM-DD}/{HHMMSS}.json
@@ -12,10 +14,14 @@ Buckets :
 	quarantine   rejets              {YYYY-MM-DD}/{source_key}__{stamp}.json  (1 objet / rejet)
 	manifests    état incrémental    etl_state.json  (liste des clés bronze déjà traitées)
 
+Tables PostgreSQL (infra/postgres/init/02_silver.sql, 03_gold.sql) :
+	measurements_silver, aggregates_gold_daily, aggregates_gold_hourly
+
 Environment :
 	MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY          (obligatoires)
 	MINIO_BUCKET_BRONZE / _SILVER / _GOLD / _QUARANTINE / _MANIFESTS  (défauts homonymes)
 	MINIO_USE_SSL                                              (défaut "false")
+	POSTGRES_HOST / _PORT / _DB / _USER / _PASSWORD             (voir postgres_writer.py)
 
 Usage :
 	python quality.py
@@ -33,8 +39,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
+import psycopg2
 from botocore.exceptions import BotoCoreError, ClientError
 
+import postgres_writer
 import storage
 
 
@@ -397,6 +405,7 @@ def rebuild_gold_partition(
 	gold_bucket: str,
 	record_date: Any,
 	site_id: Any,
+	pg_conn: Any = None,
 ) -> None:
 	"""Recalcule le gold daily/hourly d'une partition (record_date, site_id) à partir
 	de TOUS les batches silver de cette partition, puis écrase un unique objet par grain.
@@ -412,16 +421,27 @@ def rebuild_gold_partition(
 		ignore_index=True,
 	)
 
+	daily_df = aggregate_daily(partition_df)
+	hourly_df = aggregate_hourly(partition_df)
+
 	s3_put_parquet(
 		s3, gold_bucket,
 		f"daily/record_date={record_date}/site_id={site_id}/daily.parquet",
-		aggregate_daily(partition_df),
+		daily_df,
 	)
 	s3_put_parquet(
 		s3, gold_bucket,
 		f"hourly/record_date={record_date}/site_id={site_id}/hourly.parquet",
-		aggregate_hourly(partition_df),
+		hourly_df,
 	)
+
+	if pg_conn is not None:
+		try:
+			postgres_writer.write_gold_daily(pg_conn, daily_df, record_date, site_id)
+			postgres_writer.write_gold_hourly(pg_conn, hourly_df, record_date, site_id)
+		except psycopg2.Error as exc:
+			pg_conn.rollback()
+			print(f"PostgreSQL : écriture gold ({record_date}, {site_id}) échouée, {exc}")
 
 
 def write_quarantine(s3: Any, bucket: str, bad_rows: list[dict[str, Any]]) -> int:
@@ -450,6 +470,7 @@ def process_batch(
 	silver_bucket: str,
 	gold_bucket: str,
 	quarantine_bucket: str,
+	pg_conn: Any = None,
 ) -> tuple[int, int]:
 	"""records : (clé bronze, mesure décodée). Renvoie (lignes_silver, quarantined)."""
 	silver_rows: list[dict[str, Any]] = []
@@ -477,9 +498,16 @@ def process_batch(
 		s3_put_parquet(s3, silver_bucket, key, group)
 		touched_partitions.add((record_date, site_id))
 
+	if pg_conn is not None:
+		try:
+			postgres_writer.write_silver(pg_conn, silver_df)
+		except psycopg2.Error as exc:
+			pg_conn.rollback()
+			print(f"PostgreSQL : écriture silver échouée, {exc}")
+
 	# Gold recalculé depuis l'intégralité du silver de chaque partition touchée.
 	for record_date, site_id in sorted(touched_partitions, key=lambda item: (str(item[0]), str(item[1]))):
-		rebuild_gold_partition(s3, silver_bucket, gold_bucket, record_date, site_id)
+		rebuild_gold_partition(s3, silver_bucket, gold_bucket, record_date, site_id, pg_conn=pg_conn)
 
 	return len(silver_rows), quarantine_count
 
@@ -530,13 +558,24 @@ def main(argv: list[str] | None = None) -> int:
 			fetch_errors += 1
 			print(f"{key} : lecture impossible, {exc}")
 
-	silver_count, quarantine_count = process_batch(
-		s3,
-		records,
-		silver_bucket=args.silver_bucket,
-		gold_bucket=args.gold_bucket,
-		quarantine_bucket=args.quarantine_bucket,
-	)
+	try:
+		pg_conn = postgres_writer.make_pg_connection()
+	except (KeyError, psycopg2.OperationalError) as exc:
+		print(f"PostgreSQL indisponible, écriture désactivée pour ce run : {exc}")
+		pg_conn = None
+
+	try:
+		silver_count, quarantine_count = process_batch(
+			s3,
+			records,
+			silver_bucket=args.silver_bucket,
+			gold_bucket=args.gold_bucket,
+			quarantine_bucket=args.quarantine_bucket,
+			pg_conn=pg_conn,
+		)
+	finally:
+		if pg_conn is not None:
+			pg_conn.close()
 
 	# Un objet lu (même mis en quarantaine) est marqué traité : pas de nouvelle tentative.
 	# Les objets dont la lecture S3 a échoué ne sont PAS marqués et repasseront au prochain run.
