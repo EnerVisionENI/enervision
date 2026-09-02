@@ -55,7 +55,8 @@ Le serveur (et donc le runner) doit avoir :
    - `api.env` — `JWT_SECRET_KEY`, `INGEST_API_KEY`, `CORS_ORIGINS`, … (voir `.env.example`)
    - `minio.env` — `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`
    - `audit-sync.env` — variables `AZURE_STORAGE_*`, `RCLONE_CRYPT_PASSWORD_RAW`, `SYNC_INTERVAL_SECONDES`
-   - `etl.env` — surcharges ETL éventuelles (`API_BASE`, `INTERVALLE_SECONDES`) ; peut être vide
+   - `etl.env` — surcharges ETL éventuelles (`API_BASE`, `INTERVALLE_SECONDES`,
+     `GOLD_CRON_HORAIRE`, `GOLD_CRON_QUOTIDIEN`) ; peut être vide
 
    Les clés en double entre fichiers (`POSTGRES_*`) doivent porter les mêmes valeurs.
 

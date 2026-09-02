@@ -1,8 +1,16 @@
 """Bronze -> Silver/Gold ETL for EnerVision, sur MinIO (S3-compatible) + PostgreSQL.
 
 Lit les objets de mesure bruts du bucket bronze (un objet JSON par mesure, écrit par
-collect.py), valide et normalise, écrit des batches silver en Parquet, reconstruit les
-agrégats gold daily/hourly, et pousse les enregistrements invalides en quarantaine.
+collect.py), valide et normalise, écrit des batches silver en Parquet, et pousse les
+enregistrements invalides en quarantaine.
+
+Les agrégats gold daily/hourly ne sont PAS recalculés dans cette boucle. Recalculer une
+partition relit l'intégralité de son silver : à chaque minute, le cycle débordait des 60 s
+et la collecte silver retombait à une mesure toutes les 2 min. Chaque partition
+(record_date, site_id) touchée est donc empilée dans manifests/gold_pending.json, et un run
+dédié `--gold-only` (planifié à l'heure et au jour par collect.py) la recalcule — le gold
+n'est de toute façon consommé qu'aux grains horaire et journalier.
+
 MinIO reste la source de vérité ; les mêmes lignes silver/gold sont répliquées dans
 PostgreSQL (voir postgres_writer.py) pour être interrogeables en SQL par l'API/dashboard.
 Une panne PostgreSQL n'interrompt pas l'écriture MinIO (voir process_batch).
@@ -12,7 +20,8 @@ Buckets :
 	silver       batches nettoyés    record_date=…/site_id=…/batch_*.parquet
 	gold         agrégats            daily|hourly/record_date=…/site_id=…/*.parquet
 	quarantine   rejets              {YYYY-MM-DD}/{source_key}__{stamp}.json  (1 objet / rejet)
-	manifests    état incrémental    etl_state.json  (liste des clés bronze déjà traitées)
+	manifests    état incrémental    etl_state.json      (clés bronze déjà traitées)
+	manifests    gold à recalculer   gold_pending.json   (partitions silver modifiées)
 
 Tables PostgreSQL (infra/postgres/init/02_silver.sql, 03_gold.sql) :
 	measurements_silver, aggregates_gold_daily, aggregates_gold_hourly
@@ -24,7 +33,10 @@ Environment :
 	POSTGRES_HOST / _PORT / _DB / _USER / _PASSWORD             (voir postgres_writer.py)
 
 Usage :
-	python quality.py
+	python quality.py                                    # bronze -> silver, gold différé
+	python quality.py --with-gold                        # ... + gold recalculé dans la foulée
+	python quality.py --gold-only                        # gold des partitions en attente
+	python quality.py --gold-only --gold-date 2026-09-01 # ... + toute une journée (filet)
 	python quality.py --bronze-bucket bronze --silver-bucket silver --gold-bucket gold
 """
 
@@ -79,6 +91,25 @@ def build_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--quarantine-bucket", default=os.environ.get("MINIO_BUCKET_QUARANTINE", "quarantine"))
 	parser.add_argument("--manifests-bucket", default=os.environ.get("MINIO_BUCKET_MANIFESTS", "manifests"))
 	parser.add_argument("--state-key", default=os.environ.get("ETL_STATE_KEY", "etl_state.json"))
+	parser.add_argument(
+		"--pending-gold-key",
+		default=os.environ.get("ETL_PENDING_GOLD_KEY", "gold_pending.json"),
+	)
+	parser.add_argument(
+		"--with-gold",
+		action="store_true",
+		help="Recalcule le gold à la fin du run silver au lieu de le différer (run manuel ponctuel).",
+	)
+	parser.add_argument(
+		"--gold-only",
+		action="store_true",
+		help="Ne lit pas le bronze : recalcule seulement le gold des partitions en attente.",
+	)
+	parser.add_argument(
+		"--gold-date",
+		default=None,
+		help="Avec --gold-only : recalcule aussi TOUTES les partitions de cette journée (YYYY-MM-DD).",
+	)
 	parser.add_argument(
 		"--max-objects",
 		type=int,
@@ -170,6 +201,68 @@ def save_state(s3: Any, bucket: str, key: str, processed: set[str]) -> None:
 		"processed": sorted(processed),
 	}
 	s3_put_bytes(s3, bucket, key, json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"), JSON_CONTENT_TYPE)
+
+
+# -------------------------------------------------------- gold en attente
+
+def load_pending_gold(s3: Any, bucket: str, key: str) -> set[tuple[str, str]]:
+	"""Partitions (record_date, site_id) dont le silver a bougé depuis le dernier recalcul gold.
+	Objet distinct de l'état incrémental : la boucle silver (chaque minute) et le recalcul gold
+	(chaque heure) écrivent chacun le leur, un run gold ne doit pas pouvoir réécrire — ni perdre —
+	la liste des clés bronze déjà traitées."""
+	body = s3_get_bytes(s3, bucket, key)
+	if body is None:
+		return set()
+	try:
+		raw = json.loads(body.decode("utf-8"))
+	except json.JSONDecodeError:
+		return set()
+	partitions = raw.get("partitions", [])
+	if not isinstance(partitions, list):
+		return set()
+	return {
+		(str(item[0]), str(item[1]))
+		for item in partitions
+		if isinstance(item, (list, tuple)) and len(item) == 2
+	}
+
+
+def save_pending_gold(s3: Any, bucket: str, key: str, partitions: set[tuple[str, str]]) -> None:
+	payload = {
+		"updated_at": utc_now_iso(),
+		"partitions_count": len(partitions),
+		"partitions": [list(partition) for partition in sorted(partitions)],
+	}
+	corps = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+	s3_put_bytes(s3, bucket, key, corps, JSON_CONTENT_TYPE)
+
+
+def add_pending_gold(s3: Any, bucket: str, key: str, partitions: set[tuple[str, str]]) -> None:
+	"""Relit l'objet avant d'écrire : le run gold en tourne peut être en train d'en retirer."""
+	if not partitions:
+		return
+	save_pending_gold(s3, bucket, key, load_pending_gold(s3, bucket, key) | set(partitions))
+
+
+def remove_pending_gold(s3: Any, bucket: str, key: str, partitions: set[tuple[str, str]]) -> None:
+	"""Idem : on retire seulement ce qui vient d'être recalculé, sans écraser ce que la
+	boucle silver a pu empiler pendant le recalcul."""
+	if not partitions:
+		return
+	save_pending_gold(s3, bucket, key, load_pending_gold(s3, bucket, key) - set(partitions))
+
+
+def partitions_for_date(s3: Any, silver_bucket: str, record_date: str) -> set[tuple[str, str]]:
+	"""Toutes les partitions silver d'une journée. Sert de filet au recalcul quotidien :
+	une partition perdue (run gold en échec, redémarrage entre l'écriture silver et celle de
+	l'état) serait sinon jamais reprise."""
+	prefix = f"record_date={record_date}/"
+	partitions: set[tuple[str, str]] = set()
+	for key in s3_list_keys(s3, silver_bucket, prefix):
+		segments = key.split("/")
+		if len(segments) >= 2 and segments[1].startswith("site_id="):
+			partitions.add((str(record_date), segments[1][len("site_id="):]))
+	return partitions
 
 
 # ------------------------------------------------------------------ bronze read
@@ -471,8 +564,14 @@ def process_batch(
 	gold_bucket: str,
 	quarantine_bucket: str,
 	pg_conn: Any = None,
-) -> tuple[int, int]:
-	"""records : (clé bronze, mesure décodée). Renvoie (lignes_silver, quarantined)."""
+	rebuild_gold: bool = False,
+) -> tuple[int, int, set[tuple[str, str]]]:
+	"""records : (clé bronze, mesure décodée).
+	Renvoie (lignes_silver, quarantined, partitions touchées).
+
+	rebuild_gold=False par défaut : le gold des partitions renvoyées est recalculé plus tard
+	par un run --gold-only, pour que ce chemin-là — appelé chaque minute — reste borné par le
+	volume du micro-batch et non par la taille du silver déjà accumulé."""
 	silver_rows: list[dict[str, Any]] = []
 	quarantine_rows: list[dict[str, Any]] = []
 
@@ -486,17 +585,17 @@ def process_batch(
 	quarantine_count = write_quarantine(s3, quarantine_bucket, quarantine_rows)
 
 	if not silver_rows:
-		return 0, quarantine_count
+		return 0, quarantine_count, set()
 
 	silver_df = pd.DataFrame(silver_rows)
 	silver_df = add_simple_anomalies(silver_df)
 
 	stamp = run_stamp()
-	touched_partitions: set[tuple[Any, Any]] = set()
+	touched_partitions: set[tuple[str, str]] = set()
 	for (record_date, site_id), group in silver_df.groupby(["record_date", "site_id"], dropna=False):
 		key = f"record_date={record_date}/site_id={site_id}/batch_{stamp}.parquet"
 		s3_put_parquet(s3, silver_bucket, key, group)
-		touched_partitions.add((record_date, site_id))
+		touched_partitions.add((str(record_date), str(site_id)))
 
 	if pg_conn is not None:
 		try:
@@ -506,28 +605,70 @@ def process_batch(
 			print(f"PostgreSQL : écriture silver échouée, {exc}")
 
 	# Gold recalculé depuis l'intégralité du silver de chaque partition touchée.
-	for record_date, site_id in sorted(touched_partitions, key=lambda item: (str(item[0]), str(item[1]))):
-		rebuild_gold_partition(s3, silver_bucket, gold_bucket, record_date, site_id, pg_conn=pg_conn)
+	if rebuild_gold:
+		for record_date, site_id in sorted(touched_partitions):
+			rebuild_gold_partition(s3, silver_bucket, gold_bucket, record_date, site_id, pg_conn=pg_conn)
 
-	return len(silver_rows), quarantine_count
+	return len(silver_rows), quarantine_count, touched_partitions
 
 
-def main(argv: list[str] | None = None) -> int:
-	args = build_parser().parse_args(argv)
-
+def run_gold(s3: Any, args: argparse.Namespace) -> int:
+	"""Recalcule le gold des partitions en attente (et, avec --gold-date, de toute une journée).
+	Une partition en échec n'est pas retirée de la file : elle repassera au prochain run plutôt
+	que de laisser un agrégat figé sur un silver déjà plus récent."""
 	try:
-		s3 = storage.get_s3()
-	except KeyError as exc:
-		print(f"Variable d'environnement MinIO manquante : {exc}")
+		partitions = load_pending_gold(s3, args.manifests_bucket, args.pending_gold_key)
+	except (BotoCoreError, ClientError) as exc:
+		print(f"File des partitions gold illisible : {exc}")
 		return 1
 
-	for bucket in (args.silver_bucket, args.gold_bucket, args.quarantine_bucket, args.manifests_bucket):
+	if args.gold_date:
 		try:
-			ensure_bucket(s3, bucket)
+			partitions |= partitions_for_date(s3, args.silver_bucket, args.gold_date)
 		except (BotoCoreError, ClientError) as exc:
-			print(f"Bucket '{bucket}' indisponible : {exc}")
-			return 1
+			print(f"Partitions silver du {args.gold_date} illisibles : {exc}")
 
+	if not partitions:
+		print("Recalcul gold terminé | partitions=0")
+		return 0
+
+	try:
+		pg_conn = postgres_writer.make_pg_connection()
+	except (KeyError, psycopg2.OperationalError) as exc:
+		print(f"PostgreSQL indisponible, écriture désactivée pour ce run : {exc}")
+		pg_conn = None
+
+	rebuilt: set[tuple[str, str]] = set()
+	failures = 0
+	try:
+		for record_date, site_id in sorted(partitions):
+			try:
+				rebuild_gold_partition(
+					s3, args.silver_bucket, args.gold_bucket, record_date, site_id, pg_conn=pg_conn
+				)
+				rebuilt.add((record_date, site_id))
+			# Filet volontairement large : un parquet silver illisible (pyarrow) ne doit pas
+			# priver les autres partitions de leur recalcul. Le run est idempotent, la partition
+			# reste en attente et repassera.
+			except Exception as exc:
+				failures += 1
+				print(f"Partition gold ({record_date}, {site_id}) en échec, laissée en attente : {exc}")
+	finally:
+		if pg_conn is not None:
+			pg_conn.close()
+
+	remove_pending_gold(s3, args.manifests_bucket, args.pending_gold_key, rebuilt)
+
+	print(
+		"Recalcul gold terminé | "
+		f"partitions={len(partitions)} | recalculées={len(rebuilt)} | échecs={failures}"
+	)
+	return 0
+
+
+def run_silver(s3: Any, args: argparse.Namespace) -> int:
+	"""Bronze -> silver. Le gold des partitions touchées est empilé pour un run --gold-only,
+	sauf --with-gold (exécution manuelle ponctuelle où l'on veut le résultat complet tout de suite)."""
 	processed = load_state(s3, args.manifests_bucket, args.state_key)
 
 	try:
@@ -565,17 +706,28 @@ def main(argv: list[str] | None = None) -> int:
 		pg_conn = None
 
 	try:
-		silver_count, quarantine_count = process_batch(
+		silver_count, quarantine_count, touched_partitions = process_batch(
 			s3,
 			records,
 			silver_bucket=args.silver_bucket,
 			gold_bucket=args.gold_bucket,
 			quarantine_bucket=args.quarantine_bucket,
 			pg_conn=pg_conn,
+			rebuild_gold=args.with_gold,
 		)
 	finally:
 		if pg_conn is not None:
 			pg_conn.close()
+
+	pending_count = 0
+	if touched_partitions and not args.with_gold:
+		try:
+			add_pending_gold(s3, args.manifests_bucket, args.pending_gold_key, touched_partitions)
+			pending_count = len(touched_partitions)
+		except (BotoCoreError, ClientError) as exc:
+			# Le silver est déjà écrit : on ne rejoue pas le batch, le recalcul quotidien
+			# (--gold-date) rattrapera la partition oubliée.
+			print(f"File des partitions gold non mise à jour : {exc}")
 
 	# Un objet lu (même mis en quarantaine) est marqué traité : pas de nouvelle tentative.
 	# Les objets dont la lecture S3 a échoué ne sont PAS marqués et repasseront au prochain run.
@@ -586,9 +738,31 @@ def main(argv: list[str] | None = None) -> int:
 		"Traitement terminé | "
 		f"objets_bronze={len(all_keys)} | nouveaux={len(new_keys)} | "
 		f"lus={len(records)} | erreurs_lecture={fetch_errors} | "
-		f"lignes_silver={silver_count} | quarantined={quarantine_count}"
+		f"lignes_silver={silver_count} | quarantined={quarantine_count} | "
+		f"gold_en_attente={pending_count}"
 	)
 	return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+	args = build_parser().parse_args(argv)
+
+	try:
+		s3 = storage.get_s3()
+	except KeyError as exc:
+		print(f"Variable d'environnement MinIO manquante : {exc}")
+		return 1
+
+	for bucket in (args.silver_bucket, args.gold_bucket, args.quarantine_bucket, args.manifests_bucket):
+		try:
+			ensure_bucket(s3, bucket)
+		except (BotoCoreError, ClientError) as exc:
+			print(f"Bucket '{bucket}' indisponible : {exc}")
+			return 1
+
+	if args.gold_only:
+		return run_gold(s3, args)
+	return run_silver(s3, args)
 
 
 if __name__ == "__main__":
