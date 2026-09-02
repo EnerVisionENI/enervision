@@ -10,7 +10,7 @@ Ce skill s'applique à toute nouvelle route ou ressource ajoutée dans `api/`. L
 ## 1. Modèle (si nouvelle table)
 
 - SQLAlchemy 2.0 style dans [api/models.py](api/models.py) : `Mapped[...]` + `mapped_column(...)`, hérite de `Base` (`api/database.py`).
-- La table Postgres elle-même est créée par `infra/postgres/init.sql`, pas par SQLAlchemy — un modèle en lecture seule (alimenté par un job `etl/`) ne redéclare pas les clés étrangères vers des tables gérées ailleurs (voir le commentaire sur `Alert.site_id` dans [models.py](api/models.py)).
+- La table Postgres elle-même est créée par un script dans `infra/postgres/init/`, pas par SQLAlchemy — un modèle en lecture seule (alimenté par un job `etl/`) ne redéclare pas les clés étrangères vers des tables gérées ailleurs (voir le commentaire sur `Alert.site_id` dans [models.py](api/models.py)).
 
 ## 2. Schéma Pydantic
 
