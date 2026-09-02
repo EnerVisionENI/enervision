@@ -39,6 +39,74 @@ services:
           cpus: "0.5"
           memory: 256M
 
+  etl-alerts:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: enervision-etl-alerts
+    command: ["python", "alerts.py"]
+    environment:
+      - API_BASE=http://10.105.200.45:8000
+      - PYTHONUNBUFFERED=1
+      - ALERTS_INTERVALLE_SECONDES=60
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    env_file:
+      - ./.env
+      - ../infra/postgres/.env
+    restart: unless-stopped
+    networks:
+      - enervision-network
+    healthcheck:
+      interval: 60s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  etl-sites:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: enervision-etl-sites
+    command: ["python", "sites.py"]
+    environment:
+      - API_BASE=http://10.105.200.45:8000
+      - PYTHONUNBUFFERED=1
+      - SITES_INTERVALLE_SECONDES=60
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    env_file:
+      - ./.env
+      - ../infra/postgres/.env
+    restart: unless-stopped
+    networks:
+      - enervision-network
+    healthcheck:
+      interval: 60s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
 networks:
   enervision-network:
     external: true
