@@ -1,6 +1,9 @@
 name: Trivy Docker Image Scan
 
 on:
+  pull_request:
+  push:
+    branches: [main, dev]
   workflow_run:
     workflows: ["EV-003 - ETL build et test"]
     types: [completed]
