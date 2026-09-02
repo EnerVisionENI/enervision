@@ -77,6 +77,9 @@ pytest api/tests
 # ETL
 pip install -r etl/requirements-dev.txt
 cd etl && pytest
+
+# Front
+cd front && npm install && npm test
 ```
 
 Les `requirements.txt` ne contiennent que le runtime (ce qui est installé dans les
@@ -105,4 +108,4 @@ CI/CD GitHub Actions sur push `dev` : voir [`infra/DEPLOYMENT.md`](infra/DEPLOYM
 - **Endpoints `sites`** : `etl/collect.py` appelle `/api/v1/sites` et
   `/api/v1/sites/{id}/current`, pas encore implémentés côté API. `etl/sites.py`
   est un stub (service `etl-sites` en `restart: "no"` en attendant).
-- **Tests front** : aucun (le CI ne fait qu'un build).
+- **Tests front dans la CI** : `npm test` (Vitest) existe et passe en local, mais `.github/workflows/deploy-dev.yml` ne fait encore qu'un `npm run build` — l'ajouter au job `build-front`.
