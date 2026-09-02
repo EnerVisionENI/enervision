@@ -44,7 +44,7 @@ def make_user(db_session, email: str, password: str, role: str) -> User:
 
 
 def auth_headers(client: TestClient, email: str, password: str) -> dict[str, str]:
-    response = client.post("/auth/login", data={"username": email, "password": password})
+    response = client.post("/api/v1/auth/login", data={"username": email, "password": password})
     assert response.status_code == 200, response.text
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}

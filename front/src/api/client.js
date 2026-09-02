@@ -2,8 +2,11 @@ import axios from "axios";
 import { getToken, logout } from "../auth/auth";
 import router from "../router";
 
+// En prod, le front est servi par Nginx qui proxifie /api vers le service api.
+// En dev, vite.config.js proxifie /api vers http://localhost:8000.
+// VITE_API_URL permet de forcer une URL absolue si besoin.
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || "http://localhost:8000/",
+  baseURL: import.meta.env.VITE_API_URL || "/api/v1",
 });
 
 // Ajoute le token à chaque requête

@@ -32,10 +32,10 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-import boto3
 import pandas as pd
-from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
+
+import storage
 
 
 NUMERIC_COLUMNS = [
@@ -89,20 +89,6 @@ def run_stamp() -> str:
 
 
 # --------------------------------------------------------------------------- S3
-
-def make_s3_client() -> Any:
-	"""Client S3 pointé sur MinIO, même configuration que collect.py."""
-	endpoint = os.environ["MINIO_ENDPOINT"]
-	use_ssl = os.environ.get("MINIO_USE_SSL", "false").lower() == "true"
-	return boto3.client(
-		"s3",
-		endpoint_url=f"{'https' if use_ssl else 'http'}://{endpoint}",
-		aws_access_key_id=os.environ["MINIO_ACCESS_KEY"],
-		aws_secret_access_key=os.environ["MINIO_SECRET_KEY"],
-		config=Config(signature_version="s3v4"),
-		region_name="us-east-1",
-	)
-
 
 def ensure_bucket(s3: Any, bucket: str) -> None:
 	"""Crée le bucket s'il n'existe pas (no-op sinon). init-buckets.sh le fait déjà
@@ -498,11 +484,11 @@ def process_batch(
 	return len(silver_rows), quarantine_count
 
 
-def main() -> int:
-	args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+	args = build_parser().parse_args(argv)
 
 	try:
-		s3 = make_s3_client()
+		s3 = storage.get_s3()
 	except KeyError as exc:
 		print(f"Variable d'environnement MinIO manquante : {exc}")
 		return 1

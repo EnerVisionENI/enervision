@@ -1,0 +1,13 @@
+# Config partagée des outils Python (api/ et etl/). Le dépôt n'est pas un package :
+# chaque service a ses propres dépendances (api/requirements*.txt, etl/requirements*.txt).
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = [".venv", "front", "infra"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+indent-style = "space"

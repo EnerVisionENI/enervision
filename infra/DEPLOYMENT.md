@@ -10,8 +10,21 @@ Le dépôt contient une pipeline GitHub Actions dans `.github/workflows/deploy-d
 Le serveur de déploiement (`10.105.200.44`) n'est joignable que depuis le réseau interne : le job `deploy`
 tourne donc sur un **runner GitHub Actions self-hosted installé directement sur ce serveur**, plutôt que sur
 un runner hébergé (`ubuntu-latest`) qui ne pourrait pas l'atteindre en SSH. Le job fait un `actions/checkout`,
-restaure les fichiers `.env` de prod depuis un dossier stable, puis lance `docker compose up -d --build`
+assemble le fichier `.env` de prod (racine) en concaténant les fichiers de secrets stockés dans un dossier
+stable, puis lance `docker compose --profile etl --profile audit --profile proxy up -d --build`
 (ou `docker-compose` si le plugin `docker compose` v2 n'est pas installé).
+
+Toute la stack est décrite dans un unique `compose.yaml` à la racine du dépôt. Les services optionnels sont
+derrière des profils Compose :
+
+| Profil | Services | |
+|--------|----------|---|
+| _(aucun)_ | `postgres`, `minio`, `minio-init`, `api`, `front` | toujours démarrés |
+| `etl`   | `etl-collect` | pipeline de collecte |
+| `audit` | `audit-sync`  | synchro MinIO → Azure Blob |
+| `proxy` | `traefik`     | reverse proxy TLS |
+
+En local : `docker compose up -d --build` suffit pour le cœur de la stack ; ajouter `--profile etl` au besoin.
 
 ### Installer le runner self-hosted sur le serveur
 
@@ -35,25 +48,36 @@ Le serveur (et donc le runner) doit avoir :
 2. Les fichiers `.env` de production stockés **en dehors du dossier de travail du runner** (`_work/...`) :
    ce dossier est recréé par `actions/checkout` au tout premier run (il vide le contenu existant avant de
    cloner, même avec `clean: false`, qui ne protège que les runs suivants une fois un `.git` déjà en place).
-   Les stocker par exemple dans `/opt/enervision-secrets/` (lisible uniquement par l'utilisateur du runner) :
-   - `/opt/enervision-secrets/postgres.env` → copié vers `infra/postgres/.env` à chaque déploiement
-   - `/opt/enervision-secrets/api.env` → copié vers `api/.env` à chaque déploiement
+   Les stocker par exemple dans `/opt/enervision-secrets/` (lisible uniquement par l'utilisateur du runner).
+   Le step *Restore production env file* du workflow concatène ces fichiers en un seul `.env` à la racine
+   du dépôt, avant `docker compose up` :
+   - `postgres.env` — `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`
+   - `api.env` — `JWT_SECRET_KEY`, `INGEST_API_KEY`, `CORS_ORIGINS`, … (voir `.env.example`)
+   - `minio.env` — `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`
+   - `audit-sync.env` — variables `AZURE_STORAGE_*`, `RCLONE_CRYPT_PASSWORD_RAW`, `SYNC_INTERVAL_SECONDES`
+   - `etl.env` — surcharges ETL éventuelles (`API_BASE`, `INTERVALLE_SECONDES`) ; peut être vide
 
-   Le step *Restore production env files* du workflow fait cette copie avant `docker compose up`.
+   Les clés en double entre fichiers (`POSTGRES_*`) doivent porter les mêmes valeurs.
 
 Première mise en place (sur le serveur) :
 
 ```bash
 mkdir -p /opt/enervision-secrets
-nano /opt/enervision-secrets/postgres.env   # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
-nano /opt/enervision-secrets/api.env        # copie de api/.env.example avec les valeurs de prod
+nano /opt/enervision-secrets/postgres.env    # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+nano /opt/enervision-secrets/api.env         # JWT_SECRET_KEY / INGEST_API_KEY / CORS_ORIGINS ...
+nano /opt/enervision-secrets/minio.env       # MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
+nano /opt/enervision-secrets/audit-sync.env  # AZURE_STORAGE_* / RCLONE_CRYPT_PASSWORD_RAW
+touch /opt/enervision-secrets/etl.env        # vide, sauf surcharge ETL
 chown -R <user_runner>:<user_runner> /opt/enervision-secrets
 chmod 700 /opt/enervision-secrets
 chmod 600 /opt/enervision-secrets/*.env
 ```
 
-Ensuite, chaque push sur `dev` refera automatiquement le `checkout`, la restauration des `.env`, puis
-`docker compose up -d --build`.
+> Les volumes `infra_pgdata` / `infra_miniodata` créés par l'ancien projet Compose `infra` sont réutilisés
+> tels quels : `compose.yaml` épingle ces noms, donc aucune migration de données n'est nécessaire.
+
+Ensuite, chaque push sur `dev` refera automatiquement le `checkout`, l'assemblage du `.env`, puis
+`docker compose --profile etl --profile audit --profile proxy up -d --build`.
 
 > Si un jour le serveur devient joignable depuis Internet (VPN site-to-site, IP publique, etc.), on peut
 > repasser le job `deploy` sur `ubuntu-latest` avec une connexion SSH classique (secrets `DEPLOY_HOST`,
@@ -77,20 +101,24 @@ cd /path/to/enervision
 
 # Donner les permissions correctes
 sudo chown -R $USER:$USER .
-chmod +x scripts/*.sh
+
+# Créer le .env racine (voir .env.example)
+cp .env.example .env && nano .env
 ```
 
 ### 3. Construire et démarrer les services
 ```bash
-# Se positionner dans le dossier infra
-cd infra
+# Depuis la racine du dépôt (compose.yaml y est détecté automatiquement)
 
-# Build et démarrage
-docker-compose up -d --build
+# Cœur de la stack
+docker compose up -d --build
+
+# Stack complète (ETL + synchro audit + proxy)
+docker compose --profile etl --profile audit --profile proxy up -d --build
 
 # Visualiser les logs
-docker-compose logs -f front
-docker-compose logs -f api
+docker compose logs -f front
+docker compose logs -f api
 ```
 
 ### 4. Accéder à l'application
@@ -102,33 +130,34 @@ Traefik:   http://localhost:8080
 
 ## Commandes utiles
 
+Toutes depuis la racine du dépôt.
+
 ### Arrêter les services
 ```bash
-cd infra
-docker-compose down
+docker compose --profile etl --profile audit --profile proxy down
 ```
 
 ### Redémarrer un service
 ```bash
-docker-compose restart front
-docker-compose restart api
+docker compose restart front
+docker compose restart api
 ```
 
-### Supprimer tout (volumes inclus)
+### Supprimer tout (volumes inclus — DESTRUCTIF)
 ```bash
-docker-compose down -v
+docker compose --profile etl --profile audit --profile proxy down -v
 ```
 
 ### Vérifier les services
 ```bash
-docker-compose ps
-docker-compose logs
+docker compose ps
+docker compose logs
 ```
 
 ### Rebuild sans cache
 ```bash
-docker-compose build --no-cache
-docker-compose up -d
+docker compose build --no-cache
+docker compose up -d
 ```
 
 ## Configuration Nginx
@@ -142,13 +171,19 @@ La configuration Nginx est dans `nginx.conf` avec :
 
 ## Structure des fichiers
 ```
-infra/
-├── docker-compose.yml    # Orchestration services
-├── nginx.conf            # Config serveur web
-└── traefik/              # Reverse proxy (optionnel)
+compose.yaml              # Orchestration de TOUTE la stack (racine)
+.env / .env.example       # Configuration unique de la stack (racine)
 
-front/
-└── Dockerfile            # Build et servir with Nginx
+infra/
+├── nginx.conf            # Config serveur web (copiée dans l'image front)
+├── postgres/init.sql     # Schéma initial
+├── minio/init-buckets.sh # Création des buckets
+├── audit-sync/           # Script de synchro Azure
+└── traefik/              # Reverse proxy (profil "proxy")
+
+api/Dockerfile            # Image API (contexte de build = racine)
+front/Dockerfile          # Build Vue + Nginx (contexte de build = racine)
+etl/Dockerfile            # Image ETL (contexte de build = etl/)
 ```
 
 ## Notes de production

@@ -16,7 +16,7 @@ settings = get_settings()
 # Ordre croissant de privilège, utilisé par require_role pour les comparaisons "au moins".
 ROLE_HIERARCHY = ("viewer", "operator", "admin")
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
 def hash_password(password: str) -> str:

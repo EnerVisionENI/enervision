@@ -1,5 +1,14 @@
-# Les scripts shell sont exécutés dans des conteneurs Linux : ils doivent garder
-# des fins de ligne LF même sur un checkout Windows (core.autocrlf=true), sinon
-# le shell voit "set -e\r" et échoue.
-*.sh   text eol=lf
-*.bash text eol=lf
+# Normalise toutes les fins de ligne en LF dans le dépôt, quel que soit l'OS du
+# checkout (core.autocrlf). Les conteneurs sont Linux : un CRLF qui traîne casse
+# un script shell ("set -e\r") et pollue les diffs Python.
+* text=auto eol=lf
+
+# Fichiers binaires : jamais de conversion.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.woff  binary
+*.woff2 binary
+*.parquet binary

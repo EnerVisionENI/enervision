@@ -2,20 +2,23 @@
 
 ## Contenu
 - `init.sql` : schéma (sites, alerts, sensors_status, users), idempotent (IF NOT EXISTS)
-- `docker-compose.yml` : service PostgreSQL 16 (alpine)
-- `.env.example` : modèle de variables d'environnement
+
+Le service `postgres` est défini dans le `compose.yaml` à la racine du dépôt ; les variables
+`POSTGRES_*` viennent du `.env` racine (voir `.env.example`).
 
 ## Déploiement
 
 ### 1. Configurer les identifiants
 \`\`\`bash
+# depuis la racine du dépôt
 cp .env.example .env
 nano .env   # changer POSTGRES_PASSWORD
 \`\`\`
 
 ### 2. Lancer
 \`\`\`bash
-docker compose up -d
+# depuis la racine du dépôt
+docker compose up -d postgres
 \`\`\`
 
 Le script `init.sql` est joué automatiquement à la première initialisation du volume `pgdata`.

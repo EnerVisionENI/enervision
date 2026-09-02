@@ -13,38 +13,23 @@ Usage :
 import hashlib
 import json
 import os
-import subprocess
-import sys
 from datetime import datetime, timezone
 
-import boto3
 import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
-from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
-API_BASE = os.environ.get("API_BASE", "http://10.105.200.45:8000")
-INTERVALLE_SECONDES = int(os.environ.get("INTERVALLE_SECONDES", "60"))
+import quality
+import storage
 
-SCRIPT_QUALITY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quality.py")
+API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
+INTERVALLE_SECONDES = int(os.environ.get("INTERVALLE_SECONDES", "60"))
 LANCER_QUALITY = os.environ.get("LANCER_QUALITY", "1") == "1"
-MINIO_ENDPOINT = os.environ["MINIO_ENDPOINT"]
-MINIO_ACCESS_KEY = os.environ["MINIO_ACCESS_KEY"]
-MINIO_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
+
 MINIO_BUCKET_BRONZE = os.environ.get("MINIO_BUCKET_BRONZE", "bronze")
 MINIO_BUCKET_AUDIT = os.environ.get("MINIO_BUCKET_AUDIT", "audit")
-MINIO_USE_SSL = os.environ.get("MINIO_USE_SSL", "false").lower() == "true"
 
 HEARTBEAT_PATH = os.environ.get("HEARTBEAT_PATH", "/tmp/heartbeat")
-
-s3 = boto3.client(
-    "s3",
-    endpoint_url=f"{'https' if MINIO_USE_SSL else 'http'}://{MINIO_ENDPOINT}",
-    aws_access_key_id=MINIO_ACCESS_KEY,
-    aws_secret_access_key=MINIO_SECRET_KEY,
-    config=Config(signature_version="s3v4"),
-    region_name="us-east-1",
-)
 
 
 def recuperer_liste_sites():
@@ -77,6 +62,7 @@ def envoyer_mesure(site_id, mesure):
     contenu = json.dumps(mesure, ensure_ascii=False).encode("utf-8")
     empreinte = hashlib.sha256(contenu).hexdigest()
 
+    s3 = storage.get_s3()
     s3.put_object(
         Bucket=MINIO_BUCKET_BRONZE,
         Key=cle,
@@ -109,19 +95,14 @@ def marquer_vivant():
 
 
 def lancer_quality():
-    """Lance quality.py (bronze -> silver/gold) juste après la collecte.
-    Une erreur du traitement ne doit pas interrompre le planificateur."""
+    """Enchaîne quality.py (bronze -> silver/gold) juste après la collecte.
+    Appel in-process : une erreur du traitement ne doit pas interrompre le planificateur."""
     try:
-        resultat = subprocess.run(
-            [sys.executable, SCRIPT_QUALITY],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        if resultat.stdout.strip():
-            print(resultat.stdout.strip())
-    except subprocess.CalledProcessError as erreur:
-        print(f"quality.py a échoué (code {erreur.returncode}) : {erreur.stderr.strip()}")
+        code = quality.main([])
+        if code != 0:
+            print(f"quality.py a terminé avec le code {code}")
+    except Exception as erreur:  # on ne tue jamais le scheduler pour une erreur de quality
+        print(f"quality.py a échoué : {erreur}")
 
 
 def cycle_collecte():

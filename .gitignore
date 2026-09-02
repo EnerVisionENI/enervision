@@ -5,8 +5,10 @@
 *.pem
 *.key
 infra/keycloak/realm-export.json
+# Certificats Let's Encrypt générés par Traefik (clés privées une fois peuplé)
+infra/traefik/acme.json
 
-# Python (api, etl, ml)
+# Python (api, etl)
 __pycache__/
 *.pyc
 *.pyo
@@ -15,8 +17,9 @@ venv/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 
-# Node / front (Vue ou React)
+# Node / front
 front/node_modules/
 front/dist/
 front/.vite/
@@ -26,31 +29,19 @@ npm-debug.log*
 # Docker
 *.pid
 
-# MLflow (artefacts locaux, pas les runs trackés)
+# MLflow (artefacts locaux)
 mlruns/
 mlartifacts/
 
-# Data locale (ne jamais commiter de données, même de test)
+# Data locale — ne jamais commiter de données (tout vit dans MinIO)
 *.parquet
 *.jsonl
 data/
 tmp/
-etl/silver/
-etl/gold/
-etl/quarantine/
-etl/manifests/
+bronze/
 
 # IDE / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-
-# Données collectées par le script ETL, générées localement,ne doivent jamais partir sur Git,
-# uniquement le code qui les produit
-bronze/
-__pycache__/
-*.pyc
-.env
-.git/
- 

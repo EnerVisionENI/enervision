@@ -1,0 +1,204 @@
+# Stack EnerVision complète — un seul fichier, une seule commande.
+#
+#   docker compose up -d --build                 # cœur : postgres, minio, api, front
+#   docker compose --profile etl up -d --build   # + pipeline ETL
+#   docker compose --profile etl --profile audit --profile proxy up -d --build   # tout
+#
+# Toutes les variables sensibles viennent de .env à la racine (voir .env.example).
+
+name: enervision
+
+services:
+  # --------------------------------------------------------------------------
+  # Infrastructure (toujours démarrée)
+  # --------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: ev006-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - enervision-network
+
+  minio:
+    image: minio/minio:latest
+    container_name: enervision-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    networks:
+      - enervision-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: enervision-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    entrypoint: ["/bin/sh", "/init-buckets.sh"]
+    volumes:
+      - ./infra/minio/init-buckets.sh:/init-buckets.sh:ro
+    networks:
+      - enervision-network
+    restart: "no"
+
+  # --------------------------------------------------------------------------
+  # Application (toujours démarrée)
+  # --------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: enervision-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      ENVIRONMENT: production
+      # Réseau interne Compose : écrase localhost:5433 hérité de .env.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - enervision-network
+    restart: unless-stopped
+
+  front:
+    build:
+      context: .
+      dockerfile: front/Dockerfile
+    container_name: enervision-front
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: production
+    networks:
+      - enervision-network
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Pipeline ETL — profile "etl"
+  # --------------------------------------------------------------------------
+  etl-collect:
+    build:
+      context: ./etl
+      dockerfile: Dockerfile
+    container_name: enervision-etl-collect
+    profiles: ["etl"]
+    # Aucun volume : bronze, silver, gold, quarantine et l'état incrémental
+    # vivent tous dans MinIO. Rien n'est écrit sur le disque hôte.
+    env_file:
+      - .env
+    environment:
+      API_BASE: ${API_BASE:-http://10.105.200.45:8000}
+      INTERVALLE_SECONDES: ${INTERVALLE_SECONDES:-60}
+      PYTHONUNBUFFERED: "1"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET_BRONZE: bronze
+      MINIO_BUCKET_SILVER: silver
+      MINIO_BUCKET_GOLD: gold
+      MINIO_BUCKET_QUARANTINE: quarantine
+      MINIO_BUCKET_MANIFESTS: manifests
+      MINIO_BUCKET_AUDIT: audit
+      MINIO_USE_SSL: "false"
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - enervision-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # --------------------------------------------------------------------------
+  # Synchro audit -> Azure Blob — profile "audit"
+  # --------------------------------------------------------------------------
+  audit-sync:
+    image: rclone/rclone:latest
+    container_name: enervision-audit-sync
+    profiles: ["audit"]
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - .env
+    entrypoint: ["/bin/sh", "/sync-audit-to-azure.sh"]
+    volumes:
+      - ./infra/audit-sync/sync-audit-to-azure.sh:/sync-audit-to-azure.sh:ro
+    networks:
+      - enervision-network
+
+  # --------------------------------------------------------------------------
+  # Reverse proxy Traefik — profile "proxy"
+  # --------------------------------------------------------------------------
+  traefik:
+    image: traefik:v2.10
+    container_name: enervision-traefik
+    profiles: ["proxy"]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./infra/traefik/traefik.yml:/traefik.yml:ro
+      - ./infra/traefik/acme.json:/acme.json
+    networks:
+      - enervision-network
+    restart: unless-stopped
+
+networks:
+  enervision-network:
+    driver: bridge
+
+volumes:
+  # Noms épinglés sur ceux créés par l'ancien projet Compose "infra", pour que
+  # les données Postgres / MinIO déjà en place sur le serveur soient réutilisées.
+  pgdata:
+    name: infra_pgdata
+  miniodata:
+    name: infra_miniodata

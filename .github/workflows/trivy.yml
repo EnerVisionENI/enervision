@@ -27,7 +27,6 @@ jobs:
             dockerfile: api/Dockerfile
           - name: front
             dockerfile: front/Dockerfile
-          # ml/Dockerfile is currently empty, add it here once it builds an image.
     steps:
       - name: Checkout
         uses: actions/checkout@v4

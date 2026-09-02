@@ -1,0 +1,6 @@
+# Le service ETL n'est pas packagé : ce fichier ne sert qu'à configurer pytest.
+# collect.py / quality.py / storage.py sont importés à plat, d'où pythonpath.
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
