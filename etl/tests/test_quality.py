@@ -1,6 +1,7 @@
 """
 Tests pour quality.py : téléchargement parallèle des objets bronze
-(`fetch_records`) et bout-en-bout de `main()` sur un petit lot.
+(`fetch_records`), bout-en-bout de `main()` sur un petit lot, et découplage
+du recalcul gold (empilé par le passage silver, traité par `--gold-only`).
 Aucun accès réseau : S3 est un faux en mémoire.
 """
 
@@ -229,9 +230,15 @@ def test_main_bout_en_bout_puis_idempotent(monkeypatch, capsys):
     assert "lignes_silver=4" in sortie
 
     silver_keys = s3.keys("silver")
-    gold_keys = s3.keys("gold")
     assert any(k.startswith("record_date=2025-01-01/site_id=SITE001/") for k in silver_keys)
     assert any(k.startswith("record_date=2025-01-02/site_id=SITE002/") for k in silver_keys)
+
+    # Le gold n'est pas produit par le passage silver, seulement empilé.
+    assert s3.keys("gold") == []
+    assert "gold_en_attente=2" in sortie
+
+    assert quality.main(["--gold-only"]) == 0
+    gold_keys = s3.keys("gold")
     assert any(k.startswith("daily/record_date=2025-01-01/site_id=SITE001/") for k in gold_keys)
     assert any(k.startswith("hourly/record_date=2025-01-02/site_id=SITE002/") for k in gold_keys)
 
@@ -270,4 +277,157 @@ def test_main_supporte_un_lot_entierement_null(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "lignes_silver=4" in out
     assert s3.keys("silver")            # silver écrit malgré la consommation absente
+
+    assert quality.main(["--gold-only"]) == 0
     assert any(k.startswith("daily/") for k in s3.keys("gold"))
+
+
+# ------------------------------------------------------- découplage du gold
+
+def test_process_batch_ne_recalcule_pas_le_gold_par_defaut():
+    """Le chemin appelé chaque minute (et à chaque tranche du rattrapage) écrit le
+    silver mais ne touche pas au gold : c'est tout l'objet du découplage."""
+    s3 = FakeS3()
+    lignes, quarantaine, partitions = quality.process_batch(
+        s3,
+        [("SITE001/2025-01-01/000000.json", mesure())],
+        silver_bucket="silver",
+        gold_bucket="gold",
+        quarantine_bucket="quarantine",
+    )
+
+    assert (lignes, quarantaine) == (1, 0)
+    assert partitions == {("2025-01-01", "SITE001")}
+    assert s3.keys("silver")
+    assert s3.keys("gold") == []
+
+
+def test_process_batch_recalcule_le_gold_si_demande():
+    """--with-gold (passage manuel ponctuel) produit toujours les deux grains."""
+    s3 = FakeS3()
+    quality.process_batch(
+        s3,
+        [("SITE001/2025-01-01/000000.json", mesure())],
+        silver_bucket="silver",
+        gold_bucket="gold",
+        quarantine_bucket="quarantine",
+        rebuild_gold=True,
+    )
+
+    assert s3.keys("gold") == [
+        "daily/record_date=2025-01-01/site_id=SITE001/daily.parquet",
+        "hourly/record_date=2025-01-01/site_id=SITE001/hourly.parquet",
+    ]
+
+
+def test_file_gold_ajout_et_retrait():
+    """Ajout et retrait relisent l'objet : le passage silver peut empiler pendant
+    qu'un passage gold dépile, sans que l'un écrase le travail de l'autre."""
+    s3 = FakeS3()
+    quality.add_pending_gold(s3, "manifests", "gold_pending.json", {("2025-01-01", "SITE001")})
+    quality.add_pending_gold(s3, "manifests", "gold_pending.json", {("2025-01-01", "SITE002")})
+
+    assert quality.load_pending_gold(s3, "manifests", "gold_pending.json") == {
+        ("2025-01-01", "SITE001"),
+        ("2025-01-01", "SITE002"),
+    }
+
+    quality.remove_pending_gold(s3, "manifests", "gold_pending.json", {("2025-01-01", "SITE001")})
+
+    assert quality.load_pending_gold(s3, "manifests", "gold_pending.json") == {("2025-01-01", "SITE002")}
+
+
+def test_file_gold_absente_ou_corrompue_vaut_file_vide():
+    """Un manifeste illisible ne fait pas échouer le passage : on repart d'une file
+    vide, le recalcul quotidien rattrapera les partitions perdues."""
+    s3 = FakeS3()
+    assert quality.load_pending_gold(s3, "manifests", "gold_pending.json") == set()
+
+    s3.put_object("manifests", "gold_pending.json", b"{pas du json")
+    assert quality.load_pending_gold(s3, "manifests", "gold_pending.json") == set()
+
+
+def test_partitions_for_date_liste_les_sites_de_la_journee():
+    s3 = FakeS3()
+    s3.put_object("silver", "record_date=2025-01-01/site_id=SITE001/batch_a.parquet", b"x")
+    s3.put_object("silver", "record_date=2025-01-01/site_id=SITE002/batch_b.parquet", b"x")
+    s3.put_object("silver", "record_date=2025-01-02/site_id=SITE003/batch_c.parquet", b"x")
+
+    assert quality.partitions_for_date(s3, "silver", "2025-01-01") == {
+        ("2025-01-01", "SITE001"),
+        ("2025-01-01", "SITE002"),
+    }
+
+
+def test_run_gold_recalcule_puis_vide_la_file(monkeypatch):
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure())
+    quality.run([])
+
+    resultat = quality.run_gold([])
+
+    assert (resultat.ok, resultat.partitions, resultat.recalculees, resultat.echecs) == (True, 1, 1, 0)
+    assert s3.keys("gold") == [
+        "daily/record_date=2025-01-01/site_id=SITE001/daily.parquet",
+        "hourly/record_date=2025-01-01/site_id=SITE001/hourly.parquet",
+    ]
+    assert quality.load_pending_gold(s3, "manifests", "gold_pending.json") == set()
+
+
+def test_run_gold_sans_partition_en_attente_ne_fait_rien(monkeypatch):
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+
+    resultat = quality.run_gold([])
+
+    assert (resultat.ok, resultat.partitions) == (True, 0)
+    assert s3.keys("gold") == []
+
+
+def test_run_gold_poursuit_et_laisse_en_attente_une_partition_en_echec(monkeypatch):
+    """Une partition illisible ne doit ni interrompre les autres, ni être retirée de
+    la file : sinon son agrégat resterait figé sur un silver périmé."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    for site in ("SITE001", "SITE002"):
+        s3.seed_bronze(f"{site}/2025-01-01/000000.json", mesure(site))
+    quality.run([])
+
+    cassee = next(k for k in s3.keys("silver") if "site_id=SITE001/" in k)
+    s3.errors.add(cassee)
+
+    resultat = quality.run_gold([])
+
+    assert (resultat.recalculees, resultat.echecs) == (1, 1)
+    assert any(k.startswith("daily/record_date=2025-01-01/site_id=SITE002/") for k in s3.keys("gold"))
+    assert not any("site_id=SITE001/" in k for k in s3.keys("gold"))
+    assert quality.load_pending_gold(s3, "manifests", "gold_pending.json") == {("2025-01-01", "SITE001")}
+
+
+def test_run_gold_avec_date_reprend_une_partition_absente_de_la_file(monkeypatch):
+    """Filet du recalcul quotidien : la partition n'est plus en file (manifeste perdu),
+    --gold-date la retrouve quand même à partir du silver."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure())
+    quality.run([])
+    quality.save_pending_gold(s3, "manifests", "gold_pending.json", set())
+
+    resultat = quality.run_gold(["--gold-date", "2025-01-01"])
+
+    assert resultat.recalculees == 1
+    assert any(k.startswith("daily/record_date=2025-01-01/site_id=SITE001/") for k in s3.keys("gold"))
+
+
+def test_main_gold_only_ne_lit_pas_le_bronze(monkeypatch):
+    """--gold-only ne touche ni au bronze ni à l'état incrémental : les deux
+    plannings écrivent des manifestes différents."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure())
+
+    assert quality.main(["--gold-only"]) == 0
+
+    assert s3.keys("silver") == []
+    assert ("manifests", "etl_state.json") not in s3.store

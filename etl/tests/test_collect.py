@@ -123,3 +123,58 @@ def test_cycle_collecte_continue_apres_une_erreur_minio(monkeypatch):
     collect.cycle_collecte()
 
     assert sites_traites == ["SITE001", "SITE002"]
+
+
+def test_cycle_collecte_ne_recalcule_pas_le_gold(monkeypatch):
+    """Le cycle minute appelle quality.py sans option gold : le recalcul est différé,
+    sinon il déborde de l'intervalle et espace la collecte silver."""
+    appels = []
+
+    monkeypatch.setattr(collect, "recuperer_liste_sites", lambda: ["SITE001"])
+    monkeypatch.setattr(collect, "recuperer_mesure", lambda site_id: {})
+    monkeypatch.setattr(collect, "envoyer_mesure", lambda site_id, mesure: None)
+    monkeypatch.setattr(collect, "marquer_vivant", lambda: None)
+    monkeypatch.setattr(collect, "LANCER_QUALITY", True)
+    monkeypatch.setattr(collect.quality, "main", lambda argv: appels.append(argv) or 0)
+
+    collect.cycle_collecte()
+
+    assert appels == [[]]
+
+
+def test_cycle_gold_horaire_ne_traite_que_les_partitions_en_attente(monkeypatch):
+    appels = []
+    monkeypatch.setattr(collect.quality, "main", lambda argv: appels.append(argv) or 0)
+
+    collect.cycle_gold_horaire()
+
+    assert appels == [["--gold-only"]]
+
+
+def test_cycle_gold_quotidien_cible_la_veille(monkeypatch):
+    """Le run quotidien recalcule la journée close, pas celle en cours."""
+    from datetime import datetime, timezone
+
+    class FauxDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 2, 0, 15, tzinfo=timezone.utc)
+
+    appels = []
+    monkeypatch.setattr(collect, "datetime", FauxDatetime)
+    monkeypatch.setattr(collect.quality, "main", lambda argv: appels.append(argv) or 0)
+
+    collect.cycle_gold_quotidien()
+
+    assert appels == [["--gold-only", "--gold-date", "2026-09-01"]]
+
+
+def test_lancer_quality_survit_a_une_erreur(monkeypatch):
+    """Une erreur de quality.py ne doit jamais remonter jusqu'au planificateur,
+    sinon un run gold en échec tuerait aussi la collecte."""
+    def echouer(argv):
+        raise RuntimeError("erreur simulée")
+
+    monkeypatch.setattr(collect.quality, "main", echouer)
+
+    collect.lancer_quality(["--gold-only"])

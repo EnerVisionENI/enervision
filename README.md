@@ -25,9 +25,18 @@ API Mock IoT ──(HTTP)──> etl/collect.py ──> MinIO bucket "bronze"  (
                                               │        + hash SHA-256 dupliqué dans "audit" (WORM)
                                               ▼
                               etl/quality.py ──> "silver" (Parquet nettoyé)
-                                              └─> "gold"   (agrégats daily / hourly)
                               rejets ──────────> "quarantine"
+
+                              etl/quality.py --gold-only ──> "gold" (agrégats daily / hourly)
+                              (à l'heure : partitions modifiées ; au jour : rattrapage veille)
 ```
+
+Le gold est recalculé sur son propre planning, pas à chaque collecte : un recalcul relit
+tout le silver de la partition, et le faire chaque minute faisait déborder le cycle de
+collecte (silver alimenté toutes les 2 min au lieu d'une). Les partitions touchées sont
+empilées dans `manifests/gold_pending.json` et reprises par `--gold-only`. Fréquences
+réglables via `GOLD_CRON_HORAIRE` / `GOLD_CRON_QUOTIDIEN` ; le rattrapage initial
+(`etl-bootstrap`) les consolide de la même façon, en un seul passage à la fin du drainage.
 
 ## Démarrage local
 

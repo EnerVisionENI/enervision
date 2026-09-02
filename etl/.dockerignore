@@ -1,0 +1,9 @@
+# Contexte de build de l'image ETL (context: ./etl). Le Dockerfile ne copie que
+# les modules listés explicitement, mais tout le dossier transite quand même
+# jusqu'au démon : autant ne pas y envoyer les caches et les tests.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+tests/
+requirements-dev.txt

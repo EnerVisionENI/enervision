@@ -1,0 +1,43 @@
+# Contexte de build partagé par api/Dockerfile et front/Dockerfile (context: .).
+# Sans ce fichier, tout le dépôt — .git, environnements virtuels, node_modules,
+# caches — était envoyé au démon Docker à chaque build des deux images. Le checkout
+# du runner utilise `clean: false` : ces répertoires non versionnés s'y accumulent
+# et ne disparaissent jamais d'eux-mêmes.
+
+# Git / CI
+.git
+.github
+.gitignore
+.gitattributes
+
+# Secrets : ne doivent jamais entrer dans une image
+.env
+.env.*
+!.env.example
+
+# Caches et environnements Python locaux
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.venv
+**/venv
+infra/venv
+
+# Front : les dépendances sont réinstallées dans l'image (npm ci) et le bundle
+# reconstruit. Copier ceux de l'hôte masquerait le résultat de npm ci.
+front/node_modules
+front/dist
+front/.vite
+
+# Outillage local
+.vscode
+.idea
+.claude
+.pre-commit-config.yaml
+.editorconfig
+
+# Documentation : aucune image n'en a besoin
+README.md
+infra/DEPLOYMENT.md

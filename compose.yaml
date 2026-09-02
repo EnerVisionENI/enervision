@@ -120,6 +120,10 @@ services:
     build:
       context: ./etl
       dockerfile: Dockerfile
+    # Les quatre services ETL partagent ce Dockerfile et ce contexte. Sans une clé
+    # `image:` commune, chacun produisait sa propre image : 4 builds (et 4 pip install)
+    # au lieu d'un. Avec le même tag, seul le premier construit, les autres réutilisent.
+    image: enervision-etl:local
     container_name: enervision-etl-bootstrap
     profiles: ["etl"]
     command: ["python", "bootstrap.py"]
@@ -176,6 +180,7 @@ services:
     build:
       context: ./etl
       dockerfile: Dockerfile
+    image: enervision-etl:local
     container_name: enervision-etl-collect
     profiles: ["etl"]
     # Aucun volume : bronze, silver, gold, quarantine et l'état incrémental
@@ -185,6 +190,10 @@ services:
     environment:
       API_BASE: ${API_BASE:-http://10.105.200.45:8000}
       INTERVALLE_SECONDES: ${INTERVALLE_SECONDES:-60}
+      # Le gold n'est pas recalculé à chaque cycle de collecte (il relit tout le silver
+      # de la partition et faisait déborder le cycle) mais sur ces deux plannings.
+      GOLD_CRON_HORAIRE: ${GOLD_CRON_HORAIRE:-3 * * * *}
+      GOLD_CRON_QUOTIDIEN: ${GOLD_CRON_QUOTIDIEN:-15 0 * * *}
       PYTHONUNBUFFERED: "1"
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
@@ -227,6 +236,7 @@ services:
     build:
       context: ./etl
       dockerfile: Dockerfile
+    image: enervision-etl:local
     container_name: enervision-etl-alerts
     profiles: ["etl"]
     command: ["python", "alerts.py"]
@@ -262,6 +272,7 @@ services:
     build:
       context: ./etl
       dockerfile: Dockerfile
+    image: enervision-etl:local
     container_name: enervision-etl-sites
     profiles: ["etl"]
     command: ["python", "sites.py"]
