@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Uuid, func
+from sqlalchemy import Numeric, String, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from api.database import Base
@@ -15,3 +15,18 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="viewer")
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    # site_id référence sites(site_id) dans infra/postgres/init.sql, non redéclaré ici
+    # en clé étrangère : ce modèle est en lecture seule, alimenté par etl/alerts.py.
+    alert_id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    timestamp: Mapped[datetime | None] = mapped_column(nullable=True)
+    site_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    severity: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    message: Mapped[str | None] = mapped_column(nullable=True)
+    value: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    threshold: Mapped[float | None] = mapped_column(Numeric, nullable=True)

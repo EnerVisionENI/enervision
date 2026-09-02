@@ -20,7 +20,7 @@ derrière des profils Compose :
 | Profil | Services | |
 |--------|----------|---|
 | _(aucun)_ | `postgres`, `minio`, `minio-init`, `api`, `front` | toujours démarrés |
-| `etl`   | `etl-collect` | pipeline de collecte |
+| `etl`   | `etl-collect`, `etl-alerts`, `etl-sites` | collecte mesures + alertes + sites |
 | `audit` | `audit-sync`  | synchro MinIO → Azure Blob |
 | `proxy` | `traefik`     | reverse proxy TLS |
 

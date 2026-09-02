@@ -9,3 +9,4 @@ import os
 os.environ.setdefault("MINIO_ENDPOINT", "localhost:9000")
 os.environ.setdefault("MINIO_ACCESS_KEY", "test-access-key")
 os.environ.setdefault("MINIO_SECRET_KEY", "test-secret-key")
+os.environ.setdefault("POSTGRES_PASSWORD", "test-password")

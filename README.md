@@ -10,7 +10,7 @@ Application multi-services conteneurisée, orchestrée par un unique `compose.ya
 
 | Service | Dossier | Rôle | Stack |
 |---|---|---|---|
-| **api** | [`api/`](api/) | API REST (auth, à venir : sites, alertes) | FastAPI, SQLAlchemy, PostgreSQL |
+| **api** | [`api/`](api/) | API REST (auth, alertes ; à venir : sites) | FastAPI, SQLAlchemy, PostgreSQL |
 | **front** | [`front/`](front/) | Interface web | Vue 3, Vite, servi par Nginx en prod |
 | **etl** | [`etl/`](etl/) | Collecte des mesures + qualité de données | Python, APScheduler, boto3 |
 | **postgres** | — | Base de données | PostgreSQL 16 |
@@ -103,5 +103,6 @@ CI/CD GitHub Actions sur push `dev` : voir [`infra/DEPLOYMENT.md`](infra/DEPLOYM
   (fait foi), les modèles SQLAlchemy ne couvrent que `users`. Introduire Alembic
   quand le modèle se stabilise.
 - **Endpoints `sites`** : `etl/collect.py` appelle `/api/v1/sites` et
-  `/api/v1/sites/{id}/current`, pas encore implémentés côté API.
+  `/api/v1/sites/{id}/current`, pas encore implémentés côté API. `etl/sites.py`
+  est un stub (service `etl-sites` en `restart: "no"` en attendant).
 - **Tests front** : aucun (le CI ne fait qu'un build).

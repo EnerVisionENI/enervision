@@ -153,6 +153,69 @@ services:
           cpus: "0.5"
           memory: 256M
 
+  # Collecte des alertes (API Mock IoT -> table alerts Postgres) — profile "etl"
+  etl-alerts:
+    build:
+      context: ./etl
+      dockerfile: Dockerfile
+    container_name: enervision-etl-alerts
+    profiles: ["etl"]
+    command: ["python", "alerts.py"]
+    env_file:
+      - .env
+    environment:
+      API_BASE: ${API_BASE:-http://10.105.200.45:8000}
+      ALERTS_INTERVALLE_SECONDES: ${ALERTS_INTERVALLE_SECONDES:-60}
+      PYTHONUNBUFFERED: "1"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - enervision-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # Synchro des sites (API Mock IoT -> table sites Postgres) — profile "etl"
+  # NOTE: sites.py est encore un stub (ne fait rien). restart:"no" tant qu'il
+  # n'est pas implémenté, sinon le conteneur boucle. Passer à unless-stopped ensuite.
+  etl-sites:
+    build:
+      context: ./etl
+      dockerfile: Dockerfile
+    container_name: enervision-etl-sites
+    profiles: ["etl"]
+    command: ["python", "sites.py"]
+    env_file:
+      - .env
+    environment:
+      API_BASE: ${API_BASE:-http://10.105.200.45:8000}
+      SITES_INTERVALLE_SECONDES: ${SITES_INTERVALLE_SECONDES:-60}
+      PYTHONUNBUFFERED: "1"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - enervision-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # --------------------------------------------------------------------------
   # Synchro audit -> Azure Blob — profile "audit"
   # --------------------------------------------------------------------------

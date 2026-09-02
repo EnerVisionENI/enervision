@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.config import get_settings
-from api.routers import auth
+from api.routers import alerts, auth
 
 settings = get_settings()
 
@@ -19,6 +19,7 @@ app.add_middleware(
 API_V1_PREFIX = "/api/v1"
 
 app.include_router(auth.router, prefix=API_V1_PREFIX)
+app.include_router(alerts.router, prefix=API_V1_PREFIX)
 
 
 @app.get("/health", tags=["health"])
