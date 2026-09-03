@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import requests
 
@@ -158,7 +158,7 @@ def test_list_site_measurements_requires_token(client):
 def test_list_site_measurements_returns_recent_ordered_ascending(client, db_session):
     make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
     headers = auth_headers(client, "viewer@enervision.fr", "password123")
-    maintenant = datetime.now(timezone.utc)
+    maintenant = datetime.now(UTC)
     make_measurement(
         db_session,
         "M2",
@@ -203,7 +203,7 @@ def test_list_site_measurements_returns_recent_ordered_ascending(client, db_sess
 def test_list_site_measurements_excludes_rows_outside_the_window(client, db_session):
     make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
     headers = auth_headers(client, "viewer@enervision.fr", "password123")
-    maintenant = datetime.now(timezone.utc)
+    maintenant = datetime.now(UTC)
     make_measurement(
         db_session,
         "RECENT",
@@ -248,7 +248,7 @@ def test_get_site_daily_summary_requires_token(client):
 def test_get_site_daily_summary_returns_todays_aggregate(client, db_session):
     make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
     headers = auth_headers(client, "viewer@enervision.fr", "password123")
-    aujourdhui = datetime.now(timezone.utc).date()
+    aujourdhui = datetime.now(UTC).date()
     make_gold_daily(
         db_session,
         aujourdhui,
@@ -276,7 +276,7 @@ def test_get_site_daily_summary_returns_todays_aggregate(client, db_session):
 def test_get_site_daily_summary_returns_null_when_not_yet_computed(client, db_session):
     make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
     headers = auth_headers(client, "viewer@enervision.fr", "password123")
-    hier = datetime.now(timezone.utc).date() - timedelta(days=1)
+    hier = datetime.now(UTC).date() - timedelta(days=1)
     # Un agrégat existe, mais pas pour aujourd'hui : ne doit pas être renvoyé.
     make_gold_daily(db_session, hier, "SITE001", records_count=100, good_count=50)
 

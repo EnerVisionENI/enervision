@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -34,7 +34,7 @@ def list_site_measurements(
     """Historique réel récent (table measurements_silver, alimentée par etl/quality.py
     toutes les ~60s) : sert à préremplir le graphique de puissance sans repartir de zéro
     à chaque chargement. Résolution ~1 point/minute, pas aussi dense que le direct."""
-    depuis = datetime.now(timezone.utc) - timedelta(minutes=depuis_minutes)
+    depuis = datetime.now(UTC) - timedelta(minutes=depuis_minutes)
     return (
         db.query(MeasurementSilver)
         .filter(MeasurementSilver.site_id == site_id, MeasurementSilver.timestamp >= depuis)
@@ -51,7 +51,7 @@ def get_site_daily_summary(
 ) -> AggregateGoldDaily | None:
     """Résumé du jour (table aggregates_gold_daily, recalculée par etl/quality.py) :
     null si le job gold n'a pas encore tourné pour aujourd'hui sur ce site."""
-    aujourdhui = datetime.now(timezone.utc).date()
+    aujourdhui = datetime.now(UTC).date()
     return (
         db.query(AggregateGoldDaily)
         .filter(AggregateGoldDaily.site_id == site_id, AggregateGoldDaily.record_date == aujourdhui)

@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.config import get_settings
-from api.routers import alerts, auth, sensors_failing, users, sites
+from api.routers import alerts, auth, sensors_failing, sites, users
 
 settings = get_settings()
 

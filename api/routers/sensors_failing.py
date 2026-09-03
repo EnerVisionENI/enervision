@@ -25,12 +25,12 @@ async def get_all_sites_failing_sensors(current_user: User = Depends(get_active_
             raise HTTPException(
                 status_code=502,
                 detail=f"Impossible de contacter l'API Mock : {erreur}",
-            )
+            ) from erreur
         except httpx.HTTPStatusError as erreur:
             raise HTTPException(
                 status_code=erreur.response.status_code,
                 detail="Erreur retournée par l'API Mock",
-            )
+            ) from erreur
 
     donnees = reponse.json()
 

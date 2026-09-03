@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
@@ -16,7 +16,7 @@ def _en_utc(valeur: datetime | None) -> datetime | None:
     avant sérialisation JSON, sinon `new Date(...)` côté front les interprète
     comme heure locale (décalage silencieux de l'écart UTC de l'utilisateur)."""
     if valeur is not None and valeur.tzinfo is None:
-        return valeur.replace(tzinfo=timezone.utc)
+        return valeur.replace(tzinfo=UTC)
     return valeur
 
 

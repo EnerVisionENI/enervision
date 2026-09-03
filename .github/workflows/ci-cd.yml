@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   test-api:
-    name: API tests
+    name: API lint + tests
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -43,6 +43,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # Config partagée dans pyproject.toml (racine) : mêmes règles que etl/.
+      - name: Lint (ruff)
+        run: ruff check api
 
       - name: Install API dependencies
         run: |
@@ -105,7 +112,7 @@ jobs:
         run: pytest tests/ -v
 
   build-front:
-    name: Frontend build
+    name: Frontend lint + tests + build
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
