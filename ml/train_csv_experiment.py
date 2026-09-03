@@ -1,10 +1,11 @@
 """
-Expérience : entraîner sur le CSV synthétique (Downloads/Datasets, ~2-3% de
-trous) plutôt que sur le gold MinIO réel (~95-99% de trous), puis comparer
-la cohérence du modèle obtenu face aux vraies données du pipeline (2025-2026).
+Entraîne et compare les modèles candidats (TOW, TOW+Temp, LightGBM) sur le
+CSV synthétique versionné dans data/csv/ — notre seule base d'entraînement
+(le gold MinIO réel reste trop creux pour entraîner, voir RAPPORT_ENTRAINEMENT.md).
 
-Ce n'est PAS le pipeline de production (ml/train.py, qui lit MinIO) : c'est
-une étude pour trancher quoi en tirer avant de toucher au code de prod.
+Ce module expose les fonctions de préparation/entraînement/prédiction
+réutilisées par train_v1_csv.py (persistance MLflow) : ne pas les dupliquer
+ailleurs, importer d'ici.
 
 Sort un unique JSON (report_data.json) consommé par le rapport (md + artifact).
 """
@@ -26,7 +27,7 @@ from models.naive import naive_forecast
 warnings.filterwarnings("ignore")
 load_dotenv()
 
-CSV_DIR = r"C:\Users\jguenard2023\Downloads\Datasets"
+CSV_DIR = os.path.join(os.path.dirname(__file__), "data", "csv")
 SITES = ["SITE001", "SITE002", "SITE003", "SITE004", "SITE005", "SITE006", "SITE007"]
 
 TRAIN_END = "2024-09-30"
