@@ -1,0 +1,314 @@
+{
+  "correlations": [
+    {
+      "site_id": "SITE001",
+      "site_type": "office",
+      "hour": 0.1661,
+      "day_of_week": -0.1866,
+      "month": 0.1185,
+      "is_weekend": -0.2444,
+      "is_working_hours": 0.534,
+      "temperature_celsius": 0.1208,
+      "humidity_percent": -0.076,
+      "solar_irradiance_wm2": 0.5132
+    },
+    {
+      "site_id": "SITE002",
+      "site_type": "factory",
+      "hour": 0.2607,
+      "day_of_week": -0.3337,
+      "month": 0.1149,
+      "is_weekend": -0.4135,
+      "is_working_hours": 0.4994,
+      "temperature_celsius": 0.0849,
+      "humidity_percent": -0.0778,
+      "solar_irradiance_wm2": 0.3824
+    },
+    {
+      "site_id": "SITE003",
+      "site_type": "datacenter",
+      "hour": -0.0734,
+      "day_of_week": 0.02,
+      "month": 0.2406,
+      "is_weekend": 0.0187,
+      "is_working_hours": NaN,
+      "temperature_celsius": -0.2759,
+      "humidity_percent": -0.196,
+      "solar_irradiance_wm2": -0.1151
+    },
+    {
+      "site_id": "SITE004",
+      "site_type": "retail",
+      "hour": 0.3627,
+      "day_of_week": -0.0156,
+      "month": 0.1352,
+      "is_weekend": -0.021,
+      "is_working_hours": 0.6863,
+      "temperature_celsius": 0.0927,
+      "humidity_percent": -0.107,
+      "solar_irradiance_wm2": 0.5311
+    },
+    {
+      "site_id": "SITE005",
+      "site_type": "hospital",
+      "hour": -0.0763,
+      "day_of_week": -0.0065,
+      "month": 0.2257,
+      "is_weekend": -0.0017,
+      "is_working_hours": NaN,
+      "temperature_celsius": -0.2562,
+      "humidity_percent": -0.2097,
+      "solar_irradiance_wm2": -0.1141
+    },
+    {
+      "site_id": "SITE006",
+      "site_type": "office",
+      "hour": 0.1552,
+      "day_of_week": -0.2107,
+      "month": 0.1025,
+      "is_weekend": -0.2593,
+      "is_working_hours": 0.5856,
+      "temperature_celsius": 0.1532,
+      "humidity_percent": -0.0682,
+      "solar_irradiance_wm2": 0.574
+    },
+    {
+      "site_id": "SITE007",
+      "site_type": "factory",
+      "hour": 0.2486,
+      "day_of_week": -0.3061,
+      "month": 0.0886,
+      "is_weekend": -0.3986,
+      "is_working_hours": 0.4798,
+      "temperature_celsius": 0.0925,
+      "humidity_percent": -0.0763,
+      "solar_irradiance_wm2": 0.382
+    }
+  ],
+  "results": [
+    {
+      "site_id": "SITE001",
+      "site_type": "office",
+      "n_train": 14928,
+      "n_calib": 1090,
+      "n_test": 1092,
+      "mase_tow": 0.6646,
+      "mase_tow_temp": 0.64,
+      "mase_lightgbm": 0.646,
+      "lgbm_importance": {
+        "hour": 451,
+        "day_of_week": 694,
+        "month": 500,
+        "is_weekend": 0,
+        "is_working_hours": 57,
+        "temperature_celsius": 1159,
+        "humidity_percent": 993,
+        "solar_irradiance_wm2": 842
+      },
+      "champion": "tow_temp",
+      "conformal_margin_90": 41.19,
+      "coverage_90": 0.9244,
+      "real_data_compare": {
+        "real_hours_total": 9515,
+        "real_hours_with_consumption": 42,
+        "real_consumption_coverage_pct": 0.44,
+        "mae_on_real_valid_points": 10.74,
+        "mape_on_real_valid_points_pct": 11.2,
+        "n_points_compared": 42,
+        "real_mean_consumption_kw": 101.07
+      }
+    },
+    {
+      "site_id": "SITE002",
+      "site_type": "factory",
+      "n_train": 14949,
+      "n_calib": 1078,
+      "n_test": 1087,
+      "mase_tow": 0.642,
+      "mase_tow_temp": 0.6131,
+      "mase_lightgbm": 0.5976,
+      "lgbm_importance": {
+        "hour": 532,
+        "day_of_week": 733,
+        "month": 537,
+        "is_weekend": 0,
+        "is_working_hours": 61,
+        "temperature_celsius": 1306,
+        "humidity_percent": 937,
+        "solar_irradiance_wm2": 779
+      },
+      "champion": "lightgbm",
+      "conformal_margin_90": 316.61,
+      "coverage_90": 0.897,
+      "real_data_compare": {
+        "real_hours_total": 9515,
+        "real_hours_with_consumption": 43,
+        "real_consumption_coverage_pct": 0.45,
+        "mae_on_real_valid_points": 180.01,
+        "mape_on_real_valid_points_pct": 35.0,
+        "n_points_compared": 43,
+        "real_mean_consumption_kw": 621.22
+      }
+    },
+    {
+      "site_id": "SITE003",
+      "site_type": "datacenter",
+      "n_train": 14962,
+      "n_calib": 1075,
+      "n_test": 1077,
+      "mase_tow": 0.6867,
+      "mase_tow_temp": 0.5819,
+      "mase_lightgbm": 0.6352,
+      "lgbm_importance": {
+        "hour": 459,
+        "day_of_week": 612,
+        "month": 434,
+        "is_weekend": 0,
+        "is_working_hours": 0,
+        "temperature_celsius": 1131,
+        "humidity_percent": 961,
+        "solar_irradiance_wm2": 876
+      },
+      "champion": "tow_temp",
+      "conformal_margin_90": 198.34,
+      "coverage_90": 0.8569,
+      "real_data_compare": {
+        "real_hours_total": 9515,
+        "real_hours_with_consumption": 67,
+        "real_consumption_coverage_pct": 0.7,
+        "mae_on_real_valid_points": 65.31,
+        "mape_on_real_valid_points_pct": 9.2,
+        "n_points_compared": 67,
+        "real_mean_consumption_kw": 722.63
+      }
+    },
+    {
+      "site_id": "SITE004",
+      "site_type": "retail",
+      "n_train": 14955,
+      "n_calib": 1070,
+      "n_test": 1091,
+      "mase_tow": 0.6176,
+      "mase_tow_temp": 0.6471,
+      "mase_lightgbm": 0.574,
+      "lgbm_importance": {
+        "hour": 467,
+        "day_of_week": 523,
+        "month": 520,
+        "is_weekend": 0,
+        "is_working_hours": 60,
+        "temperature_celsius": 1323,
+        "humidity_percent": 935,
+        "solar_irradiance_wm2": 664
+      },
+      "champion": "lightgbm",
+      "conformal_margin_90": 137.54,
+      "coverage_90": 0.9441,
+      "real_data_compare": {
+        "real_hours_total": 9515,
+        "real_hours_with_consumption": 49,
+        "real_consumption_coverage_pct": 0.51,
+        "mae_on_real_valid_points": 90.44,
+        "mape_on_real_valid_points_pct": 43.8,
+        "n_points_compared": 49,
+        "real_mean_consumption_kw": 241.06
+      }
+    },
+    {
+      "site_id": "SITE005",
+      "site_type": "hospital",
+      "n_train": 14981,
+      "n_calib": 1073,
+      "n_test": 1058,
+      "mase_tow": 0.699,
+      "mase_tow_temp": 0.583,
+      "mase_lightgbm": 0.6406,
+      "lgbm_importance": {
+        "hour": 477,
+        "day_of_week": 478,
+        "month": 456,
+        "is_weekend": 0,
+        "is_working_hours": 0,
+        "temperature_celsius": 1119,
+        "humidity_percent": 1128,
+        "solar_irradiance_wm2": 899
+      },
+      "champion": "tow_temp",
+      "conformal_margin_90": 258.85,
+      "coverage_90": 0.9326,
+      "real_data_compare": {
+        "real_hours_total": 9515,
+        "real_hours_with_consumption": 37,
+        "real_consumption_coverage_pct": 0.39,
+        "mae_on_real_valid_points": 34.8,
+        "mape_on_real_valid_points_pct": 7.4,
+        "n_points_compared": 37,
+        "real_mean_consumption_kw": 472.89
+      }
+    },
+    {
+      "site_id": "SITE006",
+      "site_type": "office",
+      "n_train": 14967,
+      "n_calib": 1081,
+      "n_test": 1075,
+      "mase_tow": 0.7495,
+      "mase_tow_temp": 0.7345,
+      "mase_lightgbm": 0.7664,
+      "lgbm_importance": {
+        "hour": 485,
+        "day_of_week": 657,
+        "month": 534,
+        "is_weekend": 0,
+        "is_working_hours": 58,
+        "temperature_celsius": 1296,
+        "humidity_percent": 865,
+        "solar_irradiance_wm2": 915
+      },
+      "champion": "tow_temp",
+      "conformal_margin_90": 39.94,
+      "coverage_90": 0.953,
+      "real_data_compare": {
+        "real_hours_total": 9515,
+        "real_hours_with_consumption": 42,
+        "real_consumption_coverage_pct": 0.44,
+        "mae_on_real_valid_points": 23.45,
+        "mape_on_real_valid_points_pct": 26.1,
+        "n_points_compared": 42,
+        "real_mean_consumption_kw": 88.37
+      }
+    },
+    {
+      "site_id": "SITE007",
+      "site_type": "factory",
+      "n_train": 14967,
+      "n_calib": 1069,
+      "n_test": 1082,
+      "mase_tow": 0.5971,
+      "mase_tow_temp": 0.5972,
+      "mase_lightgbm": 0.5841,
+      "lgbm_importance": {
+        "hour": 466,
+        "day_of_week": 731,
+        "month": 446,
+        "is_weekend": 1,
+        "is_working_hours": 64,
+        "temperature_celsius": 1253,
+        "humidity_percent": 1125,
+        "solar_irradiance_wm2": 773
+      },
+      "champion": "lightgbm",
+      "conformal_margin_90": 253.27,
+      "coverage_90": 0.9242,
+      "real_data_compare": {
+        "real_hours_total": 9515,
+        "real_hours_with_consumption": 36,
+        "real_consumption_coverage_pct": 0.38,
+        "mae_on_real_valid_points": 207.57,
+        "mape_on_real_valid_points_pct": 40.5,
+        "n_points_compared": 36,
+        "real_mean_consumption_kw": 632.06
+      }
+    }
+  ]
+}
