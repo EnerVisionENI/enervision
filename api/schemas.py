@@ -96,6 +96,12 @@ class MeasurementOut(BaseModel):
 
     timestamp: datetime
     consumption_kw: float | None = None
+    voltage_v: float | None = None
+    current_a: float | None = None
+    power_factor: float | None = None
+    temperature_celsius: float | None = None
+    humidity_percent: float | None = None
+    quality_score: int | None = None
     data_quality: str | None = None
     null_reasons: list[str] = []
 

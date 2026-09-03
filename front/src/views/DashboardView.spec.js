@@ -12,6 +12,7 @@ vi.mock("chart.js/auto", () => {
   class FakeChart {
     constructor(_ctx, config) {
       this.data = config.data;
+      this.options = config.options;
       this.destroyed = false;
       chartInstances.push(this);
     }
@@ -34,6 +35,12 @@ const MESURE_OK = {
   // rejette aussitôt comme trop ancienne.
   timestamp: new Date().toISOString(),
   consumption_kw: 179.61,
+  voltage_v: 404.6,
+  current_a: 269.8,
+  power_factor: 0.931,
+  temperature_celsius: 9.5,
+  humidity_percent: 41.2,
+  quality_score: 100,
   data_quality: "good",
   null_reasons: [],
 };
@@ -81,8 +88,71 @@ describe("DashboardView", () => {
     expect(wrapper.text()).toContain("200 kW");
     expect(wrapper.find(".lecture-actuelle").text()).toContain("180");
     expect(wrapper.findAll(".site-pill")).toHaveLength(2);
+    // Index 0 = "consumption_kw", la première métrique déclarée (focus par défaut).
     expect(chartInstances[0].data.datasets[0].data).toEqual([179.61]);
     expect(chartInstances[0].data.datasets[1].data).toEqual([200]);
+  });
+
+  it("crée un graphique par métrique disponible dans measurements_silver", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+
+    // 7 petites cartes (toujours visibles, ordre fixe) + 1 graphique "grand"
+    // (aperçu de la métrique sélectionnée, recréé à chaque changement de focus).
+    expect(chartInstances).toHaveLength(8);
+  });
+
+  it("affiche un aperçu agrandi de la carte cliquée, sans jamais la retirer de sa place fixe", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(wrapper.find(".graphique-grand-titre").text()).toBe("Puissance appelée");
+    expect(wrapper.find(".lecture-actuelle").text()).toContain("kW");
+    // Les 7 petites cartes, ordre fixe, "Puissance appelée" toujours présente.
+    const titresAvant = wrapper.findAll(".graphique-carte-titre").map((t) => t.text());
+    expect(titresAvant).toEqual([
+      "Puissance appelée",
+      "Tension",
+      "Courant",
+      "Facteur de puissance",
+      "Température",
+      "Humidité",
+      "Score qualité",
+    ]);
+
+    const carteTension = wrapper.findAll(".graphique-carte").find((c) => c.text().includes("Tension"));
+    await carteTension.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".graphique-grand-titre").text()).toBe("Tension");
+    // 404.6 arrondi à l'entier (0 décimale pour la tension).
+    expect(wrapper.find(".lecture-actuelle").text()).toContain("405");
+    expect(wrapper.find(".lecture-actuelle").text()).toContain("V");
+    // Même 7 cartes, même ordre : "Tension" n'a pas disparu de sa place.
+    const titresApres = wrapper.findAll(".graphique-carte-titre").map((t) => t.text());
+    expect(titresApres).toEqual(titresAvant);
+    expect(wrapper.find(".graphique-carte.actif .graphique-carte-titre").text()).toBe("Tension");
+
+    // Le graphique agrandi a de vrais axes ; la petite carte "Tension" reste
+    // en rendu sparkline (axes masqués), c'est un aperçu distinct.
+    const grand = chartInstances.filter((c) => !c.destroyed).find((c) => c.options.scales.x.display !== false);
+    expect(grand.data.datasets[0].label).toBe("Tension");
+    const petiteTension = chartInstances[1]; // 2e métrique déclarée = voltage_v
+    expect(petiteTension.options.scales.x.display).toBe(false);
   });
 
   it("affiche toutes les mesures récentes reçues, dans l'ordre chronologique", async () => {
@@ -93,8 +163,8 @@ describe("DashboardView", () => {
         "/sites/SITE001/measurements": () =>
           Promise.resolve({
             data: [
-              { timestamp: ilYA90s, consumption_kw: 40, data_quality: "good", null_reasons: [] },
-              { timestamp: ilYA30s, consumption_kw: 55, data_quality: "good", null_reasons: [] },
+              { ...MESURE_OK, timestamp: ilYA90s, consumption_kw: 40 },
+              { ...MESURE_OK, timestamp: ilYA30s, consumption_kw: 55 },
             ],
           }),
         "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
@@ -116,9 +186,15 @@ describe("DashboardView", () => {
         "/sites/SITE001/measurements": () =>
           Promise.resolve({
             data: [
-              { timestamp: ilYA90s, consumption_kw: 40, data_quality: "good", null_reasons: [] },
-              { timestamp: ilYA60s, consumption_kw: null, data_quality: "critical", null_reasons: ["network_loss"] },
-              { timestamp: ilYA30s, consumption_kw: 55, data_quality: "good", null_reasons: [] },
+              { ...MESURE_OK, timestamp: ilYA90s, consumption_kw: 40 },
+              {
+                ...MESURE_OK,
+                timestamp: ilYA60s,
+                consumption_kw: null,
+                data_quality: "critical",
+                null_reasons: ["network_loss"],
+              },
+              { ...MESURE_OK, timestamp: ilYA30s, consumption_kw: 55 },
             ],
           }),
         "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
@@ -223,7 +299,7 @@ describe("DashboardView", () => {
     );
   });
 
-  it("sonde à nouveau toutes les 60 secondes et actualise la courbe", async () => {
+  it("sonde à nouveau toutes les 30 secondes et actualise la courbe", async () => {
     let compteur = 0;
     mockApi({
       lectures: {
@@ -247,7 +323,37 @@ describe("DashboardView", () => {
     await flushPromises();
     expect(chartInstances[0].data.datasets[0].data).toEqual([100]);
 
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(chartInstances[0].data.datasets[0].data).toEqual([100, 101]);
+  });
+
+  it("un cycle de sondage sans donnée nouvelle est inoffensif ; la mise à jour arrive au cycle suivant", async () => {
+    let compteur = 0;
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => {
+          compteur += 1;
+          // etl-collect n'écrit qu'une fois par minute : la même dernière
+          // ligne est renvoyée à 0s et 30s, une nouvelle apparaît à 60s.
+          const premierPoint = { ...MESURE_OK, timestamp: new Date(Date.now() - 60_000).toISOString(), consumption_kw: 100 };
+          const deuxiemePoint = { ...MESURE_OK, timestamp: new Date().toISOString(), consumption_kw: 101 };
+          const data = compteur <= 2 ? [premierPoint] : [premierPoint, deuxiemePoint];
+          return Promise.resolve({ data });
+        },
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+    expect(chartInstances[0].data.datasets[0].data).toEqual([100]);
+
+    // Cycle à 30s : pas encore de nouvelle ligne côté silver, rien ne change.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(chartInstances[0].data.datasets[0].data).toEqual([100]);
+
+    // Cycle à 60s : la nouvelle mesure est là, le graphique se met à jour.
+    await vi.advanceTimersByTimeAsync(30_000);
     expect(chartInstances[0].data.datasets[0].data).toEqual([100, 101]);
   });
 

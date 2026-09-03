@@ -50,11 +50,19 @@ class MeasurementSilver(Base):
 
     # Modèle en lecture seule, alimenté par etl/quality.py via postgres_writer.py
     # (infra/postgres/init/02_silver.sql) — même principe que Alert/Site. Seules
-    # les colonnes utiles à l'API (historique de puissance) sont mappées, pas les
-    # 20 colonnes de la table.
+    # les colonnes utiles au dashboard (multi-métriques) sont mappées : pas
+    # consumption_kwh (toujours identique à consumption_kw dans ce mock),
+    # has_anomaly (jamais vrai sur les données collectées) ni
+    # consumption_change_pct (quasi toujours NULL).
     source_key: Mapped[str] = mapped_column(String(255), primary_key=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     site_id: Mapped[str] = mapped_column(String(20), nullable=False)
     consumption_kw: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    voltage_v: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    current_a: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    power_factor: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    temperature_celsius: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    humidity_percent: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    quality_score: Mapped[int | None] = mapped_column(nullable=True)
     data_quality: Mapped[str | None] = mapped_column(String(20), nullable=True)
     null_reasons: Mapped[list] = mapped_column(JSON, nullable=False, default=list)

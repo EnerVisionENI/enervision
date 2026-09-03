@@ -38,7 +38,7 @@
           <div class="panneau">
             <div class="panneau-entete">
               <div class="panneau-titre-groupe">
-                <p class="panneau-titre">graphique — puissance appelée</p>
+                <p class="panneau-titre">graphiques — mesures du site</p>
                 <span v-if="tauxDisponibilite !== null" class="disponibilite">
                   {{ tauxDisponibilite }}% de lectures disponibles
                 </span>
@@ -49,18 +49,42 @@
                 </option>
               </select>
             </div>
-            <div v-if="dernierePuissance !== null" class="lecture-actuelle">
-              {{ formatEntier(dernierePuissance) }}<span class="unite">kW · dernière mesure</span>
+
+            <div v-if="derniereValeurFocus !== null" class="lecture-actuelle">
+              {{ formatValeur(derniereValeurFocus, metriqueFocusInfo.decimales)
+              }}<span class="unite">{{ suffixeUnite }}</span>
             </div>
             <p v-else class="pas-de-donnee">Pas de mesure récente</p>
 
-            <div class="chart-wrapper">
-              <canvas ref="canvasRef"></canvas>
+            <div class="graphique-grand">
+              <p class="graphique-grand-titre">{{ metriqueFocusInfo.label }}</p>
+              <div class="chart-wrapper-grand">
+                <canvas ref="canvasGrandRef"></canvas>
+              </div>
+              <div class="legende-graphe">
+                <div class="legende-item"><span class="legende-trait teal"></span>mesure réelle</div>
+                <div v-if="metriqueFocusInfo.avecSeuil" class="legende-item">
+                  <span class="legende-trait orange"></span>puissance souscrite
+                </div>
+              </div>
             </div>
 
-            <div class="legende-graphe">
-              <div class="legende-item"><span class="legende-trait teal"></span>mesure réelle</div>
-              <div class="legende-item"><span class="legende-trait orange"></span>puissance souscrite</div>
+            <!-- Ordre fixe, toujours les 7 visibles : cliquer sur une carte ne
+                 fait qu'en afficher un aperçu agrandi ci-dessus, elle reste
+                 aussi ici à sa place habituelle. -->
+            <div class="grille-graphiques">
+              <div
+                v-for="m in METRIQUES"
+                :key="m.cle"
+                class="graphique-carte"
+                :class="{ actif: m.cle === metriqueFocus }"
+                @click="metriqueFocus = m.cle"
+              >
+                <p class="graphique-carte-titre">{{ m.label }}</p>
+                <div class="chart-wrapper-carte">
+                  <canvas :ref="(el) => (canvasEls[m.cle] = el)"></canvas>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -70,7 +94,7 @@
               <ul class="confiance-liste">
                 <li class="confiance-item">
                   <span class="confiance-label">valeur</span>
-                  <span class="confiance-valeur">{{ formatEntier(dernierePuissance) }} kW</span>
+                  <span class="confiance-valeur">{{ formatValeurAvecUnite(derniereValeurFocus) }}</span>
                 </li>
                 <li class="confiance-item">
                   <span class="confiance-label">qualité</span>
@@ -153,16 +177,20 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Chart } from "chart.js/auto";
 import api from "../api/client";
 
-// etl-collect n'écrit measurements_silver qu'une fois par minute : sonder plus
-// souvent ne ferait qu'interroger la même dernière ligne en base. On aligne
-// donc la cadence du front sur celle de la source réelle plutôt que d'appeler
-// l'API Mock IoT en direct (/current), qui donnait une résolution factice
-// (5s) sans rapport avec ce qui est vraiment persisté.
-const POLL_INTERVAL_MS = 60 * 1000;
+// etl-collect écrit measurements_silver environ une fois par minute — mais
+// sonder à cette même cadence crée un effet de battement : si le cycle du
+// front tombe juste avant l'écriture, il faut alors attendre presque 2
+// minutes avant de voir la nouvelle ligne. Sonder 2x plus vite (30s) donne
+// une bien meilleure chance de la capter peu après son écriture, sans pour
+// autant appeler l'API Mock IoT en direct (/current, résolution factice de
+// 5s sans rapport avec ce qui est vraiment persisté). Comme chaque cycle
+// recharge tout le buffer (chargerHistorique), un cycle "à vide" (pas encore
+// de nouvelle ligne) est inoffensif : mêmes données, même affichage.
+const POLL_INTERVAL_MS = 30 * 1000;
 
 const OPTIONS_FENETRE = [
   { label: "2 min", ms: 2 * 60 * 1000 },
@@ -170,6 +198,77 @@ const OPTIONS_FENETRE = [
   { label: "1 h", ms: 60 * 60 * 1000 },
   { label: "6 h", ms: 6 * 60 * 60 * 1000 },
   { label: "1 jour", ms: 24 * 60 * 60 * 1000 }, // borne max de GET /sites/{id}/measurements (1440 min)
+];
+
+// Une carte par métrique, dans measurements_silver. On expose volontairement
+// pas consumption_kwh (toujours identique à consumption_kw dans ce mock),
+// has_anomaly (jamais vrai sur les données collectées) ni
+// consumption_change_pct (quasi toujours NULL) : voir api/models.py.
+const METRIQUES = [
+  {
+    cle: "consumption_kw",
+    label: "Puissance appelée",
+    unite: "kW",
+    decimales: 0,
+    couleur: "#2dd4bf",
+    fond: "rgba(45, 212, 191, 0.08)",
+    debuteAZero: true,
+    avecSeuil: true,
+  },
+  {
+    cle: "voltage_v",
+    label: "Tension",
+    unite: "V",
+    decimales: 0,
+    couleur: "#60a5fa",
+    fond: "rgba(96, 165, 250, 0.08)",
+    debuteAZero: false,
+  },
+  {
+    cle: "current_a",
+    label: "Courant",
+    unite: "A",
+    decimales: 0,
+    couleur: "#f472b6",
+    fond: "rgba(244, 114, 182, 0.08)",
+    debuteAZero: true,
+  },
+  {
+    cle: "power_factor",
+    label: "Facteur de puissance",
+    unite: "",
+    decimales: 2,
+    couleur: "#facc15",
+    fond: "rgba(250, 204, 21, 0.08)",
+    debuteAZero: false,
+  },
+  {
+    cle: "temperature_celsius",
+    label: "Température",
+    unite: "°C",
+    decimales: 1,
+    couleur: "#fb923c",
+    fond: "rgba(251, 146, 60, 0.08)",
+    debuteAZero: false,
+  },
+  {
+    cle: "humidity_percent",
+    label: "Humidité",
+    unite: "%",
+    decimales: 0,
+    couleur: "#38bdf8",
+    fond: "rgba(56, 189, 248, 0.08)",
+    debuteAZero: true,
+  },
+  {
+    cle: "quality_score",
+    label: "Score qualité",
+    unite: "/100",
+    decimales: 0,
+    couleur: "#a78bfa",
+    fond: "rgba(167, 139, 250, 0.08)",
+    debuteAZero: true,
+  },
 ];
 
 const LIBELLES_RAISON = {
@@ -180,7 +279,7 @@ const LIBELLES_RAISON = {
 
 // Contenu de démonstration : aucun moteur de recommandation, de scoring de
 // site ni de suivi de modèle n'existe côté backend. Seuls le sélecteur de
-// site, l'en-tête et le graphique de puissance ci-dessus sont réellement
+// site, l'en-tête et les graphiques de mesures ci-dessus sont réellement
 // alimentés par l'API (GET /sites, GET /sites/{id}/measurements).
 const PARC_MOCK = [
   { site_id: "SITE001", valeur: 78, alerte: false, points: "0,14 15,10 30,12 45,6 60,8" },
@@ -229,22 +328,38 @@ function formatEntier(nombre) {
   return nombre === null || nombre === undefined ? "—" : String(Math.round(nombre));
 }
 
+function formatValeur(nombre, decimales = 0) {
+  return nombre === null || nombre === undefined ? "—" : Number(nombre).toFixed(decimales);
+}
+
 const sites = ref([]);
 const siteSelectionne = ref("");
+const metriqueFocus = ref(METRIQUES[0].cle);
 const fenetreMs = ref(OPTIONS_FENETRE[0].ms);
 const chargementSites = ref(false);
 const erreurSites = ref("");
 const erreurLecture = ref("");
 const derniereLecture = ref(null);
-const dernierePuissance = ref(null);
+const derniereMesure = ref(null); // dernière ligne measurements_silver reçue pour le site affiché
 const derniereQualite = ref("");
 const derniereRaisons = ref([]);
-const tauxDisponibilite = ref(null); // % de points avec une valeur, sur la fenêtre affichée
+const tauxDisponibilite = ref(null); // % de points avec une valeur, sur la métrique et la fenêtre affichées
 const maintenant = ref(new Date());
 
 const siteActuel = computed(() => sites.value.find((s) => s.site_id === siteSelectionne.value) || null);
+const metriqueFocusInfo = computed(() => METRIQUES.find((m) => m.cle === metriqueFocus.value));
+const derniereValeurFocus = computed(() => derniereMesure.value?.[metriqueFocus.value] ?? null);
 const qualiteFiable = computed(() => !derniereQualite.value || derniereQualite.value === "good");
 const raisonsQualite = computed(() => derniereRaisons.value.map(libelleRaison).join(", "));
+
+const suffixeUnite = computed(() =>
+  metriqueFocusInfo.value.unite ? `${metriqueFocusInfo.value.unite} · dernière mesure` : "dernière mesure"
+);
+
+function formatValeurAvecUnite(valeur) {
+  const texte = formatValeur(valeur, metriqueFocusInfo.value.decimales);
+  return metriqueFocusInfo.value.unite ? `${texte} ${metriqueFocusInfo.value.unite}` : texte;
+}
 
 const ecouleDepuisDerniereLecture = computed(() => {
   if (!derniereLecture.value) return "";
@@ -253,8 +368,10 @@ const ecouleDepuisDerniereLecture = computed(() => {
   return `${Math.floor(secondes / 60)}min ${secondes % 60}s`;
 });
 
-const canvasRef = ref(null);
-let chart = null;
+const canvasGrandRef = ref(null);
+let chartGrand = null;
+const canvasEls = {};
+const charts = {};
 // Historique + dernière lecture par site (rempli en continu pour tous les
 // sites à chaque cycle) : changer de site ne fait qu'afficher un buffer déjà
 // alimenté, sans appel réseau ni retour à zéro — donc pas de flash "0 donnée".
@@ -263,51 +380,85 @@ const dernieresLectures = {};
 let intervalSondage = null;
 let intervalHorloge = null;
 
-function creerGraphique() {
-  chart = new Chart(canvasRef.value, {
-    type: "line",
-    data: {
-      labels: [],
-      datasets: [
-        {
-          label: "Puissance réelle (kW)",
-          data: [],
-          borderColor: "#2dd4bf",
-          backgroundColor: "rgba(45, 212, 191, 0.08)",
-          fill: true,
-          tension: 0.3,
-          // Un point visible par lecture valide : avec ~30-50 % de lectures
-          // sans valeur (capteur peu fiable côté mock), un segment isolé d'un
-          // ou deux points resterait quasi invisible avec pointRadius: 0.
-          pointRadius: 2,
-          pointHoverRadius: 4,
-        },
-        {
-          label: "Puissance souscrite (kW)",
-          data: [],
-          borderColor: "#f59e0b",
-          borderDash: [4, 3],
-          pointRadius: 0,
-          pointHoverRadius: 3,
-          fill: false,
-        },
-      ],
+function construireDatasets(m) {
+  const datasets = [
+    {
+      label: m.label,
+      data: [],
+      borderColor: m.couleur,
+      backgroundColor: m.fond,
+      fill: true,
+      tension: 0.3,
+      // Un point visible par lecture valide : avec ~30-50 % de lectures sans
+      // valeur (capteur peu fiable côté mock), un segment isolé d'un ou deux
+      // points resterait quasi invisible avec pointRadius: 0.
+      pointRadius: 2,
+      pointHoverRadius: 4,
     },
+  ];
+  if (m.avecSeuil) {
+    datasets.push({
+      label: "Puissance souscrite (kW)",
+      data: [],
+      borderColor: "#f59e0b",
+      borderDash: [4, 3],
+      pointRadius: 0,
+      pointHoverRadius: 3,
+      fill: false,
+    });
+  }
+  return datasets;
+}
+
+function creerGraphiques() {
+  for (const m of METRIQUES) {
+    const canvas = canvasEls[m.cle];
+    if (!canvas) continue;
+
+    charts[m.cle] = new Chart(canvas, {
+      type: "line",
+      data: { labels: [], datasets: construireDatasets(m) },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        // Rendu sparkline épuré, sans axes : la carte agrandie ci-dessus est
+        // le seul endroit où l'échelle est affichée. La position et l'ordre
+        // de ces 7 petites cartes ne changent jamais, cliquer sur l'une
+        // d'elles l'affiche juste en grand ci-dessus, en plus.
+        scales: {
+          x: { display: false },
+          y: { display: false, beginAtZero: m.debuteAZero },
+        },
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      },
+    });
+  }
+}
+
+function creerGraphiqueGrand() {
+  if (!canvasGrandRef.value) return;
+  const m = metriqueFocusInfo.value;
+
+  chartGrand?.destroy();
+  chartGrand = new Chart(canvasGrandRef.value, {
+    type: "line",
+    data: { labels: [], datasets: construireDatasets(m) },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
       // mode "index" + intersect:false : survoler n'importe quel point de
       // l'axe X déclenche le tooltip, pas besoin de viser un point au pixel
-      // près (les lignes n'ont pas de marqueur visible, pointRadius: 0).
+      // près (les lignes n'ont pas de marqueur visible, pointRadius: 2 mais
+      // fin).
       interaction: { mode: "index", intersect: false },
       scales: {
         x: { ticks: { color: "#6b7a99" }, grid: { color: "#1f2b42" } },
         y: {
-          beginAtZero: true,
+          beginAtZero: m.debuteAZero,
           ticks: { color: "#6b7a99" },
           grid: { color: "#1f2b42" },
-          title: { display: true, text: "kW", color: "#6b7a99" },
         },
       },
       plugins: {
@@ -322,26 +473,50 @@ function creerGraphique() {
           bodyColor: "#e5e9f0",
           padding: 10,
           callbacks: {
-            label: (ctx) => `${ctx.dataset.label}: ${formatEntier(ctx.parsed.y)} kW`,
+            label: (ctx) => `${ctx.dataset.label}: ${formatValeur(ctx.parsed.y, m.decimales)} ${m.unite}`,
           },
         },
       },
     },
   });
+
+  rafraichirGraphiqueGrand();
 }
+
+function rafraichirGraphiqueGrand() {
+  if (!chartGrand) return;
+  const buffer = bufferPour(siteSelectionne.value);
+  const m = metriqueFocusInfo.value;
+  chartGrand.data.labels = buffer.labels;
+  chartGrand.data.datasets[0].data = buffer.metriques[m.cle];
+  if (m.avecSeuil) chartGrand.data.datasets[1].data = buffer.seuils;
+  chartGrand.update();
+}
+
+watch(metriqueFocus, () => {
+  // Reconstruit plutôt que mettre à jour en place : les datasets diffèrent
+  // d'une métrique à l'autre (seuil présent ou non, couleur, formatage).
+  creerGraphiqueGrand();
+
+  const buffer = historiques[siteSelectionne.value];
+  if (buffer) tauxDisponibilite.value = calculerDisponibilite(buffer);
+});
 
 function bufferPour(siteId) {
   if (!historiques[siteId]) {
-    historiques[siteId] = { instants: [], labels: [], valeurs: [], seuils: [] };
+    const metriques = {};
+    for (const m of METRIQUES) metriques[m.cle] = [];
+    historiques[siteId] = { instants: [], labels: [], metriques, seuils: [] };
   }
   return historiques[siteId];
 }
 
-function ajouterPoint(buffer, instant, valeur, seuil) {
+function ajouterPoint(buffer, mesure, site) {
+  const instant = new Date(mesure.timestamp);
   buffer.instants.push(instant);
   buffer.labels.push(instant.toLocaleTimeString("fr-FR"));
-  buffer.valeurs.push(valeur);
-  buffer.seuils.push(seuil);
+  for (const m of METRIQUES) buffer.metriques[m.cle].push(mesure[m.cle] ?? null);
+  buffer.seuils.push(site.capacity_kw ?? null);
 }
 
 function purgerAnciens(buffer) {
@@ -351,9 +526,16 @@ function purgerAnciens(buffer) {
   while (buffer.instants.length && buffer.instants[0].getTime() < limite) {
     buffer.instants.shift();
     buffer.labels.shift();
-    buffer.valeurs.shift();
+    for (const m of METRIQUES) buffer.metriques[m.cle].shift();
     buffer.seuils.shift();
   }
+}
+
+function calculerDisponibilite(buffer) {
+  const valeurs = buffer.metriques[metriqueFocus.value];
+  const total = valeurs.length;
+  const valides = valeurs.filter((v) => v !== null && v !== undefined).length;
+  return total > 0 ? Math.round((valides / total) * 100) : null;
 }
 
 async function chargerHistorique(site) {
@@ -370,22 +552,13 @@ async function chargerHistorique(site) {
     const buffer = bufferPour(site.site_id);
     buffer.instants = [];
     buffer.labels = [];
-    buffer.valeurs = [];
+    for (const m of METRIQUES) buffer.metriques[m.cle] = [];
     buffer.seuils = [];
-    for (const mesure of data) {
-      ajouterPoint(buffer, new Date(mesure.timestamp), mesure.consumption_kw, site.capacity_kw ?? null);
-    }
+    for (const mesure of data) ajouterPoint(buffer, mesure, site);
     purgerAnciens(buffer);
 
     const derniere = data[data.length - 1];
-    dernieresLectures[site.site_id] = derniere
-      ? {
-          puissance: derniere.consumption_kw ?? null,
-          qualite: derniere.data_quality || "",
-          raisons: derniere.null_reasons || [],
-          timestamp: new Date(derniere.timestamp),
-        }
-      : null;
+    dernieresLectures[site.site_id] = derniere ? { mesure: derniere, timestamp: new Date(derniere.timestamp) } : null;
 
     return true;
   } catch {
@@ -395,25 +568,26 @@ async function chargerHistorique(site) {
 
 function afficherSiteSelectionne() {
   const buffer = bufferPour(siteSelectionne.value);
-  if (chart) {
-    chart.data.labels = buffer.labels;
-    chart.data.datasets[0].data = buffer.valeurs;
-    chart.data.datasets[1].data = buffer.seuils;
-    chart.update();
+  for (const m of METRIQUES) {
+    const instance = charts[m.cle];
+    if (!instance) continue;
+    instance.data.labels = buffer.labels;
+    instance.data.datasets[0].data = buffer.metriques[m.cle];
+    if (m.avecSeuil) instance.data.datasets[1].data = buffer.seuils;
+    instance.update();
   }
+  rafraichirGraphiqueGrand();
 
   const derniere = dernieresLectures[siteSelectionne.value];
   derniereLecture.value = derniere?.timestamp ?? null;
-  dernierePuissance.value = derniere?.puissance ?? null;
-  derniereQualite.value = derniere?.qualite ?? "";
-  derniereRaisons.value = derniere?.raisons ?? [];
+  derniereMesure.value = derniere?.mesure ?? null;
+  derniereQualite.value = derniere?.mesure?.data_quality ?? "";
+  derniereRaisons.value = derniere?.mesure?.null_reasons ?? [];
 
   // Le mock IoT simule un capteur peu fiable (30 à 50 % de lectures sans
   // valeur selon les sites) : plutôt que de combler les trous par une
   // estimation, on affiche le taux réel de disponibilité sur la fenêtre.
-  const total = buffer.valeurs.length;
-  const valides = buffer.valeurs.filter((v) => v !== null && v !== undefined).length;
-  tauxDisponibilite.value = total > 0 ? Math.round((valides / total) * 100) : null;
+  tauxDisponibilite.value = calculerDisponibilite(buffer);
 }
 
 async function actualiserToutesLesMesures() {
@@ -463,15 +637,16 @@ async function chargerSites() {
     sites.value = data;
     // Basculer chargementSites avant nextTick : tant qu'il reste vrai, le
     // template affiche "Chargement des sites..." (v-if) et jamais la branche
-    // contenant le <canvas> (v-else) — nextTick attendrait alors le mauvais
-    // rendu et canvasRef.value resterait null.
+    // contenant les <canvas> (v-else) — nextTick attendrait alors le mauvais
+    // rendu et canvasEls resterait vide.
     chargementSites.value = false;
     if (data.length > 0) {
       siteSelectionne.value = data[0].site_id;
       await nextTick();
-      creerGraphique();
+      creerGraphiques();
+      creerGraphiqueGrand();
       // Premier chargement de tous les sites depuis measurements_silver,
-      // avant de lancer le cycle périodique (60s) qui prend le relais.
+      // avant de lancer le cycle périodique (30s) qui prend le relais.
       await actualiserToutesLesMesures();
       demarrerSondage();
     }
@@ -491,7 +666,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   arreterSondage();
   clearInterval(intervalHorloge);
-  chart?.destroy();
+  for (const instance of Object.values(charts)) instance?.destroy();
+  chartGrand?.destroy();
 });
 </script>
 
@@ -694,9 +870,59 @@ onBeforeUnmount(() => {
   align-items: center;
 }
 
-.chart-wrapper {
+.graphique-grand {
+  margin-bottom: 12px;
+}
+
+.graphique-grand-titre {
+  font-size: 0.72em;
+  color: var(--text-muted);
+  margin: 0 0 8px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.chart-wrapper-grand {
   position: relative;
-  height: 320px;
+  height: 280px;
+}
+
+/* Ordre fixe, toujours les 7 cartes : cliquer sur l'une d'elles l'affiche en
+   plus dans .graphique-grand ci-dessus, elle reste ici à sa place habituelle. */
+.grille-graphiques {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.graphique-carte {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  transition: border-color 0.15s ease;
+}
+
+.graphique-carte:hover {
+  border-color: var(--text-muted);
+}
+
+.graphique-carte.actif {
+  border-color: var(--text);
+}
+
+.graphique-carte-titre {
+  font-size: 0.7em;
+  color: var(--text-muted);
+  margin: 0 0 8px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.chart-wrapper-carte {
+  position: relative;
+  height: 70px;
 }
 
 .legende-graphe {

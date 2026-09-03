@@ -165,6 +165,12 @@ def test_list_site_measurements_returns_recent_ordered_ascending(client, db_sess
         timestamp=maintenant - timedelta(minutes=1),
         site_id="SITE001",
         consumption_kw=60.0,
+        voltage_v=400.5,
+        current_a=150.2,
+        power_factor=0.92,
+        temperature_celsius=9.5,
+        humidity_percent=41.0,
+        quality_score=100,
         data_quality="good",
     )
     make_measurement(
@@ -186,6 +192,12 @@ def test_list_site_measurements_returns_recent_ordered_ascending(client, db_sess
     assert body[0]["null_reasons"] == ["network_loss"]
     assert body[1]["consumption_kw"] == 60.0
     assert body[1]["null_reasons"] == []
+    assert body[1]["voltage_v"] == 400.5
+    assert body[1]["current_a"] == 150.2
+    assert body[1]["power_factor"] == 0.92
+    assert body[1]["temperature_celsius"] == 9.5
+    assert body[1]["humidity_percent"] == 41.0
+    assert body[1]["quality_score"] == 100
 
 
 def test_list_site_measurements_excludes_rows_outside_the_window(client, db_session):
