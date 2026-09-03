@@ -7,7 +7,7 @@ from api.models import User
 from api.routers import sensors_failing
 
 app = FastAPI()
-app.include_router(sensors_failing.router)
+app.include_router(sensors_failing.router, prefix="/api/v1")
 
 
 def utilisateur_de_test():
