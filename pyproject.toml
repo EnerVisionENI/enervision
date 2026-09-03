@@ -2,12 +2,16 @@
 # chaque service a ses propres dépendances (api/requirements*.txt, etl/requirements*.txt).
 
 [tool.ruff]
-line-length = 110
+line-length = 120
 target-version = "py312"
 extend-exclude = [".venv", "front", "infra"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501", "SIM105"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.params.Depends", "fastapi.Query"]
 
 [tool.ruff.format]
 indent-style = "space"

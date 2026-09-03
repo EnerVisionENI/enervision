@@ -313,11 +313,11 @@ def fetch_records(
 	threads (le coût dominant d'un gros run est le round-trip réseau, pas le CPU).
 
 	Renvoie (records, erreurs_lecture) :
-	  - records : (clé, mesure décodée), réordonnés dans l'ordre de `keys` pour que
-	    la suite du traitement soit déterministe quel que soit l'ordre d'arrivée ;
-	  - erreurs_lecture : nombre d'objets dont le GET S3 a échoué. Ces clés sont
-	    simplement omises (comme dans la version séquentielle) : non marquées
-	    traitées, elles repasseront au prochain run.
+		- records : (clé, mesure décodée), réordonnés dans l'ordre de `keys` pour que
+			la suite du traitement soit déterministe quel que soit l'ordre d'arrivée ;
+		- erreurs_lecture : nombre d'objets dont le GET S3 a échoué. Ces clés sont
+			simplement omises (comme dans la version séquentielle) : non marquées
+			traitées, elles repasseront au prochain run.
 
 	Une erreur de décodage (JSON invalide, pas un dict) n'est PAS une erreur de
 	lecture : fetch_record la renvoie comme {"_parse_error": ...} et la clé part
