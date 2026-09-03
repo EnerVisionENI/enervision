@@ -10,7 +10,7 @@
           :key="s.site_id"
           type="button"
           class="site-pill"
-          :class="{ actif: s.site_id === siteSelectionne, alerte: estEnAlerteMock(s.site_id) }"
+          :class="{ actif: s.site_id === siteSelectionne, alerte: resumeParSite[s.site_id]?.alerte }"
           @click="selectionnerSite(s.site_id)"
         >
           <span class="point"></span>{{ s.site_id }}
@@ -122,22 +122,26 @@
         </div>
       </template>
 
-      <p class="section-titre">parc — {{ PARC_MOCK.length }} sites</p>
+      <p class="section-titre">parc — {{ sites.length }} sites</p>
       <div class="parc-grille">
         <div
-          v-for="carte in PARC_MOCK"
-          :key="carte.site_id"
+          v-for="s in sites"
+          :key="s.site_id"
           class="parc-carte"
-          :class="{ actif: carte.site_id === siteSelectionne }"
-          @click="selectionnerSite(carte.site_id)"
+          :class="{ actif: s.site_id === siteSelectionne }"
+          @click="selectionnerSite(s.site_id)"
         >
-          <div class="id">{{ carte.site_id }}</div>
-          <div class="valeur" :class="{ alerte: carte.alerte }">{{ carte.valeur }}</div>
+          <div class="id">{{ s.site_id }}</div>
+          <div class="valeur" :class="{ alerte: resumeParSite[s.site_id]?.alerte }">
+            {{ formatEntier(resumeParSite[s.site_id]?.valeur) }}
+          </div>
           <svg viewBox="0 0 60 20" width="100%" height="20">
             <polyline
-              :points="carte.points"
+              v-for="(segment, i) in resumeParSite[s.site_id]?.segments || []"
+              :key="i"
+              :points="segment"
               fill="none"
-              :stroke="carte.alerte ? '#f59e0b' : '#2dd4bf'"
+              :stroke="resumeParSite[s.site_id]?.alerte ? '#f59e0b' : '#2dd4bf'"
               stroke-width="1.5"
             />
           </svg>
@@ -145,10 +149,13 @@
       </div>
 
       <div class="kpi-grille">
-        <div v-for="kpi in KPI_MOCK" :key="kpi.label" class="kpi-carte">
-          <div class="kpi-label">{{ kpi.label }}</div>
-          <div class="kpi-valeur">{{ kpi.valeur }}</div>
-        </div>
+        <template v-if="kpiJour">
+          <div v-for="kpi in kpiJour" :key="kpi.label" class="kpi-carte">
+            <div class="kpi-label">{{ kpi.label }}</div>
+            <div class="kpi-valeur">{{ kpi.valeur }}<span class="kpi-unite">{{ kpi.unite }}</span></div>
+          </div>
+        </template>
+        <p v-else class="pas-de-donnee-kpi">Résumé du jour pas encore calculé pour ce site.</p>
       </div>
 
       <div class="grille-bas">
@@ -279,26 +286,9 @@ const LIBELLES_RAISON = {
 
 // Contenu de démonstration : aucun moteur de recommandation, de scoring de
 // site ni de suivi de modèle n'existe côté backend. Seuls le sélecteur de
-// site, l'en-tête et les graphiques de mesures ci-dessus sont réellement
-// alimentés par l'API (GET /sites, GET /sites/{id}/measurements).
-const PARC_MOCK = [
-  { site_id: "SITE001", valeur: 78, alerte: false, points: "0,14 15,10 30,12 45,6 60,8" },
-  { site_id: "SITE002", valeur: 474, alerte: false, points: "0,10 15,12 30,6 45,8 60,4" },
-  { site_id: "SITE003", valeur: 512, alerte: false, points: "0,8 15,10 30,9 45,11 60,10" },
-  { site_id: "SITE004", valeur: 861, alerte: true, points: "0,16 15,12 30,8 45,4 60,2" },
-  { site_id: "SITE005", valeur: 203, alerte: false, points: "0,9 15,8 30,11 45,9 60,10" },
-  { site_id: "SITE006", valeur: 112, alerte: false, points: "0,12 15,10 30,10 45,8 60,9" },
-  { site_id: "SITE007", valeur: 598, alerte: true, points: "0,6 15,9 30,7 45,13 60,15" },
-];
-
-const KPI_MOCK = [
-  { label: "kWh évités — 7j", valeur: "1 240" },
-  { label: "kg CO2 évités — 7j", valeur: "187" },
-  { label: "€ évités — 7j", valeur: "2 140" },
-  { label: "taux de confiance", valeur: "98,4 %" },
-  { label: "ratio d'écart", valeur: "0,004" },
-];
-
+// site (dont la pastille d'alerte), l'en-tête, les graphiques de mesures, la
+// grille "parc" et les KPI du jour sont réellement alimentés par l'API
+// (GET /sites, GET /sites/{id}/measurements, GET /sites/{id}/daily-summary).
 const SANTE_MOCK = [
   { label: "fiabilité", valeur: "0,71", ok: true },
   { label: "couverture — cible 96 %", valeur: "91,2 %", ok: false },
@@ -316,9 +306,9 @@ const RECOMMANDATION_MOCK = {
   gain: "340 € évités",
 };
 
-function estEnAlerteMock(siteId) {
-  return PARC_MOCK.find((carte) => carte.site_id === siteId)?.alerte ?? false;
-}
+// Site proche de sa limite contractuelle : signal réel (dernière puissance
+// mesurée / puissance souscrite), pas une couleur mise au hasard.
+const SEUIL_ALERTE_PARC = 0.9;
 
 function libelleRaison(raison) {
   return LIBELLES_RAISON[raison] || raison.replaceAll("_", " ");
@@ -330,6 +320,10 @@ function formatEntier(nombre) {
 
 function formatValeur(nombre, decimales = 0) {
   return nombre === null || nombre === undefined ? "—" : Number(nombre).toFixed(decimales);
+}
+
+function formatMillier(nombre) {
+  return nombre === null || nombre === undefined ? "—" : Math.round(nombre).toLocaleString("fr-FR");
 }
 
 const sites = ref([]);
@@ -344,6 +338,8 @@ const derniereMesure = ref(null); // dernière ligne measurements_silver reçue 
 const derniereQualite = ref("");
 const derniereRaisons = ref([]);
 const tauxDisponibilite = ref(null); // % de points avec une valeur, sur la métrique et la fenêtre affichées
+const resumeJour = ref(null); // aggregates_gold_daily du jour pour le site affiché (null si pas encore calculé)
+const resumeParSite = ref({}); // { [site_id]: { valeur, alerte, segments } } pour la grille "parc" et le sélecteur
 const maintenant = ref(new Date());
 
 const siteActuel = computed(() => sites.value.find((s) => s.site_id === siteSelectionne.value) || null);
@@ -360,6 +356,21 @@ function formatValeurAvecUnite(valeur) {
   const texte = formatValeur(valeur, metriqueFocusInfo.value.decimales);
   return metriqueFocusInfo.value.unite ? `${texte} ${metriqueFocusInfo.value.unite}` : texte;
 }
+
+// Résumé du jour (aggregates_gold_daily, recalculé par etl/quality.py) : seul
+// panneau "KPI" de la page à être réel plutôt que du contenu de démonstration.
+const kpiJour = computed(() => {
+  const r = resumeJour.value;
+  if (!r) return null;
+  const tauxFiable = r.records_count > 0 ? Math.round((r.good_count / r.records_count) * 100) : null;
+  return [
+    { label: "Consommation du jour", valeur: formatMillier(r.total_consumption_kwh), unite: " kWh" },
+    { label: "Puissance moyenne", valeur: formatValeur(r.avg_consumption_kw, 0), unite: " kW" },
+    { label: "Pic de puissance", valeur: formatValeur(r.max_consumption_kw, 0), unite: " kW" },
+    { label: "Score qualité moyen", valeur: formatValeur(r.avg_quality_score, 0), unite: "/100" },
+    { label: "Lectures fiables", valeur: tauxFiable === null ? "—" : String(tauxFiable), unite: " %" },
+  ];
+});
 
 const ecouleDepuisDerniereLecture = computed(() => {
   if (!derniereLecture.value) return "";
@@ -538,6 +549,56 @@ function calculerDisponibilite(buffer) {
   return total > 0 ? Math.round((valides / total) * 100) : null;
 }
 
+function segmentsSparkline(valeurs) {
+  // Un <polyline> par plage continue de données réelles, jamais un trait
+  // reliant deux points de part et d'autre d'un trou (même principe que les
+  // graphiques principaux, spanGaps:false) : un sparkline honnête plutôt
+  // qu'une tendance lissée qui masquerait les lectures manquantes.
+  const indicesValides = [];
+  for (let i = 0; i < valeurs.length; i++) {
+    if (valeurs[i] !== null && valeurs[i] !== undefined) indicesValides.push(i);
+  }
+  if (indicesValides.length === 0) return [];
+
+  const min = Math.min(...indicesValides.map((i) => valeurs[i]));
+  const max = Math.max(...indicesValides.map((i) => valeurs[i]));
+  const echelle = max > min ? max - min : 1;
+  const n = valeurs.length;
+  const xPour = (i) => (n > 1 ? (i / (n - 1)) * 60 : 30);
+  const yPour = (v) => 18 - ((v - min) / echelle) * 16;
+
+  const segments = [];
+  let courant = [];
+  for (let i = 0; i < n; i++) {
+    if (valeurs[i] === null || valeurs[i] === undefined) {
+      if (courant.length > 1) segments.push(courant.join(" "));
+      courant = [];
+    } else {
+      courant.push(`${xPour(i).toFixed(1)},${yPour(valeurs[i]).toFixed(1)}`);
+    }
+  }
+  if (courant.length > 1) segments.push(courant.join(" "));
+
+  return segments;
+}
+
+function calculerResumeParc() {
+  const resume = {};
+  for (const site of sites.value) {
+    const buffer = bufferPour(site.site_id);
+    const derniereValeur = dernieresLectures[site.site_id]?.mesure?.consumption_kw ?? null;
+    resume[site.site_id] = {
+      valeur: derniereValeur,
+      alerte:
+        derniereValeur !== null && site.capacity_kw
+          ? derniereValeur >= SEUIL_ALERTE_PARC * site.capacity_kw
+          : false,
+      segments: segmentsSparkline(buffer.metriques.consumption_kw),
+    };
+  }
+  resumeParSite.value = resume;
+}
+
 async function chargerHistorique(site) {
   // Source unique : measurements_silver (alimentée par etl-collect, ~60s).
   // Rappelé à chaque cycle, ce n'est pas un simple préremplissage mais LA
@@ -590,12 +651,24 @@ function afficherSiteSelectionne() {
   tauxDisponibilite.value = calculerDisponibilite(buffer);
 }
 
+async function chargerResumeJour(siteId) {
+  try {
+    const { data } = await api.get(`/sites/${siteId}/daily-summary`);
+    // Ignorer si le site affiché a changé pendant l'appel (résultat périmé).
+    if (siteId === siteSelectionne.value) resumeJour.value = data;
+  } catch {
+    if (siteId === siteSelectionne.value) resumeJour.value = null;
+  }
+}
+
 async function actualiserToutesLesMesures() {
-  const resultats = await Promise.all(
-    sites.value.map(async (site) => ({ siteId: site.site_id, ok: await chargerHistorique(site) }))
-  );
+  const [resultats] = await Promise.all([
+    Promise.all(sites.value.map(async (site) => ({ siteId: site.site_id, ok: await chargerHistorique(site) }))),
+    chargerResumeJour(siteSelectionne.value),
+  ]);
 
   afficherSiteSelectionne();
+  calculerResumeParc();
 
   const echecSiteActuel = resultats.some((r) => r.siteId === siteSelectionne.value && !r.ok);
   erreurLecture.value = echecSiteActuel ? "Mesures indisponibles, nouvelle tentative au prochain cycle." : "";
@@ -620,6 +693,10 @@ function selectionnerSite(siteId) {
   if (siteId === siteSelectionne.value) return;
   siteSelectionne.value = siteId;
   afficherSiteSelectionne();
+  // Résumé du jour propre au site : reset immédiat (pas les chiffres de
+  // l'ancien site le temps que la requête réponde), puis rechargement du bon.
+  resumeJour.value = null;
+  chargerResumeJour(siteId);
 }
 
 async function changerFenetre(ms) {
@@ -1081,6 +1158,20 @@ onBeforeUnmount(() => {
   font-family: var(--mono);
   font-size: 1.3em;
   font-weight: 700;
+}
+
+.kpi-unite {
+  font-size: 0.6em;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.pas-de-donnee-kpi {
+  grid-column: 1 / -1;
+  font-size: 0.85em;
+  font-style: italic;
+  color: var(--text-muted);
+  padding: 10px 0;
 }
 
 .grille-bas {

@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from api.auth import get_current_user
 from api.config import get_settings
 from api.database import get_db
-from api.models import MeasurementSilver, Site, User
-from api.schemas import MeasurementOut, SiteCurrentReading, SiteOut
+from api.models import AggregateGoldDaily, MeasurementSilver, Site, User
+from api.schemas import DailySummaryOut, MeasurementOut, SiteCurrentReading, SiteOut
 
 settings = get_settings()
 
@@ -40,6 +40,22 @@ def list_site_measurements(
         .filter(MeasurementSilver.site_id == site_id, MeasurementSilver.timestamp >= depuis)
         .order_by(asc(MeasurementSilver.timestamp))
         .all()
+    )
+
+
+@router.get("/{site_id}/daily-summary", response_model=DailySummaryOut | None)
+def get_site_daily_summary(
+    site_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> AggregateGoldDaily | None:
+    """Résumé du jour (table aggregates_gold_daily, recalculée par etl/quality.py) :
+    null si le job gold n'a pas encore tourné pour aujourd'hui sur ce site."""
+    aujourdhui = datetime.now(timezone.utc).date()
+    return (
+        db.query(AggregateGoldDaily)
+        .filter(AggregateGoldDaily.site_id == site_id, AggregateGoldDaily.record_date == aujourdhui)
+        .first()
     )
 
 

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
@@ -109,3 +109,15 @@ class MeasurementOut(BaseModel):
     @classmethod
     def _valider_timestamp(cls, valeur: datetime) -> datetime:
         return _en_utc(valeur)
+
+
+class DailySummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    record_date: date
+    records_count: int
+    good_count: int
+    avg_consumption_kw: float | None = None
+    max_consumption_kw: float | None = None
+    total_consumption_kwh: float | None = None
+    avg_quality_score: float | None = None

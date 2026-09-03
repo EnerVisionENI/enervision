@@ -357,7 +357,7 @@ describe("DashboardView", () => {
     expect(chartInstances[0].data.datasets[0].data).toEqual([100, 101]);
   });
 
-  it("change de site instantanément au clic, sans nouvel appel réseau", async () => {
+  it("change de site instantanément au clic, sans nouvel appel de mesures", async () => {
     mockApi({
       lectures: {
         "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
@@ -369,20 +369,24 @@ describe("DashboardView", () => {
     await flushPromises();
     expect(chartInstances[0].data.datasets[0].data).toEqual([179.61]);
 
-    const appelsAvant = api.get.mock.calls.length;
+    const appelsMesuresAvant = api.get.mock.calls.filter(([url]) => url.includes("/measurements")).length;
     await wrapper.findAll(".site-pill")[1].trigger("click");
     await flushPromises();
 
     // Le buffer de SITE002 a déjà été rempli pendant le cycle initial (tous
     // les sites sont sondés à chaque tick) : basculer dessus ne déclenche
-    // aucun appel réseau supplémentaire et n'affiche jamais 0 donnée.
-    expect(api.get.mock.calls.length).toBe(appelsAvant);
+    // aucun appel de mesures supplémentaire et n'affiche jamais 0 donnée. Le
+    // résumé du jour, lui, n'est chargé que pour le site affiché : un nouvel
+    // appel pour SITE002 est normal et attendu.
+    const appelsMesuresApres = api.get.mock.calls.filter(([url]) => url.includes("/measurements")).length;
+    expect(appelsMesuresApres).toBe(appelsMesuresAvant);
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE002/daily-summary");
     expect(wrapper.text()).toContain("Usine Rennes");
     expect(chartInstances[0].data.datasets[0].data).toEqual([500]);
     expect(chartInstances[0].data.datasets[1].data).toEqual([1000]);
   });
 
-  it("change de site au clic sur une carte du parc (contenu de démonstration)", async () => {
+  it("change de site au clic sur une carte du parc", async () => {
     mockApi({
       lectures: {
         "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
@@ -398,5 +402,141 @@ describe("DashboardView", () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain("Usine Rennes");
+  });
+
+  it("affiche la vraie dernière puissance dans la grille parc et signale un site proche de sa limite", async () => {
+    mockApi({
+      lectures: {
+        // SITE001 : capacity_kw 200 -> 190 kW = 95 %, au-dessus du seuil d'alerte.
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [{ ...MESURE_OK, consumption_kw: 190 }] }),
+        // SITE002 : capacity_kw 1000 -> 300 kW = 30 %, sous le seuil.
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [{ ...MESURE_OK, consumption_kw: 300 }] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    const pilleSite001 = wrapper.findAll(".site-pill").find((p) => p.text().includes("SITE001"));
+    const pilleSite002 = wrapper.findAll(".site-pill").find((p) => p.text().includes("SITE002"));
+    expect(pilleSite001.classes()).toContain("alerte");
+    expect(pilleSite002.classes()).not.toContain("alerte");
+
+    const carteSite001 = wrapper.findAll(".parc-carte").find((c) => c.text().includes("SITE001"));
+    const carteSite002 = wrapper.findAll(".parc-carte").find((c) => c.text().includes("SITE002"));
+    expect(carteSite001.find(".valeur").text()).toBe("190");
+    expect(carteSite001.find(".valeur").classes()).toContain("alerte");
+    expect(carteSite002.find(".valeur").text()).toBe("300");
+    expect(carteSite002.find(".valeur").classes()).not.toContain("alerte");
+  });
+
+  it("affiche une vraie sparkline pour un site avec plusieurs mesures, aucune sans donnée", async () => {
+    const ilYA60s = new Date(Date.now() - 60_000).toISOString();
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () =>
+          Promise.resolve({
+            data: [
+              { ...MESURE_OK, timestamp: ilYA60s, consumption_kw: 50 },
+              { ...MESURE_OK, consumption_kw: 60 },
+            ],
+          }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    const carteSite001 = wrapper.findAll(".parc-carte").find((c) => c.text().includes("SITE001"));
+    const carteSite002 = wrapper.findAll(".parc-carte").find((c) => c.text().includes("SITE002"));
+    expect(carteSite001.findAll("polyline").length).toBeGreaterThan(0);
+    expect(carteSite002.findAll("polyline").length).toBe(0);
+  });
+
+  it("affiche les KPI réels du jour (aggregates_gold_daily) quand ils existent", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+        "/sites/SITE001/daily-summary": () =>
+          Promise.resolve({
+            data: {
+              record_date: "2026-09-03",
+              records_count: 200,
+              good_count: 40,
+              avg_consumption_kw: 111.29,
+              max_consumption_kw: 186.63,
+              total_consumption_kwh: 11685.34,
+              avg_quality_score: 68.5,
+            },
+          }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/daily-summary");
+    const cartes = wrapper.findAll(".kpi-carte").map((c) => c.text());
+    // toLocaleString("fr-FR") sépare les milliers par une espace insécable
+    // (pas une espace normale) : on vérifie les groupes de chiffres séparément.
+    expect(cartes.some((t) => t.includes("Consommation du jour") && t.includes("11") && t.includes("685"))).toBe(
+      true
+    );
+    expect(cartes.some((t) => t.includes("Puissance moyenne") && t.includes("111"))).toBe(true);
+    expect(cartes.some((t) => t.includes("Pic de puissance") && t.includes("187"))).toBe(true);
+    expect(cartes.some((t) => t.includes("Score qualité moyen") && t.includes("69"))).toBe(true);
+    // 40 bonnes lectures sur 200 -> 20 %.
+    expect(cartes.some((t) => t.includes("Lectures fiables") && t.includes("20"))).toBe(true);
+  });
+
+  it("affiche un message quand le résumé du jour n'est pas encore calculé", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+        "/sites/SITE001/daily-summary": () => Promise.resolve({ data: null }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(wrapper.find(".pas-de-donnee-kpi").text()).toBe("Résumé du jour pas encore calculé pour ce site.");
+    expect(wrapper.findAll(".kpi-carte")).toHaveLength(0);
+  });
+
+  it("recharge le résumé du jour du nouveau site au changement de site", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+        "/sites/SITE001/daily-summary": () =>
+          Promise.resolve({
+            data: { record_date: "2026-09-03", records_count: 10, good_count: 10, avg_consumption_kw: 100 },
+          }),
+        "/sites/SITE002/daily-summary": () =>
+          Promise.resolve({
+            data: { record_date: "2026-09-03", records_count: 10, good_count: 5, avg_consumption_kw: 900 },
+          }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    function puissanceMoyenneAffichee() {
+      const carte = wrapper.findAll(".kpi-carte").find((c) => c.text().includes("Puissance moyenne"));
+      return carte.find(".kpi-valeur").text();
+    }
+
+    expect(puissanceMoyenneAffichee()).toContain("100");
+
+    await wrapper.findAll(".site-pill")[1].trigger("click");
+    await flushPromises();
+
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE002/daily-summary");
+    expect(puissanceMoyenneAffichee()).toContain("900");
   });
 });

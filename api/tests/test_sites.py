@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from api.models import MeasurementSilver, Site
+from api.models import AggregateGoldDaily, MeasurementSilver, Site
 from api.tests.conftest import auth_headers, make_user
 
 
@@ -229,3 +229,58 @@ def test_list_site_measurements_excludes_rows_outside_the_window(client, db_sess
     body = response.json()
     assert len(body) == 1
     assert body[0]["consumption_kw"] == 60.0
+
+
+def make_gold_daily(db_session, record_date, site_id: str, **kwargs) -> AggregateGoldDaily:
+    aggregat = AggregateGoldDaily(record_date=record_date, site_id=site_id, **kwargs)
+    db_session.add(aggregat)
+    db_session.commit()
+    db_session.refresh(aggregat)
+    return aggregat
+
+
+def test_get_site_daily_summary_requires_token(client):
+    response = client.get("/api/v1/sites/SITE001/daily-summary")
+
+    assert response.status_code == 401
+
+
+def test_get_site_daily_summary_returns_todays_aggregate(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    aujourdhui = datetime.now(timezone.utc).date()
+    make_gold_daily(
+        db_session,
+        aujourdhui,
+        "SITE001",
+        records_count=203,
+        good_count=34,
+        avg_consumption_kw=111.29,
+        max_consumption_kw=186.63,
+        total_consumption_kwh=11685.34,
+        avg_quality_score=68.53,
+    )
+
+    response = client.get("/api/v1/sites/SITE001/daily-summary", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["records_count"] == 203
+    assert body["good_count"] == 34
+    assert body["avg_consumption_kw"] == 111.29
+    assert body["max_consumption_kw"] == 186.63
+    assert body["total_consumption_kwh"] == 11685.34
+    assert body["avg_quality_score"] == 68.53
+
+
+def test_get_site_daily_summary_returns_null_when_not_yet_computed(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    hier = datetime.now(timezone.utc).date() - timedelta(days=1)
+    # Un agrégat existe, mais pas pour aujourd'hui : ne doit pas être renvoyé.
+    make_gold_daily(db_session, hier, "SITE001", records_count=100, good_count=50)
+
+    response = client.get("/api/v1/sites/SITE001/daily-summary", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() is None
