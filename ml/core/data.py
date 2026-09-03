@@ -1,30 +1,13 @@
 """
-Accès en lecture au stockage MinIO (couche gold, granularité horaire).
+Accès en lecture au gold MinIO (granularité horaire), seul fichier du
+module ML qui parle directement au stockage.
 
-C'est le seul fichier du module ML qui parle directement à MinIO.
-Si le stockage change un jour (Azure Blob, S3 direct...), c'est le
-seul fichier à toucher.
-
-Buckets séparés par couche (voir infra/minio/init-buckets.sh) :
-bronze, silver, gold, quarantine, manifests, audit — pas un bucket
-unique avec des préfixes internes.
-
-Le gold réel est partitionné par jour ET par site (pas un fichier
-unique par site comme supposé initialement) :
+Le gold réel est partitionné par jour et par site :
     hourly/record_date=YYYY-MM-DD/site_id=SITE.../hourly.parquet
-avec les colonnes : record_date, record_hour, site_id, site_type,
-records_count, avg_consumption_kw, max_consumption_kw,
-min_consumption_kw, avg_quality_score.
 
-FIXME (bloquant, cf. message à l'auteur du gold) : cette couche ne
-porte pas de température, alors que TOWT (models/towt.py) en a besoin
-comme variable explicative. En attendant qu'un avg_temperature_c soit
-ajouté à l'agrégation gold (silver l'a déjà : temperature_celsius,
-mais quasi toujours nulle — panne capteur simulée par l'API mock),
-on comble avec TEMPERATURE_FALLBACK_C ci-dessous. Uniquement utile
-pour vérifier que le pipeline tourne bout en bout : le modèle ne peut
-rien apprendre d'une température constante, donc son MASE réel n'a
-aucune valeur tant que ce FIXME n'est pas levé.
+FIXME : ce parquet ne porte ni température ni consommation fiable à 100%
+(voir message à l'auteur du gold) — TEMPERATURE_FALLBACK_C et le ffill/bfill
+ci-dessous sont des repères temporaires, pas une source d'entraînement valide.
 """
 
 import io
@@ -109,19 +92,13 @@ def load_gold_hourly(site_id: str, start: str, end: str) -> pd.DataFrame:
 
     df = pd.concat(frames, ignore_index=True)
 
-    # Adapte le schéma réel du gold (voir docstring du module) à celui
-    # attendu par les modèles (REQUIRED_COLUMNS).
+    # Adapte le schéma réel du gold aux colonnes attendues par les modèles.
     df = df.sort_values("record_hour").reset_index(drop=True)
     df["timestamp"] = pd.to_datetime(df["record_hour"], utc=True)
-    # avg_consumption_kw sur une fenêtre d'une heure ~= consommation en kWh de l'heure.
     df["consumption_kwh"] = df["avg_consumption_kw"]
-    # FIXME (trial run) : avg_consumption_kw est NaN sur ~99% des heures pour SITE001
-    # (même cause que la température : la source ne renvoie une lecture exploitable
-    # que sur une fraction des créneaux — voir good_count/degraded_count/
-    # missing_consumption_count côté gold daily). Comblé ici par ffill/bfill pour que
-    # le pipeline ait de quoi s'entraîner ; à retirer une fois que la volumétrie de
-    # lectures valides est meilleure, sous peine de MASE artificiellement optimiste
-    # (on prédit en partie des valeurs qu'on a soi-même comblées).
+    # FIXME : comble les heures sans lecture exploitable par ffill/bfill — fausse
+    # le MASE (on prédit en partie des valeurs qu'on a soi-même comblées), à retirer
+    # dès que la volumétrie de lectures valides est suffisante.
     n_missing = df["consumption_kwh"].isna().sum()
     if n_missing:
         print(

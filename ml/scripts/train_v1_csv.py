@@ -1,27 +1,13 @@
 """
-Persiste en MLflow la V1 des modèles de prévision — un champion par site,
-retenu selon la comparaison faite dans train_csv_experiment.py (voir
-report_data.json et RAPPORT_ENTRAINEMENT.md) :
+Persiste en MLflow la V1 des modèles de prévision — un champion par site
+(dict CHAMPIONS ci-dessous, décidé dans train_csv_experiment.py, détails
+dans reports/RAPPORT_PERSISTANCE_V1.md), entraîné sur le CSV synthétique.
 
-    SITE001 office      -> tow_temp   (MASE 0.640)
-    SITE002 factory     -> lightgbm   (MASE 0.598)
-    SITE003 datacenter  -> tow_temp   (MASE 0.582)
-    SITE004 retail      -> lightgbm   (MASE 0.574)
-    SITE005 hospital    -> tow_temp   (MASE 0.583)
-    SITE006 office      -> tow_temp   (MASE 0.735)
-    SITE007 factory     -> lightgbm   (MASE 0.584)
+Chaque run est tagué data_source=csv_synthetic et stage=Staging (jamais
+Production) : personne ne doit croire que ces modèles ont vu de la vraie donnée.
 
-Entraîné sur le CSV synthétique (data/csv/, notre seule base d'entraînement,
-voir RAPPORT_ENTRAINEMENT.md). Chaque run est explicitement tagué
-data_source=csv_synthetic et stage=Staging (jamais Production) : personne ne
-doit pouvoir croire par erreur que ces modèles ont vu de la vraie donnée.
-
-Cible MLFLOW_TRACKING_URI (.env — pointe sur le serveur prod une fois
-déployé, profile "mlflow" de compose.yaml). Pour un run local avant
-déploiement : MLFLOW_TRACKING_URI=sqlite:///mlflow.db python scripts/train_v1_csv.py
-
-Usage :
-    cd ml && python scripts/train_v1_csv.py
+Cible MLFLOW_TRACKING_URI (.env). Run local avant déploiement du serveur :
+    MLFLOW_TRACKING_URI=sqlite:///mlflow.db python scripts/train_v1_csv.py
 """
 
 import json
@@ -55,10 +41,8 @@ from scripts.train_csv_experiment import (
 TRAIN_END = "2024-09-30"
 CALIB_END = "2024-11-15"
 
-# Champion retenu par site — figé ici depuis report_data.json (pas recalculé
-# à chaque run : la sélection du champion est une décision déjà prise et
-# documentée dans RAPPORT_ENTRAINEMENT.md, ce script se contente de la
-# rejouer et de la persister).
+# Champion par site, figé depuis report_data.json — décision déjà prise
+# (RAPPORT_ENTRAINEMENT.md), ce script se contente de la rejouer et persister.
 CHAMPIONS = {
     "SITE001": "tow_temp",
     "SITE002": "lightgbm",

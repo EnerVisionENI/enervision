@@ -52,12 +52,9 @@ def log_run(
         mlflow.statsmodels.log_model(towt_model, "towt_model")
         mlflow.lightgbm.log_model(lgbm_model, "lightgbm_model")
 
-        # --- logique de promotion : champion d'abord, fusible sinon ---
+        # TOWT reste champion par défaut sous le seuil, même si LightGBM fait
+        # mieux : on ne bascule que sur un gain net et durable (ADR-04).
         if mase_towt < MASE_PROMOTION_THRESHOLD:
-            # TOWT reste le champion par défaut s'il passe le seuil,
-            # même si LightGBM fait mieux : on ne promeut le challenger
-            # que s'il bat le champion de façon nette (voir ADR-04,
-            # seuil de 15% sur trois semaines avant bascule définitive).
             promoted = "towt"
         else:
             promoted = "naive_fallback"

@@ -149,8 +149,6 @@ def compare_to_real(site_id, champion_name, champion_model, champion_predict):
     real_df["day_of_week"] = real_df["timestamp"].dt.dayofweek
     real_df["month"] = real_df["timestamp"].dt.month
     real_df["is_weekend"] = (real_df["day_of_week"] >= 5).astype(int)
-    # Pas d'équivalent réel fiable à is_working_hours/temperature/humidité/solaire :
-    # on le signale, pas de repli silencieux ici (contrairement au ffill du run d'essai précédent).
     real_df["is_working_hours"] = ((real_df["hour"] >= 8) & (real_df["hour"] <= 18) & (~real_df["is_weekend"].astype(bool))).astype(int)
 
     real_valid = real_df[real_df["avg_consumption_kw"].notna()].copy()
@@ -168,8 +166,7 @@ def compare_to_real(site_id, champion_name, champion_model, champion_predict):
         return out
 
     if champion_name == "lightgbm":
-        # Pas de mesure réelle de temp/humidité/solaire à cette granularité gold :
-        # on impute à une constante neutre (0), signalé plutôt que silencieux.
+        # Pas de temp/humidité/solaire au grain gold : imputées à 0 (signalé, pas silencieux).
         real_valid["temperature_celsius"] = 0.0
         real_valid["humidity_percent"] = 0.0
         real_valid["solar_irradiance_wm2"] = 0.0
