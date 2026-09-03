@@ -190,8 +190,15 @@ jobs:
   test-e2e:
     name: E2E (stack éphémère)
     needs: [trivy]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    # Tourne aussi sur les PR (pas seulement sur push vers dev) : un e2e cassé ne
+    # doit pas pouvoir être mergé sans avoir été vu. Concurrency dédiée ci-dessous
+    # car compose.ci.yml utilise des noms de conteneurs/ports fixes (un seul
+    # runner self-hosted) : deux stacks e2e ne peuvent pas tourner en parallèle.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/dev')
     runs-on: self-hosted
+    concurrency:
+      group: enervision-ci-e2e
+      cancel-in-progress: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
