@@ -18,6 +18,9 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
+    # API Mock IoT — même variable et même défaut que etl/collect.py et etl/alerts.py.
+    api_base: str = "http://10.105.200.45:8000"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

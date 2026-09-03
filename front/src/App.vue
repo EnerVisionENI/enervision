@@ -1,27 +1,36 @@
 <template>
-  <div id="app" class="container">
-    <header class="header">
-      <h1>EnerVision</h1>
-      <p>Plateforme de suivi énergétique</p>
-    </header>
+  <div id="app">
+    <div class="container">
+      <header class="header">
+        <h1>EnerVision</h1>
+        <p>Plateforme de suivi énergétique</p>
+      </header>
 
-    <nav v-if="authenticated" class="navbar">
-      <router-link
-        v-for="item in navItems"
-        :key="item.path"
-        :to="item.path"
-        class="nav-button"
-        active-class="active"
-      >
-        {{ item.label }}
-      </router-link>
+      <nav v-if="authenticated" class="navbar">
+        <router-link
+          v-for="item in navItems"
+          :key="item.path"
+          :to="item.path"
+          class="nav-button"
+          active-class="active"
+        >
+          {{ item.label }}
+        </router-link>
 
-      <button class="nav-button logout" @click="handleLogout">
-        Déconnexion
-      </button>
-    </nav>
+        <button class="nav-button logout" @click="handleLogout">
+          Déconnexion
+        </button>
+      </nav>
 
-    <main class="main-content">
+      <!-- Routes normales : inchangé, imbriqué dans .container (max-width 1200px). -->
+      <main v-if="!route.meta?.pleinePage" class="main-content">
+        <router-view />
+      </main>
+    </div>
+
+    <!-- Routes "pleine page" (ex. Dashboard) : hors de .container, donc sans
+         sa contrainte max-width/padding — occupe toute la largeur de #app. -->
+    <main v-if="route.meta?.pleinePage" class="main-content main-content--pleine-page">
       <router-view />
     </main>
   </div>
@@ -29,10 +38,11 @@
 
 <script setup>
 import { ref, onMounted } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { logout, isAuthenticated } from "./auth/auth";
 
 const router = useRouter();
+const route = useRoute();
 const authenticated = ref(false);
 
 // Le nav est dérivé du routeur : une route visible porte un meta.nav (son libellé).

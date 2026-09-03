@@ -10,7 +10,7 @@ Application multi-services conteneurisée, orchestrée par un unique `compose.ya
 
 | Service | Dossier | Rôle | Stack |
 |---|---|---|---|
-| **api** | [`api/`](api/) | API REST (auth, alertes ; à venir : sites) | FastAPI, SQLAlchemy, PostgreSQL |
+| **api** | [`api/`](api/) | API REST (auth, alertes, sites) | FastAPI, SQLAlchemy, PostgreSQL |
 | **front** | [`front/`](front/) | Interface web | Vue 3, Vite, servi par Nginx en prod |
 | **etl** | [`etl/`](etl/) | Collecte des mesures + qualité de données | Python, APScheduler, boto3 |
 | **postgres** | — | Base de données | PostgreSQL 16 |
@@ -103,9 +103,9 @@ CI/CD GitHub Actions sur push `dev` : voir [`infra/DEPLOYMENT.md`](infra/DEPLOYM
 ## Pistes connues (non traitées)
 
 - **Migrations DB** : le schéma vit dans [`infra/postgres/init/`](infra/postgres/init/)
-  (fait foi), les modèles SQLAlchemy ne couvrent que `users`. Introduire Alembic
-  quand le modèle se stabilise.
-- **Endpoints `sites`** : `etl/collect.py` appelle `/api/v1/sites` et
-  `/api/v1/sites/{id}/current`, pas encore implémentés côté API. `etl/sites.py`
-  est un stub (service `etl-sites` en `restart: "no"` en attendant).
+  (fait foi), les modèles SQLAlchemy restent partiels (`users`, `alerts`, `sites`).
+  Introduire Alembic quand le modèle se stabilise.
+- **`etl/sites.py` reste un stub** : le service `etl-sites` (`restart: "no"`) ne
+  peuple pas encore la table `sites` automatiquement. Côté API, `GET /api/v1/sites`
+  et `GET /api/v1/sites/{id}/current` existent désormais ([`api/routers/sites.py`](api/routers/sites.py)).
 - **Tests front dans la CI** : `npm test` (Vitest) existe et passe en local, mais `.github/workflows/deploy-dev.yml` ne fait encore qu'un `npm run build` — l'ajouter au job `build-front`.
