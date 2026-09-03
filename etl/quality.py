@@ -20,12 +20,22 @@ Buckets :
 	bronze       objets bruts        {site_id}/{YYYY-MM-DD}/{HHMMSS}.json
 	silver       batches nettoyés    record_date=…/site_id=…/batch_*.parquet
 	gold         agrégats            daily|hourly/record_date=…/site_id=…/*.parquet
-	quarantine   rejets              {YYYY-MM-DD}/{source_key}__{stamp}.json  (1 objet / rejet)
+	quarantine   rejets              record_date=…/site_id=…/rejects_*.parquet
 	manifests    état incrémental    etl_state.json      (clés bronze déjà traitées)
 	manifests    gold à recalculer   gold_pending.json   (partitions silver modifiées)
 
-Tables PostgreSQL (infra/postgres/init/02_silver.sql, 03_gold.sql) :
-	measurements_silver, aggregates_gold_daily, aggregates_gold_hourly
+Complétude : l'API mock simule des pannes de capteurs vivantes et les applique aux relevés
+historiques au moment du fetch (voir /api/v1/sensors/status). Un backfill lancé pendant une
+panne ramène des lectures « critical » dont les 7 métriques sont nulles. Elles sont
+conservées en silver — le trou doit rester visible et daté — mais marquées is_valid=False,
+comptées à part dans le gold (critical_count, empty_count) et jamais confondues avec une
+mesure : `total_consumption_kwh` vaut NaN et non 0 quand rien n'a été mesuré, et le grain
+horaire est complété à 24 lignes pour qu'une heure sans relevé existe explicitement.
+repair.py rejoue ces fenêtres quand les capteurs sont revenus au vert.
+
+Tables PostgreSQL (infra/postgres/init/02_silver.sql, 03_gold.sql, 05_quarantine.sql) :
+	measurements_silver, aggregates_gold_daily, aggregates_gold_hourly,
+	measurements_quarantine
 
 Environment :
 	MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY          (obligatoires)
@@ -82,6 +92,31 @@ OPTIONAL_NUMERIC_COLUMNS = [
 ]
 
 MANDATORY_COLUMNS = ["timestamp", "site_id"]
+
+# Niveaux de `data_quality` émis par l'API mock, et pénalité de score associée.
+# "critical" (null_reasons = network_loss : TOUTES les métriques absentes) tombait
+# auparavant dans la branche par défaut à -5, donc mieux notée que "partial" (-10) et
+# "degraded" (-25) : sur un échantillon de 6 330 lignes, les 6 254 lectures critical
+# sortaient à 55 contre 40 de moyenne pour degraded. L'ordre est désormais explicite.
+QUALITY_PENALTIES = {
+	"good": 0,
+	"partial": 10,
+	"degraded": 25,
+	"critical": 45,
+}
+UNKNOWN_QUALITY_PENALTY = 5
+QUALITY_LEVELS = tuple(QUALITY_PENALTIES)
+
+QUARANTINE_COLUMNS = [
+	"source_key",
+	"error_type",
+	"error_message",
+	"site_id",
+	"record_date",
+	"raw_timestamp",
+	"raw_record",
+	"captured_at",
+]
 
 PARQUET_CONTENT_TYPE = "application/vnd.apache.parquet"
 JSON_CONTENT_TYPE = "application/json"
@@ -388,14 +423,7 @@ def compute_quality_score(row: dict[str, Any]) -> int:
 	score = 100
 
 	source_quality = str(row.get("data_quality") or "").lower()
-	if source_quality == "good":
-		score += 0
-	elif source_quality == "partial":
-		score -= 10
-	elif source_quality == "degraded":
-		score -= 25
-	else:
-		score -= 5
+	score -= QUALITY_PENALTIES.get(source_quality, UNKNOWN_QUALITY_PENALTY)
 
 	missing_optional = sum(1 for column in OPTIONAL_NUMERIC_COLUMNS if row.get(column) is None)
 	score -= missing_optional * 4
@@ -412,38 +440,69 @@ def compute_quality_score(row: dict[str, Any]) -> int:
 	return max(0, min(100, score))
 
 
+def build_quarantine_row(
+	source_key: str,
+	error_type: str,
+	error_message: str,
+	*,
+	record: dict[str, Any] | None = None,
+	raw_text: str | None = None,
+) -> dict[str, Any]:
+	"""Ligne de quarantaine au schéma fixe (QUARANTINE_COLUMNS).
+
+	`site_id` / `record_date` sont extraits du rejet quand ils sont lisibles, pour que le
+	bucket soit partitionné sur la date DE LA MESURE comme silver et gold — et non plus sur
+	la date de traitement, qui ne permettait pas de recoller un rejet à son trou dans le
+	gold. Ils restent nuls (partition "unknown") si l'enregistrement est illisible.
+	`raw_record` est toujours une chaîne JSON : un schéma stable est indispensable pour
+	empiler les rejets en Parquet."""
+	site_id = record.get("site_id") if isinstance(record, dict) else None
+	raw_timestamp = record.get("timestamp") if isinstance(record, dict) else None
+	timestamp = parse_timestamp(raw_timestamp)
+
+	raw_record = json.dumps(record, ensure_ascii=False, default=str) if record is not None else raw_text
+
+	return {
+		"source_key": source_key,
+		"error_type": error_type,
+		"error_message": error_message,
+		"site_id": str(site_id) if site_id not in (None, "") else None,
+		"record_date": timestamp.date().isoformat() if timestamp is not None else None,
+		"raw_timestamp": str(raw_timestamp) if raw_timestamp not in (None, "") else None,
+		"raw_record": raw_record,
+		"captured_at": utc_now_iso(),
+	}
+
+
 def normalize_record(
 	record: dict[str, Any],
 	source_key: str,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
 	if record.get("_parse_error"):
-		return None, {
-			"source_key": source_key,
-			"error_type": "parse_error",
-			"error_message": record["_parse_error"],
-			"raw_line": record.get("_raw_line"),
-			"captured_at": utc_now_iso(),
-		}
+		return None, build_quarantine_row(
+			source_key,
+			"parse_error",
+			record["_parse_error"],
+			raw_text=record.get("_raw_line"),
+		)
 
 	missing_mandatory = [column for column in MANDATORY_COLUMNS if record.get(column) in (None, "")]
 	if missing_mandatory:
-		return None, {
-			"source_key": source_key,
-			"error_type": "missing_mandatory_fields",
-			"error_message": ", ".join(missing_mandatory),
-			"raw_record": record,
-			"captured_at": utc_now_iso(),
-		}
+		return None, build_quarantine_row(
+			source_key,
+			"missing_mandatory_fields",
+			", ".join(missing_mandatory),
+			record=record,
+		)
 
 	timestamp = parse_timestamp(record.get("timestamp"))
 	if timestamp is None:
-		return None, {
-			"source_key": source_key,
-			"error_type": "invalid_timestamp",
-			"error_message": f"Invalid timestamp: {record.get('timestamp')}",
-			"raw_record": record,
-			"captured_at": utc_now_iso(),
-		}
+		return None, build_quarantine_row(
+			source_key,
+			"invalid_timestamp",
+			f"Invalid timestamp: {record.get('timestamp')}",
+			record=record,
+		)
 
 	normalized: dict[str, Any] = {
 		"timestamp": timestamp,
@@ -464,8 +523,13 @@ def normalize_record(
 	normalized["record_date"] = normalized["timestamp"].date().isoformat()
 	normalized["record_hour"] = normalized["timestamp"].floor("h")
 	normalized["missing_fields"] = [column for column in NUMERIC_COLUMNS if normalized.get(column) is None]
+	normalized["usable_metrics_count"] = len(NUMERIC_COLUMNS) - len(normalized["missing_fields"])
 	normalized["quality_score"] = compute_quality_score(normalized)
-	normalized["is_valid"] = True
+	# `is_valid` ne dit pas "bien formé" — c'est déjà acquis ici, sinon la ligne serait
+	# partie en quarantaine — mais "porte au moins une mesure". Une lecture critical /
+	# network_loss a ses 7 métriques à null : elle reste en silver pour que le trou soit
+	# visible et daté, mais elle ne doit pas peser comme une mesure dans le gold.
+	normalized["is_valid"] = normalized["usable_metrics_count"] > 0
 	normalized["has_anomaly"] = False
 
 	return normalized, None
@@ -473,51 +537,132 @@ def normalize_record(
 
 # -------------------------------------------------------------------- agrégats
 
-def aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
-	daily = (
-		df.assign(
-			is_good=df["data_quality"].astype(str).str.lower().eq("good"),
-			is_partial=df["data_quality"].astype(str).str.lower().eq("partial"),
-			is_degraded=df["data_quality"].astype(str).str.lower().eq("degraded"),
-			missing_consumption=df["consumption_kw"].isna(),
-		)
-		.groupby(["record_date", "site_id", "site_type"], dropna=False)
-		.agg(
-			records_count=("site_id", "size"),
-			good_count=("is_good", "sum"),
-			partial_count=("is_partial", "sum"),
-			degraded_count=("is_degraded", "sum"),
-			missing_consumption_count=("missing_consumption", "sum"),
-			avg_consumption_kw=("consumption_kw", "mean"),
-			min_consumption_kw=("consumption_kw", "min"),
-			max_consumption_kw=("consumption_kw", "max"),
-			total_consumption_kwh=("consumption_kwh", "sum"),
-			avg_voltage_v=("voltage_v", "mean"),
-			avg_current_a=("current_a", "mean"),
-			avg_power_factor=("power_factor", "mean"),
-			avg_temperature_celsius=("temperature_celsius", "mean"),
-			avg_humidity_percent=("humidity_percent", "mean"),
-			avg_quality_score=("quality_score", "mean"),
-		)
+def _somme_ou_nan(series: pd.Series) -> float:
+	"""Somme qui vaut NaN — et non 0 — quand le groupe n'a aucune valeur.
+
+	`Series.sum()` renvoie 0.0 sur un groupe entièrement NaN. Le gold annonçait donc
+	`total_consumption_kwh = 0` pour une journée dont les 10 relevés avaient une
+	consommation absente : un modèle entraîné là-dessus apprend une conso nulle réelle au
+	lieu de voir un trou. `min_count=1` rend l'inconnu explicite."""
+	return series.sum(min_count=1)
+
+
+# Compteurs de couverture, identiques aux deux grains. Ils partitionnent `records_count`
+# sans reste : good + partial + degraded + critical + unknown == records_count, ce qui
+# n'était pas le cas avant (les lignes critical n'étaient comptées nulle part).
+GOLD_COUNTERS: dict[str, tuple[str, Any]] = {
+	"records_count": ("site_id", "size"),
+	"usable_count": ("is_usable", "sum"),
+	"empty_count": ("is_empty_reading", "sum"),
+	"good_count": ("is_good", "sum"),
+	"partial_count": ("is_partial", "sum"),
+	"degraded_count": ("is_degraded", "sum"),
+	"critical_count": ("is_critical", "sum"),
+	"unknown_count": ("is_unknown", "sum"),
+	"missing_consumption_count": ("missing_consumption", "sum"),
+	"anomaly_count": ("anomaly", "sum"),
+}
+
+GOLD_METRICS: dict[str, tuple[str, Any]] = {
+	"avg_consumption_kw": ("consumption_kw", "mean"),
+	"min_consumption_kw": ("consumption_kw", "min"),
+	"max_consumption_kw": ("consumption_kw", "max"),
+	"total_consumption_kwh": ("consumption_kwh", _somme_ou_nan),
+	"avg_voltage_v": ("voltage_v", "mean"),
+	"avg_current_a": ("current_a", "mean"),
+	"avg_power_factor": ("power_factor", "mean"),
+	"avg_temperature_celsius": ("temperature_celsius", "mean"),
+	"avg_humidity_percent": ("humidity_percent", "mean"),
+	"avg_quality_score": ("quality_score", "mean"),
+}
+
+GOLD_COUNTER_NAMES = list(GOLD_COUNTERS)
+GOLD_METRIC_NAMES = list(GOLD_METRICS)
+
+
+def _completeness_flags(df: pd.DataFrame) -> pd.DataFrame:
+	"""Indicateurs booléens dérivés, base commune des deux grains.
+
+	Tout est recalculé depuis les colonnes de mesure plutôt que lu dans `is_valid` /
+	`usable_metrics_count` : un recalcul gold relit des batches silver écrits par des
+	versions antérieures du pipeline, où ces colonnes sont absentes ou valent True partout.
+	Dériver garantit le même verdict sur l'ancien et le nouveau silver."""
+	if "data_quality" in df.columns:
+		quality = df["data_quality"].astype(str).str.lower()
+	else:
+		quality = pd.Series("", index=df.index, dtype="object")
+
+	presentes = [column for column in NUMERIC_COLUMNS if column in df.columns]
+	utilisables = df[presentes].notna().sum(axis=1) if presentes else pd.Series(0, index=df.index)
+
+	flags: dict[str, Any] = {f"is_{niveau}": quality.eq(niveau) for niveau in QUALITY_LEVELS}
+	flags["is_unknown"] = ~quality.isin(QUALITY_LEVELS)
+	flags["is_usable"] = utilisables > 0
+	flags["is_empty_reading"] = utilisables == 0
+	flags["missing_consumption"] = (
+		df["consumption_kw"].isna() if "consumption_kw" in df.columns else pd.Series(True, index=df.index)
+	)
+	flags["anomaly"] = (
+		df["has_anomaly"].fillna(False).astype(bool)
+		if "has_anomaly" in df.columns
+		else pd.Series(False, index=df.index)
+	)
+	return df.assign(**flags)
+
+
+def _aggregate(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+	agrege = (
+		_completeness_flags(df)
+		.groupby(keys, dropna=False)
+		.agg(**GOLD_COUNTERS, **GOLD_METRICS)
 		.reset_index()
 	)
-	return daily
+	for compteur in GOLD_COUNTER_NAMES:
+		agrege[compteur] = agrege[compteur].fillna(0).astype("int64")
+	return agrege
+
+
+def aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
+	return _aggregate(df, ["record_date", "site_id", "site_type"])
 
 
 def aggregate_hourly(df: pd.DataFrame) -> pd.DataFrame:
-	hourly = (
-		df.assign(record_hour=df["record_hour"].dt.strftime("%Y-%m-%dT%H:00:00Z"))
-		.groupby(["record_date", "record_hour", "site_id", "site_type"], dropna=False)
-		.agg(
-			records_count=("site_id", "size"),
-			avg_consumption_kw=("consumption_kw", "mean"),
-			max_consumption_kw=("consumption_kw", "max"),
-			min_consumption_kw=("consumption_kw", "min"),
-			avg_quality_score=("quality_score", "mean"),
-		)
-		.reset_index()
+	"""Même jeu de colonnes que le grain journalier.
+
+	L'horaire ne portait que records_count / avg-min-max consommation / avg_quality_score :
+	impossible d'y distinguer « aucun relevé » de « relevés reçus mais tous vides », alors
+	que c'est le grain sur lequel s'entraînent les modèles de charge."""
+	horaire = df.assign(record_hour=df["record_hour"].dt.strftime("%Y-%m-%dT%H:00:00Z"))
+	return _aggregate(horaire, ["record_date", "record_hour", "site_id", "site_type"])
+
+
+def fill_hourly_grid(hourly: pd.DataFrame, record_date: Any, site_id: Any) -> pd.DataFrame:
+	"""Complète la journée aux 24 heures.
+
+	Une heure sans aucun relevé n'apparaît pas dans le groupby : elle est alors
+	indiscernable d'une heure absente du jeu de données, et un modèle de série temporelle
+	recolle deux heures non adjacentes sans le savoir. On la matérialise avec des compteurs
+	à 0 et des métriques à NaN — « on sait qu'on ne sait pas »."""
+	if hourly.empty:
+		return hourly
+
+	types = hourly["site_type"].dropna()
+	grille = pd.DataFrame({
+		"record_date": str(record_date),
+		"record_hour": [f"{record_date}T{heure:02d}:00:00Z" for heure in range(24)],
+		"site_id": str(site_id),
+		"site_type": types.iloc[0] if not types.empty else None,
+	})
+
+	complet = grille.merge(
+		hourly.drop(columns=["record_date", "site_id", "site_type"]),
+		on="record_hour",
+		how="left",
 	)
-	return hourly
+	for compteur in GOLD_COUNTER_NAMES:
+		if compteur in complet.columns:
+			complet[compteur] = complet[compteur].fillna(0).astype("int64")
+	return complet.sort_values("record_hour").reset_index(drop=True)
 
 
 def add_simple_anomalies(df: pd.DataFrame) -> pd.DataFrame:
@@ -567,8 +712,30 @@ def rebuild_gold_partition(
 		ignore_index=True,
 	)
 
+	# Le silver est append-only : réingérer une clé bronze (état incrémental purgé, reprise
+	# d'un backfill vide par repair.py) ajoute un batch sans retirer l'ancien. Sans ce
+	# dédoublonnage, la mesure serait comptée deux fois dans records_count et pèserait
+	# double dans chaque moyenne. On garde la version la plus récemment ingérée.
+	if "source_key" in partition_df.columns:
+		tri = "ingested_at" if "ingested_at" in partition_df.columns else "source_key"
+		partition_df = (
+			partition_df.sort_values(tri)
+			.drop_duplicates("source_key", keep="last")
+			.reset_index(drop=True)
+		)
+
+	for column in NUMERIC_COLUMNS:
+		if column in partition_df.columns:
+			partition_df[column] = pd.to_numeric(partition_df[column], errors="coerce")
+
+	# Les flags d'anomalie écrits en silver sont calculés à l'échelle du batch. En collecte
+	# temps réel un batch vaut une ligne par site : shift(1) et l'écart-type y sont toujours
+	# NaN, donc has_anomaly ne se déclenchait jamais (1 cas sur 9 478 lignes mesurées). Ici
+	# on tient TOUTE la partition, l'écart au précédent et le z-score ont enfin un sens.
+	partition_df = add_simple_anomalies(partition_df)
+
 	daily_df = aggregate_daily(partition_df)
-	hourly_df = aggregate_hourly(partition_df)
+	hourly_df = fill_hourly_grid(aggregate_hourly(partition_df), record_date, site_id)
 
 	s3_put_parquet(
 		s3, gold_bucket,
@@ -590,22 +757,42 @@ def rebuild_gold_partition(
 			print(f"PostgreSQL : écriture gold ({record_date}, {site_id}) échouée, {exc}")
 
 
-def write_quarantine(s3: Any, bucket: str, bad_rows: list[dict[str, Any]]) -> int:
-	"""Un objet JSON par enregistrement rejeté (S3 n'a pas d'append) :
-	{YYYY-MM-DD}/{source_key aplati}__{stamp}_{i}.json"""
+def write_quarantine(
+	s3: Any,
+	bucket: str,
+	bad_rows: list[dict[str, Any]],
+	*,
+	pg_conn: Any = None,
+) -> int:
+	"""Écrit les rejets en Parquet, partitionnés comme silver et gold.
+
+	L'ancienne disposition — un petit objet JSON par rejet, sous la date de TRAITEMENT —
+	rendait la quarantaine inexploitable : il fallait lister puis GET des milliers d'objets
+	pour répondre à « quels sites rejettent, et quand », et un rejet ne pouvait pas être
+	rapproché du trou qu'il laisse dans le gold. On empile désormais un Parquet par lot sous
+	record_date=…/site_id=…/, au schéma fixe QUARANTINE_COLUMNS, avec réplique Postgres.
+	Les rejets dont la date ou le site sont illisibles vont dans la partition "unknown"."""
 	if not bad_rows:
 		return 0
 
-	day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+	rejets = pd.DataFrame(bad_rows, columns=QUARANTINE_COLUMNS)
 	stamp = run_stamp()
-	for index, row in enumerate(bad_rows):
-		flat_source = str(row.get("source_key", "unknown")).replace("/", "_")
-		key = f"{day}/{flat_source}__{stamp}_{index}.json"
-		s3_put_bytes(
-			s3, bucket, key,
-			json.dumps(row, ensure_ascii=False, default=str).encode("utf-8"),
-			JSON_CONTENT_TYPE,
-		)
+	partitionne = rejets.assign(
+		_record_date=rejets["record_date"].fillna("unknown"),
+		_site_id=rejets["site_id"].fillna("unknown"),
+	)
+
+	for (record_date, site_id), groupe in partitionne.groupby(["_record_date", "_site_id"], dropna=False):
+		key = f"record_date={record_date}/site_id={site_id}/rejects_{stamp}.parquet"
+		s3_put_parquet(s3, bucket, key, groupe.drop(columns=["_record_date", "_site_id"]))
+
+	if pg_conn is not None:
+		try:
+			postgres_writer.write_quarantine(pg_conn, rejets)
+		except psycopg2.Error as exc:
+			pg_conn.rollback()
+			print(f"PostgreSQL : écriture quarantaine échouée, {exc}")
+
 	return len(bad_rows)
 
 
@@ -636,7 +823,7 @@ def process_batch(
 		elif quarantine_row is not None:
 			quarantine_rows.append(quarantine_row)
 
-	quarantine_count = write_quarantine(s3, quarantine_bucket, quarantine_rows)
+	quarantine_count = write_quarantine(s3, quarantine_bucket, quarantine_rows, pg_conn=pg_conn)
 
 	if not silver_rows:
 		return 0, quarantine_count, set()
