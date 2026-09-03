@@ -77,15 +77,25 @@ def faux_history(monkeypatch):
 def faux_quality(monkeypatch):
     """quality.run renvoie successivement les RunResult de `sequence` (défaut : un
     seul passage, plus rien à traiter)."""
-    box = {"sequence": [quality.RunResult(ok=True, objets_bronze=0, nouveaux=0, processed_total=0)]}
+    box = {
+        "sequence": [quality.RunResult(ok=True, objets_bronze=0, nouveaux=0, processed_total=0)],
+        "gold": quality.GoldResult(ok=True),
+    }
     appels = []
+    appels_gold = []
 
     def _run(argv=None):
         appels.append(argv)
         return box["sequence"][min(len(appels) - 1, len(box["sequence"]) - 1)]
 
+    def _run_gold(argv=None):
+        appels_gold.append(argv)
+        return box["gold"]
+
     monkeypatch.setattr(bootstrap.quality, "run", _run)
+    monkeypatch.setattr(bootstrap.quality, "run_gold", _run_gold)
     box["appels"] = appels
+    box["appels_gold"] = appels_gold
     return box
 
 
@@ -106,7 +116,7 @@ def test_enchaine_history_puis_drainage_puis_live(conn, faux_history, faux_quali
 
     assert len(faux_history) == 1                       # historique rejoué une fois
     assert faux_quality["appels"]                       # drainage lancé
-    assert phases_ecrites(conn) == ["history", "draining", "live"]
+    assert phases_ecrites(conn) == ["history", "draining", "gold", "live"]
     assert conn.fermee is True
 
 
@@ -159,7 +169,7 @@ def test_reprise_en_phase_draining_saute_l_historique(faux_history, faux_quality
 
     assert bootstrap.main() == 0
     assert faux_history == []                              # historique non rejoué
-    assert phases_ecrites(c) == ["draining", "live"]
+    assert phases_ecrites(c) == ["draining", "gold", "live"]
 
 
 def test_erreur_historique_passe_en_phase_error(conn, faux_quality, monkeypatch):
@@ -180,3 +190,37 @@ def test_erreur_quality_passe_en_phase_error(conn, faux_history, monkeypatch):
     assert bootstrap.main() == 1
     assert phases_ecrites(conn) == ["history", "draining", "error"]
     assert conn.fermee is True
+
+
+def test_consolidation_gold_en_un_seul_passage(conn, faux_history, faux_quality):
+    """Le drainage empile les partitions sans agréger ; le gold est recalculé une
+    seule fois à la fin, pas à chaque tranche."""
+    faux_quality["sequence"] = [
+        quality.RunResult(ok=True, objets_bronze=40, nouveaux=20, processed_total=20),
+        quality.RunResult(ok=True, objets_bronze=40, nouveaux=20, processed_total=40),
+        quality.RunResult(ok=True, objets_bronze=40, nouveaux=0, processed_total=40),
+    ]
+
+    assert bootstrap.main() == 0
+
+    assert len(faux_quality["appels"]) == 3        # trois tranches de drainage
+    assert faux_quality["appels_gold"] == [[]]     # un seul recalcul gold
+    assert phases_ecrites(conn) == ["history", "draining", "gold", "live"]
+
+
+def test_echec_gold_partiel_passe_quand_meme_en_live(conn, faux_history, faux_quality):
+    """Une partition gold en échec reste en file et sera reprise par le recalcul
+    horaire : bloquer le bootstrap en phase=error empêcherait etl-collect de
+    démarrer alors que le silver, lui, est complet."""
+    faux_quality["gold"] = quality.GoldResult(ok=True, partitions=3, recalculees=2, echecs=1)
+
+    assert bootstrap.main() == 0
+
+    assert phases_ecrites(conn)[-1] == "live"
+    messages = [
+        p
+        for sql, params in conn.executions
+        for p in (params or ())
+        if isinstance(p, str)
+    ]
+    assert any("gold en attente" in m for m in messages)

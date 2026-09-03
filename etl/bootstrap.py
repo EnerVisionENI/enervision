@@ -7,11 +7,16 @@ le script idempotent : si `phase == 'live'`, on ne fait rien et on sort en 0, do
 un redémarrage du conteneur ne relance pas le rattrapage. Pour reforcer un
 rattrapage complet, remettre `phase = 'pending'` à la main.
 
-Phases : pending -> history -> draining -> live      (ou -> error sur échec)
+Phases : pending -> history -> draining -> gold -> live   (ou -> error sur échec)
   - à la reprise après un plantage, `history` et `error` refont l'historique
     (history.py est idempotent : mêmes clés bronze réécrites) ; `draining`
     reprend directement le drainage là où l'état incrémental de quality.py
-    s'était arrêté.
+    s'était arrêté ; `gold` refait la consolidation (le drainage, déjà fini,
+    ne coûte alors qu'un listing).
+  - `gold` est une phase à part parce que le drainage n'agrège plus au fil de
+    l'eau : quality.run() empile les partitions touchées, et elles sont toutes
+    recalculées en une fois à la fin. Recalculer une partition à chaque tranche
+    revenait à relire le même silver des dizaines de fois.
 
 Ce n'est PAS un job planifié : conteneur one-shot (`restart: "no"`), dont
 etl-collect dépend via `condition: service_completed_successfully`.
@@ -121,7 +126,8 @@ def rejouer_historique():
 
 def drainer_bronze(conn):
     """Boucle quality.run() par tranches jusqu'à ce qu'aucun nouvel objet bronze
-    ne reste. Met à jour bronze_total / bronze_done à chaque passage."""
+    ne reste. Met à jour bronze_total / bronze_done à chaque passage.
+    N'agrège pas : le gold est empilé puis traité par consolider_gold()."""
     while True:
         resultat = quality.run(
             ["--max-objects", str(DRAIN_CHUNK), "--fetch-workers", str(DRAIN_FETCH_WORKERS)]
@@ -136,6 +142,21 @@ def drainer_bronze(conn):
         )
         if resultat.nouveaux == 0:
             return
+
+
+def consolider_gold():
+    """Recalcule en un seul passage le gold de toutes les partitions empilées pendant
+    le drainage. Un échec partiel ne met pas le bootstrap en erreur : les partitions
+    concernées restent en file et le recalcul horaire de collect.py les reprendra,
+    alors qu'un phase=error empêcherait etl-collect de démarrer pour rien."""
+    resultat = quality.run_gold([])
+    if not resultat.ok:
+        raise RuntimeError(resultat.message)
+    print(
+        f"gold | partitions={resultat.partitions} | "
+        f"recalculées={resultat.recalculees} | échecs={resultat.echecs}"
+    )
+    return resultat
 
 
 def main():
@@ -156,10 +177,17 @@ def main():
             rejouer_historique()
 
         maj_statut(conn, phase="draining")
-        print("Bootstrap : drainage bronze -> silver/gold…")
+        print("Bootstrap : drainage bronze -> silver…")
         drainer_bronze(conn)
 
-        maj_statut(conn, phase="live", message="Rattrapage terminé")
+        maj_statut(conn, phase="gold")
+        print("Bootstrap : consolidation des agrégats gold…")
+        gold = consolider_gold()
+
+        message = "Rattrapage terminé"
+        if gold.echecs:
+            message = f"Rattrapage terminé, {gold.echecs} partition(s) gold en attente de reprise"
+        maj_statut(conn, phase="live", message=message)
         print("Bootstrap : terminé, phase=live.")
         return 0
     except Exception as erreur:  # phase=error -> etl-collect ne démarrera pas
