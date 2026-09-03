@@ -99,6 +99,10 @@ jobs:
         working-directory: front
         run: npm ci
 
+      - name: Lint frontend
+        working-directory: front
+        run: npm run lint
+
       - name: Build frontend
         working-directory: front
         run: npm run build

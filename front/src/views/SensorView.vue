@@ -82,7 +82,7 @@ export default {
         const reponse = await api.get("/sensors/failing");
         this.sites = reponse.data;
         if (silencieux) this.erreur = null;
-      } catch (err) {
+      } catch {
         if (!silencieux) {
           this.erreur = "Lecture des capteurs impossible pour le moment.";
         }
