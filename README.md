@@ -18,16 +18,168 @@ Application multi-services conteneurisée, orchestrée par un unique `compose.ya
 | **audit-sync** | [`infra/audit-sync/`](infra/audit-sync/) | Réplication chiffrée MinIO → Azure Blob | rclone |
 | **traefik** | [`infra/traefik/`](infra/traefik/) | Reverse proxy TLS | Traefik v2 |
 
-### Flux de données
+### Diagrammes
 
+#### Vue d'ensemble des services
+
+```mermaid
+flowchart TB
+    iot(["API Mock IoT<br/>(externe)"])
+
+    subgraph stack["Stack Docker Compose (compose.yaml)"]
+        direction TB
+
+        subgraph always["toujours démarrés"]
+            front["front<br/>Vue 3 · Nginx<br/>:3000"]
+            api["api<br/>FastAPI<br/>:8000"]
+            postgres[("postgres<br/>:5433")]
+            minio[("minio<br/>:9000 / :9001")]
+        end
+
+        subgraph pETL["profile etl"]
+            collect["etl-collect<br/>cycle 60s"]
+            alerts["etl-alerts<br/>cycle 300s"]
+            sites["etl-sites<br/>(stub, restart: no)"]
+        end
+
+        subgraph pAudit["profile audit"]
+            auditsync["audit-sync<br/>rclone"]
+        end
+
+        subgraph pProxy["profile proxy"]
+            traefik["traefik<br/>:80 / :443"]
+        end
+    end
+
+    azure[("Azure Blob<br/>(externe)")]
+
+    traefik -.->|TLS| front
+    traefik -.->|TLS| api
+    front -->|"/api/v1 (JWT)"| api
+    api --> postgres
+    api -->|"GET /sites/{id}/current<br/>(relais direct, sans stockage)"| iot
+
+    collect -->|mesures| iot
+    alerts -->|alertes| iot
+    sites -.->|"stub : aucun appel réel"| iot
+
+    collect -->|"bronze + audit (JSON)"| minio
+    collect -->|"silver / gold (Parquet)"| minio
+    collect -->|"silver / gold (SQL)"| postgres
+    alerts --> postgres
+
+    minio -->|bucket audit| auditsync
+    auditsync -->|chiffré| azure
 ```
-API Mock IoT ──(HTTP)──> etl/collect.py ──> MinIO bucket "bronze"  (1 objet JSON / mesure)
-                                              │        + hash SHA-256 dupliqué dans "audit" (WORM)
-                                              ▼
-                              etl/quality.py ──> "silver" (Parquet nettoyé)
-                                              └─> "gold"   (agrégats daily / hourly)
-                              rejets ──────────> "quarantine"
+
+`etl-collect` appelle `quality.py` en in-process juste après chaque cycle de collecte
+(voir le diagramme de pipeline plus bas) : c'est pour ça qu'un seul conteneur écrit à la
+fois sur `bronze`/`audit` et sur `silver`/`gold`.
+
+#### Flux de données (bronze → silver → gold)
+
+```mermaid
+flowchart LR
+    iot(["API Mock IoT"]) -->|"GET /sites/{id}/current"| collect["collect.py<br/>(cycle 60s)"]
+
+    collect -->|"1 objet JSON / mesure"| bronze[("bronze<br/>{site}/{date}/{heure}.json")]
+    collect -->|"copie du SHA-256"| audit[("audit (WORM)<br/>bronze/{site}/...")]
+
+    bronze --> quality["quality.py<br/>(in-process, après chaque cycle)"]
+
+    quality -->|enregistrement valide| silver[("silver<br/>Parquet, append-only")]
+    quality -->|"invalide (JSON corrompu,<br/>champ obligatoire manquant, ...)"| quarantine[("quarantine<br/>1 objet JSON / rejet")]
+    silver -->|"agrégats recalculés<br/>par partition record_date/site_id"| gold[("gold<br/>daily / hourly")]
+
+    silver -.->|réplication| pgsilver[("PostgreSQL<br/>measurements_silver")]
+    gold -.->|réplication| pggold[("PostgreSQL<br/>aggregates_gold_daily/hourly")]
+
+    quality -->|clés bronze déjà traitées| manifests[("manifests<br/>etl_state.json")]
 ```
+
+MinIO reste la source de vérité ; les mêmes lignes silver/gold sont répliquées dans
+PostgreSQL pour être interrogeables en SQL par l'API. Une panne PostgreSQL n'interrompt
+pas l'écriture MinIO.
+
+#### Pipeline ETL — déroulé d'un cycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Sched as APScheduler (etl-collect)
+    participant IoT as API Mock IoT
+    participant S3 as MinIO
+    participant Q as quality.py (in-process)
+    participant PG as PostgreSQL
+
+    loop toutes les 60s
+        Sched->>IoT: GET /api/v1/sites
+        IoT-->>Sched: liste des site_id
+        loop pour chaque site
+            Sched->>IoT: GET /sites/{id}/current
+            IoT-->>Sched: mesure JSON
+            Sched->>S3: put bronze/{site}/{date}/{heure}.json
+            Sched->>S3: put audit/bronze/{site}/... (SHA-256)
+        end
+        Sched->>Sched: marquer_vivant() (heartbeat Docker)
+        Sched->>Q: quality.main() (même process, appel direct)
+        Q->>S3: liste bronze non traité (manifests/etl_state.json)
+        Q->>S3: lit chaque objet bronze nouveau
+        alt enregistrement valide
+            Q->>S3: put silver/*.parquet
+            Q->>PG: upsert measurements_silver
+        else invalide
+            Q->>S3: put quarantine/*.json
+        end
+        Q->>S3: recalcule et put gold/daily+hourly.parquet
+        Q->>PG: upsert aggregates_gold_daily / aggregates_gold_hourly
+        Q->>S3: put manifests/etl_state.json (clés traitées)
+    end
+```
+
+Une erreur dans `quality.py` est interceptée et loguée sans jamais arrêter le
+planificateur (voir `lancer_quality()` dans [`etl/collect.py`](etl/collect.py)) : au pire,
+le prochain cycle rattrape les objets bronze non traités.
+
+#### Authentification et requêtes API
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Utilisateur
+    participant F as front (Vue)
+    participant A as api (FastAPI)
+    participant DB as PostgreSQL
+
+    U->>F: saisit email + mot de passe
+    F->>A: POST /api/v1/auth/login (form)
+    A->>DB: SELECT users WHERE email = ...
+    DB-->>A: user + password_hash
+    A->>A: bcrypt.checkpw()
+    alt identifiants valides
+        A-->>F: 200 { access_token JWT }
+        F->>F: localStorage.setItem("enervision_token")
+    else invalides
+        A-->>F: 401
+    end
+
+    Note over F,A: Chaque appel API suivant
+
+    F->>A: GET /api/v1/sites (Authorization: Bearer JWT)
+    A->>A: décode le JWT, charge l'utilisateur
+    alt token valide
+        A->>DB: SELECT ...
+        DB-->>A: résultat
+        A-->>F: 200 JSON
+    else token expiré / invalide
+        A-->>F: 401
+        F->>F: logout() + redirection /login
+    end
+```
+
+Le rôle (`viewer` / `operator` / `admin`) est encodé dans le JWT et vérifié par
+`require_role` / `require_min_role` (voir [`api/auth.py`](api/auth.py)) sur les routes qui
+en ont besoin, par ex. `POST /api/v1/auth/users` réservé aux admins.
 
 ## Démarrage local
 
