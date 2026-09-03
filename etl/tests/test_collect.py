@@ -7,9 +7,8 @@ le client S3 est remplacé par un faux qui enregistre chaque appel.
 import hashlib
 import json
 
-import pytest
-
 import collect
+import pytest
 
 
 class FauxClientS3:

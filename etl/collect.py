@@ -32,7 +32,10 @@ from apscheduler.triggers.cron import CronTrigger
 from botocore.exceptions import BotoCoreError, ClientError
 
 import quality
+import requests
 import storage
+from apscheduler.schedulers.blocking import BlockingScheduler
+from botocore.exceptions import BotoCoreError, ClientError
 
 API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
 INTERVALLE_SECONDES = int(os.environ.get("INTERVALLE_SECONDES", "60"))

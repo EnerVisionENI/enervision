@@ -55,13 +55,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-import pandas as pd
-import psycopg2
-from botocore.exceptions import BotoCoreError, ClientError
-
+import pandas as pd	
 import postgres_writer
+import psycopg2
 import storage
-
+from botocore.exceptions import BotoCoreError, ClientError
 
 NUMERIC_COLUMNS = [
 	"consumption_kw",
@@ -93,7 +91,9 @@ def build_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--bronze-prefix", default=os.environ.get("MINIO_PREFIX_BRONZE", ""))
 	parser.add_argument("--silver-bucket", default=os.environ.get("MINIO_BUCKET_SILVER", "silver"))
 	parser.add_argument("--gold-bucket", default=os.environ.get("MINIO_BUCKET_GOLD", "gold"))
-	parser.add_argument("--quarantine-bucket", default=os.environ.get("MINIO_BUCKET_QUARANTINE", "quarantine"))
+	parser.add_argument(
+		"--quarantine-bucket", default=os.environ.get("MINIO_BUCKET_QUARANTINE", "quarantine")
+	)
 	parser.add_argument("--manifests-bucket", default=os.environ.get("MINIO_BUCKET_MANIFESTS", "manifests"))
 	parser.add_argument("--state-key", default=os.environ.get("ETL_STATE_KEY", "etl_state.json"))
 	parser.add_argument(
@@ -151,7 +151,8 @@ def ensure_bucket(s3: Any, bucket: str) -> None:
 	try:
 		s3.create_bucket(Bucket=bucket)
 	except ClientError as exc:
-		if exc.response.get("Error", {}).get("Code") not in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+		code = exc.response.get("Error", {}).get("Code")
+		if code not in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
 			raise
 
 
@@ -211,7 +212,8 @@ def save_state(s3: Any, bucket: str, key: str, processed: set[str]) -> None:
 		"processed_count": len(processed),
 		"processed": sorted(processed),
 	}
-	s3_put_bytes(s3, bucket, key, json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"), JSON_CONTENT_TYPE)
+	body = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+	s3_put_bytes(s3, bucket, key, body, JSON_CONTENT_TYPE)
 
 
 # -------------------------------------------------------- gold en attente
@@ -285,7 +287,10 @@ def fetch_record(s3: Any, bucket: str, key: str) -> dict[str, Any]:
 	try:
 		text = body.decode("utf-8")
 	except UnicodeDecodeError as exc:
-		return {"_parse_error": f"UnicodeDecodeError: {exc}", "_raw_line": body.decode("utf-8", errors="replace")}
+		return {
+			"_parse_error": f"UnicodeDecodeError: {exc}",
+			"_raw_line": body.decode("utf-8", errors="replace"),
+		}
 
 	try:
 		payload = json.loads(text)
@@ -530,7 +535,11 @@ def add_simple_anomalies(df: pd.DataFrame) -> pd.DataFrame:
 	df["consumption_change_pct"] = (df["consumption_kw"] - df["prev_consumption_kw"]).abs() / prev_abs
 	df.loc[df["prev_consumption_kw"].isna(), "consumption_change_pct"] = pd.NA
 
-	site_stats = df.groupby("site_id")["consumption_kw"].agg(["mean", "std"]).rename(columns={"mean": "site_mean", "std": "site_std"})
+	site_stats = (
+		df.groupby("site_id")["consumption_kw"]
+		.agg(["mean", "std"])
+		.rename(columns={"mean": "site_mean", "std": "site_std"})
+	)
 	df = df.join(site_stats, on="site_id")
 
 	df["zscore_flag"] = False
