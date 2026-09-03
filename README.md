@@ -37,7 +37,6 @@ flowchart TB
         end
 
         subgraph pETL["profile etl"]
-            bootstrap["etl-bootstrap<br/>one-shot, rattrapage initial"]
             collect["etl-collect<br/>collecte 60s + gold cron"]
             alerts["etl-alerts<br/>cycle 300s"]
             sites["etl-sites<br/>(stub, restart: no)"]
@@ -60,11 +59,6 @@ flowchart TB
     api --> postgres
     api -->|"GET /sites/{id}/current<br/>(relais direct, sans stockage)"| iot
 
-    bootstrap -->|"history.py : GET /readings"| iot
-    bootstrap -->|"bronze/audit (rejeu) + silver + gold"| minio
-    bootstrap -->|"etl_status, silver/gold"| postgres
-    bootstrap -.->|"service_completed_successfully"| collect
-
     collect -->|mesures| iot
     alerts -->|alertes| iot
     sites -.->|"stub : aucun appel réel"| iot
@@ -82,25 +76,22 @@ flowchart TB
 [`etl/collect.py`](etl/collect.py)) : la collecte + promotion silver toutes les
 `INTERVALLE_SECONDES` (60s par défaut), et deux recalculs gold séparés, parce que
 relire tout le silver d'une partition à chaque cycle de collecte faisait déborder son
-intervalle.
+intervalle. Collecte **100 % temps réel** : pas de rejeu d'historique, la donnée
+commence au premier cycle.
 
 #### Flux de données (bronze → silver → gold)
 
 ```mermaid
 flowchart LR
-    iot(["API Mock IoT"])
-    hist["history.py<br/>(manuel / etl-bootstrap)"] -->|"GET /readings"| iot
-    iot -->|"GET /sites/{id}/current"| collect["collect.py<br/>(cycle 60s)"]
+    iot(["API Mock IoT"]) -->|"GET /sites/{id}/current"| collect["collect.py<br/>(cycle 60s)"]
 
     collect -->|"1 objet JSON / mesure"| bronze[("bronze<br/>{site}/{date}/{heure}.json")]
-    hist -->|"réutilise envoyer_mesure()"| bronze
     collect -->|"copie du SHA-256"| audit[("audit (WORM)<br/>bronze/{site}/...")]
-    hist --> audit
 
     bronze --> run["quality.run()<br/>(bronze → silver, in-process après chaque cycle)"]
 
     run -->|enregistrement valide| silver[("silver<br/>Parquet, append-only")]
-    run -->|"invalide (JSON corrompu,<br/>champ obligatoire manquant, ...)"| quarantine[("quarantine<br/>1 objet JSON / rejet")]
+    run -->|"invalide (JSON corrompu,<br/>champ obligatoire manquant, ...)"| quarantine[("quarantine<br/>Parquet, partitionné<br/>comme silver/gold")]
     run -->|"partitions touchées<br/>(record_date, site_id)"| pending[("manifests<br/>gold_pending.json")]
     run -->|clés bronze déjà traitées| manifests[("manifests<br/>etl_state.json")]
 
@@ -108,40 +99,15 @@ flowchart LR
     rungold -->|"relit tout le silver<br/>de la partition"| gold[("gold<br/>daily / hourly")]
 
     silver -.->|réplication| pgsilver[("PostgreSQL<br/>measurements_silver")]
+    quarantine -.->|réplication| pgquarantine[("PostgreSQL<br/>measurements_quarantine")]
     gold -.->|réplication| pggold[("PostgreSQL<br/>aggregates_gold_daily/hourly")]
 ```
 
-MinIO reste la source de vérité ; les mêmes lignes silver/gold sont répliquées dans
-PostgreSQL pour être interrogeables en SQL par l'API. Une panne PostgreSQL n'interrompt
-pas l'écriture MinIO. Le gold n'est **pas** recalculé dans le même passage que le
-silver : chaque partition `(record_date, site_id)` touchée est empilée dans
+MinIO reste la source de vérité ; les mêmes lignes silver/gold/quarantine sont répliquées
+dans PostgreSQL pour être interrogeables en SQL par l'API. Une panne PostgreSQL
+n'interrompt pas l'écriture MinIO. Le gold n'est **pas** recalculé dans le même passage
+que le silver : chaque partition `(record_date, site_id)` touchée est empilée dans
 `gold_pending.json` et reprise par un passage `--gold-only` dédié (voir plus bas).
-
-#### Rattrapage initial (`etl-bootstrap`)
-
-Conteneur one-shot qui rejoue l'historique puis draine tout le bronze existant avant
-que `etl-collect` ne passe en temps réel — `etl-collect` attend son
-`service_completed_successfully` pour démarrer. L'état (idempotent) vit dans la table
-PostgreSQL `etl_status`.
-
-```mermaid
-flowchart TD
-    start(["Démarrage etl-bootstrap"]) --> check{"etl_status.phase ?"}
-    check -->|live| done(["Sort en 0 immédiatement<br/>(rien à faire)"])
-    check -->|"pending / history /<br/>error / absent"| history["phase = history<br/>history.py rejoue HISTORY_MOIS mois<br/>→ bronze + audit"]
-    check -->|draining| drain
-    history --> drain["phase = draining<br/>quality.run() en boucle<br/>(BOOTSTRAP_DRAIN_CHUNK objets/passage)<br/>jusqu'à bronze épuisé"]
-    drain --> gold["phase = gold<br/>quality.run_gold()<br/>consolidation unique de toutes<br/>les partitions empilées"]
-    gold --> live["phase = live<br/>etl-collect peut démarrer"]
-    history -.->|exception| error(["phase = error<br/>etl-collect NE démarre PAS"])
-    drain -.->|exception| error
-    gold -.->|exception| error
-```
-
-Sur un redémarrage après un plantage, `history`/`error` refont l'historique (idempotent),
-`draining` reprend le drainage là où l'état incrémental s'était arrêté, `gold` refait la
-consolidation. Un échec de consolidation gold ne bloque pas la mise en `live` : les
-partitions en échec restent en file et le cron horaire de `etl-collect` les reprend.
 
 #### Pipeline ETL — régime permanent
 
@@ -239,6 +205,23 @@ Le rôle (`viewer` / `operator` / `admin`) est encodé dans le JWT et vérifié 
 en ont besoin, par ex. `POST /api/v1/users` réservé aux admins. Un compte dont
 `must_change_password` est vrai n'a accès à rien d'autre que `/auth/me` et
 `/auth/password` (403 sur le reste, voir `get_active_user`).
+
+### Trous de données et complétude
+
+L'API mock renvoie par intermittence des relevés « critical » dont toutes les métriques
+sont nulles (panne capteur simulée, `null_reasons: ["network_loss"]`). Le pipeline ne les
+confond jamais avec des mesures :
+
+- ils restent en silver — un trou doit être visible **et daté** — mais avec
+  `is_valid = false` et `usable_metrics_count = 0` ;
+- le gold les compte à part (`critical_count`, `empty_count`) et les compteurs de qualité
+  bouclent sans reste sur `records_count` ;
+- les moyennes valent `NULL` et **jamais 0** quand rien n'a été mesuré,
+  `total_consumption_kwh` compris : un 0 factice s'apprend comme une consommation nulle
+  réelle ;
+- le grain horaire est complété à 24 lignes par jour et par site, une heure sans relevé
+  ayant `records_count = 0`, pour qu'une série temporelle ne recolle pas deux heures non
+  adjacentes.
 
 ## Démarrage local
 

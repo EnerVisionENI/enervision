@@ -8,6 +8,7 @@
   - `03_gold.sql` : `aggregates_gold_daily` / `aggregates_gold_hourly` (réplique de la couche gold MinIO)
   - `04_seed_sites.sql` : seed manuel des 7 sites (snapshot de l'API Mock IoT), en attendant
     que `etl/sites.py` (encore un stub) les synchronise automatiquement
+  - `05_quarantine.sql` : `measurements_quarantine` (réplique du bucket quarantine MinIO)
 
 Le service `postgres` est défini dans le `compose.yaml` à la racine du dépôt ; les variables
 `POSTGRES_*` viennent du `.env` racine (voir `.env.example`). Le peuplement de
