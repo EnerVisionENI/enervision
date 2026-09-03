@@ -18,15 +18,18 @@ doit pouvoir croire par erreur que ces modèles ont vu de la vraie donnée.
 
 Cible MLFLOW_TRACKING_URI (.env — pointe sur le serveur prod une fois
 déployé, profile "mlflow" de compose.yaml). Pour un run local avant
-déploiement : MLFLOW_TRACKING_URI=sqlite:///mlflow.db python train_v1_csv.py
+déploiement : MLFLOW_TRACKING_URI=sqlite:///mlflow.db python scripts/train_v1_csv.py
 
 Usage :
-    python train_v1_csv.py
+    cd ml && python scripts/train_v1_csv.py
 """
 
 import json
 import os
+import sys
 import warnings
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import mlflow
 import mlflow.lightgbm
@@ -35,9 +38,9 @@ import pandas as pd
 from dotenv import load_dotenv
 from mlflow.tracking import MlflowClient
 
-from evaluation import conformal_margin, empirical_coverage, mase
+from core.evaluation import conformal_margin, empirical_coverage, mase
 from models.naive import naive_forecast
-from train_csv_experiment import (
+from scripts.train_csv_experiment import (
     CSV_DIR,
     predict_lgbm,
     predict_ols,
@@ -172,12 +175,13 @@ def main():
 
     rows = [persist_site(client, site_id) for site_id in CHAMPIONS]
 
-    with open("v1_persistence_report.json", "w", encoding="utf-8") as f:
+    report_path = os.path.join(os.path.dirname(__file__), "..", "reports", "v1_persistence_report.json")
+    with open(report_path, "w", encoding="utf-8") as f:
         json.dump(rows, f, indent=2, ensure_ascii=False)
 
     print(f"\n>>> {len(rows)} modeles persistes dans MLflow ({MLFLOW_TRACKING_URI}), "
           f"experiment '{MLFLOW_EXPERIMENT_NAME}', stage=Staging.")
-    print(">>> Resume ecrit dans v1_persistence_report.json")
+    print(f">>> Resume ecrit dans {report_path}")
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ npm-debug.log*
 # MLflow (artefacts locaux)
 mlruns/
 mlartifacts/
+ml/reports/*.json  # Rapports générés (sauf les .md versionés)
 
 # Data locale — ne jamais commiter de données (tout vit dans MinIO)
 *.parquet

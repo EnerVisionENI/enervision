@@ -12,7 +12,10 @@ Sort un unique JSON (report_data.json) consommé par le rapport (md + artifact).
 
 import json
 import os
+import sys
 import warnings
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import lightgbm as lgb
 import numpy as np
@@ -20,14 +23,14 @@ import pandas as pd
 import statsmodels.formula.api as smf
 from dotenv import load_dotenv
 
-from data import load_gold_hourly
-from evaluation import conformal_margin, empirical_coverage, mase
+from core.data import load_gold_hourly
+from core.evaluation import conformal_margin, empirical_coverage, mase
 from models.naive import naive_forecast
 
 warnings.filterwarnings("ignore")
 load_dotenv()
 
-CSV_DIR = os.path.join(os.path.dirname(__file__), "data", "csv")
+CSV_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "csv")
 SITES = ["SITE001", "SITE002", "SITE003", "SITE004", "SITE005", "SITE006", "SITE007"]
 
 TRAIN_END = "2024-09-30"
@@ -195,9 +198,10 @@ def main():
         print(json.dumps(res, indent=2, ensure_ascii=False, default=str))
 
     out = {"correlations": corr_rows, "results": results_rows}
-    with open("report_data.json", "w", encoding="utf-8") as f:
+    report_path = os.path.join(os.path.dirname(__file__), "..", "reports", "report_data.json")
+    with open(report_path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2, ensure_ascii=False, default=str)
-    print("\n>>> Écrit dans report_data.json")
+    print(f"\n>>> Écrit dans {report_path}")
 
 
 if __name__ == "__main__":
