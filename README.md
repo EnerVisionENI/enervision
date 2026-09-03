@@ -297,14 +297,18 @@ images) ; pytest & co. sont dans les `requirements-dev.txt`.
 
 ## Qualité de code
 
-`pre-commit` (ruff lint + format sur `api/` et `etl/`, normalisation des fins de
-ligne) :
+`pre-commit` (ruff lint + format sur `api/` et `etl/`, ESLint sur `front/`,
+normalisation des fins de ligne) :
 
 ```bash
 pip install pre-commit
 pre-commit install
 pre-commit run --all-files
 ```
+
+Le hook ESLint réutilise les dépendances déjà installées dans `front/` (donc
+`npm install` doit avoir été fait au moins une fois là-bas) plutôt que de faire
+gérer un environnement Node séparé par `pre-commit`.
 
 ## Déploiement
 

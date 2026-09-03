@@ -19,12 +19,12 @@
 services:
   postgres:
     container_name: enervision-ci-postgres
-    ports:
+    ports: !override
       - "15433:5432"
 
   minio:
     container_name: enervision-ci-minio
-    ports:
+    ports: !override
       - "19000:9000"
       - "19001:9001"
 
@@ -33,7 +33,7 @@ services:
 
   api:
     container_name: enervision-ci-api
-    ports:
+    ports: !override
       - "18000:8000"
 
   etl-collect:
