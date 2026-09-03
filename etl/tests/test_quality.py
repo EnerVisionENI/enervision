@@ -1,14 +1,17 @@
 """
 Tests pour quality.py : téléchargement parallèle des objets bronze
-(`fetch_records`), bout-en-bout de `main()` sur un petit lot, et découplage
-du recalcul gold (empilé par le passage silver, traité par `--gold-only`).
+(`fetch_records`), bout-en-bout de `main()` sur un petit lot, découplage
+du recalcul gold (empilé par le passage silver, traité par `--gold-only`),
+et complétude des couches silver / gold / quarantine.
 Aucun accès réseau : S3 est un faux en mémoire.
 """
 
+import io
 import json
 import threading
 import time
 
+import pandas as pd
 import psycopg2
 import pytest
 import quality
@@ -85,6 +88,10 @@ class FakeS3:
             raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "x"}}, "GetObject")
         return {"Body": _Body(data)}
 
+    def delete_object(self, Bucket, Key):
+        with self.lock:
+            self.store.pop((Bucket, Key), None)
+
     def get_paginator(self, name):
         return _Paginator(self)
 
@@ -96,6 +103,10 @@ class FakeS3:
     def keys(self, bucket):
         with self.lock:
             return sorted(k for (b, k) in self.store if b == bucket)
+
+    def parquet(self, bucket, key):
+        with self.lock:
+            return pd.read_parquet(io.BytesIO(self.store[(bucket, key)]))
 
 
 def mesure(site_id="SITE001", timestamp="2025-01-01T00:00:00", **extra):
@@ -417,6 +428,269 @@ def test_run_gold_avec_date_reprend_une_partition_absente_de_la_file(monkeypatch
 
     assert resultat.recalculees == 1
     assert any(k.startswith("daily/record_date=2025-01-01/site_id=SITE001/") for k in s3.keys("gold"))
+
+
+def _gold(s3, grain, record_date="2025-01-01", site_id="SITE001"):
+    return s3.parquet("gold", f"{grain}/record_date={record_date}/site_id={site_id}/{grain}.parquet")
+
+
+def mesure_vide(site_id="SITE001", timestamp="2025-01-01T00:00:00"):
+    """Lecture bien formée mais sans aucune métrique : ce que renvoie l'API mock quand le
+    capteur réseau est en panne (null_reasons = network_loss, data_quality = critical)."""
+    return mesure(
+        site_id, timestamp,
+        consumption_kw=None, consumption_kwh=None,
+        data_quality="critical", null_reasons=["network_loss"],
+    )
+
+
+# ------------------------------------------------------------- score de qualité
+
+def test_score_qualite_classe_critical_au_pire():
+    """critical tombait dans la branche par défaut (-5) et sortait donc MIEUX noté que
+    partial (-10) et degraded (-25) : sur les données réelles, 55 contre 40 de moyenne."""
+    scores = {
+        niveau: quality.compute_quality_score({
+            "data_quality": niveau, "consumption_kw": 42.0, "timestamp": "x", "site_id": "SITE001",
+        })
+        for niveau in ("good", "partial", "degraded", "critical")
+    }
+
+    assert scores["good"] > scores["partial"] > scores["degraded"] > scores["critical"]
+
+
+def test_score_qualite_niveau_inconnu_reste_penalise():
+    inconnu = quality.compute_quality_score({
+        "data_quality": "farfelu", "consumption_kw": 42.0, "timestamp": "x", "site_id": "SITE001",
+    })
+    parfait = quality.compute_quality_score({
+        "data_quality": "good", "consumption_kw": 42.0, "timestamp": "x", "site_id": "SITE001",
+    })
+    assert inconnu < parfait
+
+
+# ------------------------------------------------------- complétude du silver
+
+def test_lecture_sans_metrique_reste_en_silver_marquee_invalide(monkeypatch):
+    """Le trou doit rester visible ET daté : la ligne n'est pas rejetée, mais elle ne doit
+    pas être confondue avec une mesure."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure_vide())
+    s3.seed_bronze("SITE001/2025-01-01/010000.json", mesure(timestamp="2025-01-01T01:00:00"))
+
+    assert quality.main([]) == 0
+
+    silver = s3.parquet("silver", s3.keys("silver")[0]).sort_values("timestamp")
+    assert s3.keys("quarantine") == []                       # bien formée : pas un rejet
+    assert list(silver["usable_metrics_count"]) == [0, 2]
+    assert list(silver["is_valid"]) == [False, True]
+
+
+# ------------------------------------------------------------ compteurs du gold
+
+def test_compteurs_gold_partitionnent_records_count(monkeypatch):
+    """good + partial + degraded + critical + unknown doit boucler sur records_count.
+    Les lignes critical n'étaient comptées dans aucun compteur."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    niveaux = ["good", "partial", "degraded", "critical", "farfelu"]
+    for index, niveau in enumerate(niveaux):
+        s3.seed_bronze(
+            f"SITE001/2025-01-01/0{index}0000.json",
+            mesure(timestamp=f"2025-01-01T0{index}:00:00", data_quality=niveau),
+        )
+
+    quality.main([])
+    quality.main(["--gold-only"])
+    daily = _gold(s3, "daily").iloc[0]
+
+    assert daily["records_count"] == 5
+    somme = sum(daily[f"{n}_count"] for n in ("good", "partial", "degraded", "critical", "unknown"))
+    assert somme == daily["records_count"]
+    assert (daily["critical_count"], daily["unknown_count"]) == (1, 1)
+
+
+def test_compteurs_gold_separent_vide_et_exploitable(monkeypatch):
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure_vide())
+    s3.seed_bronze("SITE001/2025-01-01/010000.json", mesure_vide(timestamp="2025-01-01T01:00:00"))
+    s3.seed_bronze("SITE001/2025-01-01/020000.json", mesure(timestamp="2025-01-01T02:00:00"))
+
+    quality.main([])
+    quality.main(["--gold-only"])
+    daily = _gold(s3, "daily").iloc[0]
+
+    assert (daily["records_count"], daily["usable_count"], daily["empty_count"]) == (3, 1, 2)
+
+
+def test_total_kwh_vaut_nan_et_non_zero_quand_rien_n_est_mesure(monkeypatch):
+    """`Series.sum()` renvoie 0.0 sur un groupe tout-NaN : le gold annonçait une
+    consommation totale de 0 kWh pour une journée sans aucune mesure. Un modèle apprend
+    alors une conso nulle réelle au lieu de voir un trou."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    for index in range(3):
+        s3.seed_bronze(
+            f"SITE001/2025-01-01/0{index}0000.json",
+            mesure_vide(timestamp=f"2025-01-01T0{index}:00:00"),
+        )
+
+    quality.main([])
+    quality.main(["--gold-only"])
+    daily = _gold(s3, "daily").iloc[0]
+
+    assert pd.isna(daily["total_consumption_kwh"])
+    assert pd.isna(daily["avg_consumption_kw"])
+    assert daily["missing_consumption_count"] == 3
+
+
+def test_total_kwh_somme_normalement_des_qu_une_mesure_existe(monkeypatch):
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure_vide())
+    s3.seed_bronze(
+        "SITE001/2025-01-01/010000.json",
+        mesure(timestamp="2025-01-01T01:00:00", consumption_kwh=12.5),
+    )
+
+    quality.main([])
+    quality.main(["--gold-only"])
+
+    assert _gold(s3, "daily").iloc[0]["total_consumption_kwh"] == 12.5
+
+
+# --------------------------------------------------------- grille horaire 24 h
+
+def test_gold_horaire_complete_les_24_heures(monkeypatch):
+    """Une heure sans relevé doit exister avec records_count=0 : sinon elle est
+    indiscernable d'une heure absente du jeu de données, et une série temporelle recolle
+    deux heures non adjacentes sans le savoir."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure(timestamp="2025-01-01T00:00:00"))
+    s3.seed_bronze("SITE001/2025-01-01/050000.json", mesure(timestamp="2025-01-01T05:00:00"))
+
+    quality.main([])
+    quality.main(["--gold-only"])
+    hourly = _gold(s3, "hourly")
+
+    assert len(hourly) == 24
+    assert list(hourly["record_hour"])[:2] == ["2025-01-01T00:00:00Z", "2025-01-01T01:00:00Z"]
+    assert list(hourly["records_count"]) == [1, 0, 0, 0, 0, 1] + [0] * 18
+    creuse = hourly[hourly["record_hour"] == "2025-01-01T03:00:00Z"].iloc[0]
+    assert pd.isna(creuse["avg_consumption_kw"])            # trou explicite, pas un zéro
+    assert creuse["site_id"] == "SITE001" and creuse["site_type"] == "office"
+
+
+def test_gold_horaire_a_les_memes_metriques_que_le_journalier(monkeypatch):
+    """L'horaire n'exposait que records_count / avg-min-max conso / avg_quality_score :
+    impossible d'y distinguer « aucun relevé » de « relevés tous vides », alors que c'est
+    le grain sur lequel s'entraînent les modèles de charge."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure())
+
+    quality.main([])
+    quality.main(["--gold-only"])
+
+    communes = set(quality.GOLD_COUNTER_NAMES) | set(quality.GOLD_METRIC_NAMES)
+    assert communes <= set(_gold(s3, "hourly").columns)
+    assert communes <= set(_gold(s3, "daily").columns)
+
+
+# ------------------------------------------------------------------ anomalies
+
+def test_anomalies_calculees_sur_toute_la_partition(monkeypatch):
+    """En collecte temps réel un batch vaut une ligne par site : shift(1) et l'écart-type y
+    sont toujours NaN, donc has_anomaly ne se déclenchait jamais (1 cas sur 9 478 lignes
+    réelles). Le recalcul gold, lui, tient toute la partition."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    consos = [10.0, 10.0, 10.0, 10.0, 10.0, 100.0]
+    for index, conso in enumerate(consos):
+        s3.seed_bronze(
+            f"SITE001/2025-01-01/0{index}0000.json",
+            mesure(timestamp=f"2025-01-01T0{index}:00:00", consumption_kw=conso),
+        )
+
+    # un objet par passage : chaque batch silver ne contient qu'une ligne, comme en collecte
+    for _ in consos:
+        quality.main(["--max-objects", "1"])
+    assert all(len(s3.parquet("silver", k)) == 1 for k in s3.keys("silver"))
+
+    quality.main(["--gold-only"])
+
+    assert _gold(s3, "daily").iloc[0]["anomaly_count"] == 1
+
+
+def test_gold_dedoublonne_une_cle_bronze_rejouee(monkeypatch):
+    """Le silver est append-only : réingérer une clé (état purgé, reprise par repair.py)
+    ajoute un batch sans retirer l'ancien. La mesure ne doit pas compter double."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure())
+
+    quality.main([])
+    quality.save_state(s3, "manifests", "etl_state.json", set())   # comme après une reprise
+    quality.main([])
+    assert len(s3.keys("silver")) == 2                             # deux batches, même mesure
+
+    quality.main(["--gold-only"])
+
+    assert _gold(s3, "daily").iloc[0]["records_count"] == 1
+
+
+# ----------------------------------------------------------------- quarantaine
+
+def test_quarantaine_ecrite_en_parquet_partitionne_sur_la_date_mesuree(monkeypatch, capsys):
+    """Partitionnée comme silver et gold, pour qu'un rejet puisse être rapproché du trou
+    qu'il laisse. L'ancienne disposition — un objet JSON par rejet sous la date de
+    TRAITEMENT — obligeait à lister des milliers d'objets pour l'exploiter."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", {"timestamp": "2025-01-01T05:00:00"})
+
+    assert quality.main([]) == 0
+    assert "quarantined=1" in capsys.readouterr().out
+
+    cles = s3.keys("quarantine")
+    assert len(cles) == 1
+    assert cles[0].startswith("record_date=2025-01-01/site_id=unknown/rejects_")
+    rejets = s3.parquet("quarantine", cles[0])
+    assert list(rejets.columns) == quality.QUARANTINE_COLUMNS
+    rejet = rejets.iloc[0]
+    assert rejet["error_type"] == "missing_mandatory_fields"
+    assert rejet["error_message"] == "site_id"
+    assert json.loads(rejet["raw_record"])["timestamp"] == "2025-01-01T05:00:00"
+
+
+def test_quarantaine_partition_unknown_si_l_enregistrement_est_illisible(monkeypatch):
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", b"pas du json")
+
+    assert quality.main([]) == 0
+
+    cles = s3.keys("quarantine")
+    assert cles[0].startswith("record_date=unknown/site_id=unknown/rejects_")
+    rejet = s3.parquet("quarantine", cles[0]).iloc[0]
+    assert rejet["error_type"] == "parse_error"
+    assert rejet["raw_record"] == "pas du json"
+
+
+def test_quarantaine_regroupe_un_lot_en_un_parquet_par_partition(monkeypatch):
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    for index in range(4):
+        s3.seed_bronze(f"SITE001/2025-01-01/00000{index}.json", {"timestamp": "2025-01-01T05:00:00"})
+
+    assert quality.main([]) == 0
+
+    cles = s3.keys("quarantine")
+    assert len(cles) == 1                                # un objet, pas quatre
+    assert len(s3.parquet("quarantine", cles[0])) == 4
 
 
 def test_main_gold_only_ne_lit_pas_le_bronze(monkeypatch):
