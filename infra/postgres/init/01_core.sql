@@ -43,12 +43,6 @@ CREATE TABLE IF NOT EXISTS users (
     created_at           TIMESTAMP DEFAULT now()
 );
 
-INSERT INTO users (email, password_hash, role)
--- Rattrapage pour une base déjà initialisée : les scripts de infra/postgres/init/
--- ne sont rejoués que sur un volume vide, cet ALTER est donc à passer à la main
--- (docker compose exec postgres psql ...) sur un environnement existant.
-ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
-
 -- État du rattrapage ETL, ligne unique (id = 1), écrite par etl/bootstrap.py.
 -- phase : pending | history | draining | live | error
 CREATE TABLE IF NOT EXISTS etl_status (
