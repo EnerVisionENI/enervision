@@ -106,6 +106,19 @@ chmod 600 /opt/enervision-secrets/*.env
 Ensuite, chaque push sur `dev` refera automatiquement le `checkout`, l'assemblage du `.env`, puis
 `docker compose --profile etl --profile audit --profile proxy up -d --build`.
 
+### Changements de schéma sur une base existante
+
+Les scripts de `infra/postgres/init/` ne sont rejoués **que sur un volume vide** : sur un serveur déjà
+déployé, une colonne ajoutée au schéma doit être passée à la main une fois (il n'y a pas encore d'outil de
+migration, cf. *Pistes connues* du README). Pour la gestion des comptes utilisateurs (EV-027) :
+
+```bash
+docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  -c "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;"
+```
+
+Sans cette colonne, l'API renvoie une erreur 500 sur toutes les routes qui lisent un utilisateur.
+
 > Si un jour le serveur devient joignable depuis Internet (VPN site-to-site, IP publique, etc.), on peut
 > repasser le job `deploy` sur `ubuntu-latest` avec une connexion SSH classique (secrets `DEPLOY_HOST`,
 > `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PORT`, `DEPLOY_PATH`).

@@ -10,8 +10,8 @@ Application multi-services conteneurisée, orchestrée par un unique `compose.ya
 
 | Service | Dossier | Rôle | Stack |
 |---|---|---|---|
-| **api** | [`api/`](api/) | API REST (auth, alertes ; à venir : sites) | FastAPI, SQLAlchemy, PostgreSQL |
-| **front** | [`front/`](front/) | Interface web | Vue 3, Vite, servi par Nginx en prod |
+| **api** | [`api/`](api/) | API REST (auth, comptes utilisateurs, alertes ; à venir : sites) | FastAPI, SQLAlchemy, PostgreSQL |
+| **front** | [`front/`](front/) | Interface web (dashboard, alertes, administration des comptes) | Vue 3, Vite, servi par Nginx en prod |
 | **etl** | [`etl/`](etl/) | Collecte des mesures + qualité de données | Python, APScheduler, boto3 |
 | **postgres** | — | Base de données | PostgreSQL 16 |
 | **minio** | — | Stockage objet S3 (bronze/silver/gold/quarantine/audit) | MinIO |
@@ -67,6 +67,22 @@ Créer le premier compte admin (aucune route publique de création) :
 docker compose exec api python -m api.create_admin --email admin@enervision.fr
 ```
 
+Le schéma amorce aussi un compte `admin@enervision.io` / `admin`, marqué « mot de passe
+à changer » : la première connexion impose donc de choisir un vrai mot de passe.
+
+## Comptes et rôles
+
+Trois rôles, par privilège croissant : `viewer` (lecture), `operator`, `admin`.
+
+Un **admin** gère les comptes depuis la page *Utilisateurs* du front (création,
+changement de rôle, réinitialisation de mot de passe, suppression) — routes
+`/api/v1/users`, toutes réservées au rôle `admin`.
+
+Un compte créé par un admin part avec un **mot de passe temporaire** : tant qu'il n'a
+pas été remplacé via `POST /api/v1/auth/password`, l'API répond 403 sur tout le reste
+(`must_change_password`) et le front redirige vers l'écran de changement de mot de
+passe. Même mécanisme après une réinitialisation par un admin.
+
 ## Configuration
 
 Toute la configuration passe par un seul fichier `.env` à la racine
@@ -112,8 +128,11 @@ CI/CD GitHub Actions sur push `dev` : voir [`infra/DEPLOYMENT.md`](infra/DEPLOYM
 ## Pistes connues (non traitées)
 
 - **Migrations DB** : le schéma vit dans [`infra/postgres/init/`](infra/postgres/init/)
-  (fait foi), les modèles SQLAlchemy ne couvrent que `users`. Introduire Alembic
-  quand le modèle se stabilise.
+  (fait foi), les modèles SQLAlchemy ne couvrent que `users`. Ces scripts n'étant
+  rejoués que sur un volume vide, tout ajout de colonne se passe à la main sur une
+  base existante (voir *Changements de schéma sur une base existante* dans
+  [`infra/DEPLOYMENT.md`](infra/DEPLOYMENT.md)). Introduire Alembic quand le modèle
+  se stabilise.
 - **Endpoints `sites`** : `etl/collect.py` appelle `/api/v1/sites` et
   `/api/v1/sites/{id}/current`, pas encore implémentés côté API. `etl/sites.py`
   est un stub (service `etl-sites` en `restart: "no"` en attendant).

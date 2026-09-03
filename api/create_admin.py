@@ -1,5 +1,5 @@
 """Bootstrap : crée le premier compte admin (aucune route publique de création de
-compte n'existe, POST /api/v1/auth/users exige déjà un admin). Usage :
+compte n'existe, POST /api/v1/users exige déjà un admin). Usage :
     python -m api.create_admin --email admin@enervision.fr
 Le mot de passe est demandé de façon interactive (jamais passé en argument, pour
 ne pas le laisser dans l'historique shell ni dans `ps`).

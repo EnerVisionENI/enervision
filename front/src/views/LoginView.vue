@@ -1,38 +1,66 @@
 <template>
-  <div class="login-container">
-    <form @submit.prevent="handleLogin">
-      <h1>EnerVision</h1>
+  <AuthLayout
+    title="Connexion"
+    subtitle="identifiants EnerVision"
+    note="accès réservé · les comptes sont créés par un administrateur"
+  >
+    <form class="formulaire" @submit.prevent="handleLogin">
+      <div class="auth-field">
+        <label for="email">email</label>
+        <input
+          id="email"
+          v-model.trim="email"
+          class="auth-input"
+          type="email"
+          autocomplete="username"
+          placeholder="prenom.nom@enervision.fr"
+          required
+        />
+      </div>
 
-      <label for="email">Email</label>
-      <input id="email" v-model="email" type="email" required />
+      <div class="auth-field">
+        <div class="auth-label-row">
+          <label for="password">mot de passe</label>
+          <button type="button" class="auth-toggle" @click="motDePasseVisible = !motDePasseVisible">
+            {{ motDePasseVisible ? "masquer" : "afficher" }}
+          </button>
+        </div>
+        <input
+          id="password"
+          v-model="password"
+          class="auth-input"
+          :type="motDePasseVisible ? 'text' : 'password'"
+          autocomplete="current-password"
+          required
+        />
+      </div>
 
-      <label for="password">Mot de passe</label>
-      <input id="password" v-model="password" type="password" required />
+      <p v-if="erreur" class="auth-error">{{ erreur }}</p>
 
-      <p v-if="error" class="error">{{ error }}</p>
-
-      <button type="submit" :disabled="loading">
-        {{ loading ? "Connexion..." : "Se connecter" }}
+      <button type="submit" class="auth-submit" :disabled="chargement">
+        {{ chargement ? "connexion…" : "se connecter" }}
       </button>
     </form>
-  </div>
+  </AuthLayout>
 </template>
 
 <script setup>
 import { ref } from "vue";
 import { useRouter } from "vue-router";
-import { login as saveToken } from "../auth/auth";
+import AuthLayout from "../components/AuthLayout.vue";
+import { login as saveToken, setCurrentUser } from "../auth/auth";
 import api from "../api/client";
 
 const email = ref("");
 const password = ref("");
-const error = ref("");
-const loading = ref(false);
+const motDePasseVisible = ref(false);
+const erreur = ref("");
+const chargement = ref(false);
 const router = useRouter();
 
 async function handleLogin() {
-  error.value = "";
-  loading.value = true;
+  erreur.value = "";
+  chargement.value = true;
   try {
     const form = new URLSearchParams();
     form.append("username", email.value);
@@ -43,32 +71,28 @@ async function handleLogin() {
     });
 
     saveToken(data.access_token);
-    router.push("/");
+
+    // Le token ne porte pas le profil : on le charge tout de suite pour que le
+    // routeur connaisse le rôle et l'obligation éventuelle de changer le mot de passe.
+    const { data: profil } = await api.get("/auth/me");
+    setCurrentUser(profil);
+
+    router.push(profil.must_change_password ? "/mot-de-passe" : "/");
   } catch (e) {
-    error.value = e.response?.status === 401
-      ? "Email ou mot de passe incorrect."
-      : "Erreur de connexion, réessayez.";
+    erreur.value =
+      e.response?.status === 401
+        ? "Email ou mot de passe incorrect."
+        : "Erreur de connexion, réessayez.";
   } finally {
-    loading.value = false;
+    chargement.value = false;
   }
 }
 </script>
 
 <style scoped>
-.login-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 100vh;
-}
-form {
+.formulaire {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  width: 300px;
-}
-.error {
-  color: red;
-  font-size: 0.9rem;
+  gap: 18px;
 }
 </style>
