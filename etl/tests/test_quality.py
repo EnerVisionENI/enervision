@@ -11,9 +11,8 @@ import time
 
 import psycopg2
 import pytest
-from botocore.exceptions import ClientError
-
 import quality
+from botocore.exceptions import ClientError
 
 
 @pytest.fixture(autouse=True)

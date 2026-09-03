@@ -32,9 +32,8 @@ import os
 import sys
 import traceback
 
-import psycopg2
-
 import history
+import psycopg2
 import quality
 
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "localhost")

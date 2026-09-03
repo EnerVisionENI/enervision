@@ -9,6 +9,11 @@ from api.schemas import Token, UserCreate, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# Nommé au niveau module plutôt qu'appelé inline dans la signature de la route :
+# évite le B008 de ruff (require_role n'est pas dans extend-immutable-calls), et
+# réutilisable tel quel si une autre route admin-only s'ajoute.
+require_admin = require_role("admin")
+
 
 @router.post("/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)) -> Token:
@@ -31,7 +36,7 @@ def read_me(current_user: User = Depends(get_current_user)) -> User:
 def create_user(
     payload: UserCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_role("admin")),
+    _: User = Depends(require_admin),
 ) -> User:
     if db.query(User).filter(User.email == payload.email).first() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cet email est déjà utilisé")

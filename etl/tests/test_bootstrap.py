@@ -4,9 +4,8 @@ via la phase en base, bascule en 'error'. Aucun vrai Postgres, aucun réseau :
 psycopg2, history.main et quality.run sont remplacés par des faux.
 """
 
-import pytest
-
 import bootstrap
+import pytest
 import quality
 
 

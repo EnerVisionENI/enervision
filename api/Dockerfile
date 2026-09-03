@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# Patch OS packages regardless of when the base image tag was last rebuilt
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY api/requirements.txt api/requirements.txt

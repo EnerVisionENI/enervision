@@ -10,7 +10,7 @@ Usage :
 """
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import psycopg2
 import requests
@@ -106,7 +106,7 @@ def enregistrer_alertes(conn, alertes):
 def marquer_vivant():
     """Touche un fichier local pour le HEALTHCHECK Docker."""
     with open(HEARTBEAT_PATH, "w", encoding="utf-8") as f:
-        f.write(datetime.now(timezone.utc).isoformat())
+        f.write(datetime.now(UTC).isoformat())
 
 
 def cycle_alertes():
@@ -132,7 +132,7 @@ def main():
         cycle_alertes,
         "interval",
         seconds=INTERVALLE_SECONDES,
-        next_run_time=datetime.now(timezone.utc),
+        next_run_time=datetime.now(UTC),
     )
 
     try:
