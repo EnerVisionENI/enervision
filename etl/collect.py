@@ -24,17 +24,13 @@ Usage :
 import hashlib
 import json
 import os
-from datetime import datetime, timedelta, timezone
-
-import requests
-from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.cron import CronTrigger
-from botocore.exceptions import BotoCoreError, ClientError
+from datetime import UTC, datetime, timedelta
 
 import quality
 import requests
 import storage
 from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.triggers.cron import CronTrigger
 from botocore.exceptions import BotoCoreError, ClientError
 
 API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
@@ -99,7 +95,7 @@ def envoyer_mesure(site_id, mesure):
         "key": cle,
         "sha256": empreinte,
         "size_bytes": len(contenu),
-        "written_at": datetime.now(timezone.utc).isoformat(),
+        "written_at": datetime.now(UTC).isoformat(),
     }
     s3.put_object(
         Bucket=MINIO_BUCKET_AUDIT,
@@ -113,7 +109,7 @@ def marquer_vivant():
     """Touche un fichier local pour le HEALTHCHECK Docker.
     Il n'y a plus de fichier bronze local à inspecter, la donnée part directement sur MinIO."""
     with open(HEARTBEAT_PATH, "w", encoding="utf-8") as f:
-        f.write(datetime.now(timezone.utc).isoformat())
+        f.write(datetime.now(UTC).isoformat())
 
 
 def lancer_quality(arguments):
@@ -136,7 +132,7 @@ def cycle_gold_quotidien():
     """Recalcule le gold de TOUTES les partitions de la veille, en plus de celles en attente.
     La journée est close à ce moment-là : c'est le seul run qui garantit un agrégat journalier
     complet même si une partition avait disparu de la file (run en échec, redémarrage)."""
-    veille = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    veille = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
     lancer_quality(["--gold-only", "--gold-date", veille])
 
 
@@ -170,7 +166,7 @@ def main():
         cycle_collecte,
         "interval",
         seconds=INTERVALLE_SECONDES,
-        next_run_time=datetime.now(timezone.utc),
+        next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,
     )

@@ -5,13 +5,12 @@ sont remplacés par des faux qui enregistrent leurs appels.
 """
 
 import json
-from datetime import datetime, timezone
-
-import pytest
-from botocore.exceptions import ClientError
+from datetime import UTC, datetime
 
 import collect
 import history
+import pytest
+from botocore.exceptions import ClientError
 
 
 class ClientErreurSimulee(ClientError):
@@ -59,14 +58,14 @@ def lecture(instant_iso, **extra):
 # --------------------------------------------------------------- reculer_de_mois
 
 def test_reculer_de_mois_recule_de_douze_mois():
-    depart = datetime(2026, 9, 2, tzinfo=timezone.utc)
-    assert history.reculer_de_mois(depart, 12) == datetime(2025, 9, 2, tzinfo=timezone.utc)
+    depart = datetime(2026, 9, 2, tzinfo=UTC)
+    assert history.reculer_de_mois(depart, 12) == datetime(2025, 9, 2, tzinfo=UTC)
 
 
 def test_reculer_de_mois_rabote_le_jour_sur_un_mois_court():
     """31 mars - 1 mois n'existe pas : on attend le dernier jour de février."""
-    depart = datetime(2026, 3, 31, 8, 0, tzinfo=timezone.utc)
-    assert history.reculer_de_mois(depart, 1) == datetime(2026, 2, 28, 8, 0, tzinfo=timezone.utc)
+    depart = datetime(2026, 3, 31, 8, 0, tzinfo=UTC)
+    assert history.reculer_de_mois(depart, 1) == datetime(2026, 2, 28, 8, 0, tzinfo=UTC)
 
 
 # ----------------------------------------------------------------- rejouer_site
@@ -134,8 +133,8 @@ def test_rejouer_site_continue_apres_une_erreur_minio(s3, monkeypatch):
 
 def test_recuperer_historique_decoupe_selon_limit_et_pas(monkeypatch):
     """limit=96, pas=15 min -> fenêtre = 96*15 = 1440 min = 1 jour pile."""
-    debut = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    fin = datetime(2025, 1, 4, 12, 0, tzinfo=timezone.utc)  # 3,5 jours -> 4 fenêtres
+    debut = datetime(2025, 1, 1, tzinfo=UTC)
+    fin = datetime(2025, 1, 4, 12, 0, tzinfo=UTC)  # 3,5 jours -> 4 fenêtres
     appels = []
 
     def faux_demander(site_id, borne_debut, borne_fin, limit):
@@ -148,8 +147,8 @@ def test_recuperer_historique_decoupe_selon_limit_et_pas(monkeypatch):
 
     assert len(appels) == 4
     assert appels[0][0] == debut
-    assert appels[0][1] == datetime(2025, 1, 2, tzinfo=timezone.utc)      # +1 j
-    assert appels[1][0] == datetime(2025, 1, 2, tzinfo=timezone.utc)      # jointif
+    assert appels[0][1] == datetime(2025, 1, 2, tzinfo=UTC)      # +1 j
+    assert appels[1][0] == datetime(2025, 1, 2, tzinfo=UTC)      # jointif
     assert appels[3][1] == fin
     assert appels[0][2] == 96   # 1440 min / 15 = 96 points
     assert appels[3][2] == 48   # dernière fenêtre = 720 min / 15 = 48
@@ -157,8 +156,8 @@ def test_recuperer_historique_decoupe_selon_limit_et_pas(monkeypatch):
 
 def test_recuperer_historique_pas_plus_fin_demande_plus_de_points(monkeypatch):
     """Même période, pas plus fin -> l'API est priée de renvoyer plus de points."""
-    debut = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    fin = datetime(2025, 1, 3, tzinfo=timezone.utc)  # 2 jours = 2880 min, une seule fenêtre
+    debut = datetime(2025, 1, 1, tzinfo=UTC)
+    fin = datetime(2025, 1, 3, tzinfo=UTC)  # 2 jours = 2880 min, une seule fenêtre
 
     def demandes_pour(pas):
         vus = []
@@ -171,8 +170,8 @@ def test_recuperer_historique_pas_plus_fin_demande_plus_de_points(monkeypatch):
 
 
 def test_recuperer_historique_dedoublonne_l_instant_de_bordure(monkeypatch):
-    debut = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    fin = datetime(2025, 1, 16, tzinfo=timezone.utc)  # 15 j, pas=60/limit=240 -> 2 fenêtres de 10 j
+    debut = datetime(2025, 1, 1, tzinfo=UTC)
+    fin = datetime(2025, 1, 16, tzinfo=UTC)  # 15 j, pas=60/limit=240 -> 2 fenêtres de 10 j
     partage = "2025-01-11T00:00:00"
 
     def faux_demander(site_id, borne_debut, borne_fin, limit):
@@ -197,8 +196,8 @@ def test_demander_page_formate_les_bornes_en_iso(monkeypatch):
 
     lectures = history._demander_page(
         "SITE003",
-        datetime(2025, 1, 1, tzinfo=timezone.utc),
-        datetime(2025, 2, 1, tzinfo=timezone.utc),
+        datetime(2025, 1, 1, tzinfo=UTC),
+        datetime(2025, 2, 1, tzinfo=UTC),
         744,
     )
 

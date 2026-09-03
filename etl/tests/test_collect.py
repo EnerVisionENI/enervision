@@ -6,6 +6,7 @@ le client S3 est remplacé par un faux qui enregistre chaque appel.
 
 import hashlib
 import json
+from datetime import UTC
 
 import collect
 import pytest
@@ -152,12 +153,12 @@ def test_cycle_gold_horaire_ne_traite_que_les_partitions_en_attente(monkeypatch)
 
 def test_cycle_gold_quotidien_cible_la_veille(monkeypatch):
     """Le run quotidien recalcule la journée close, pas celle en cours."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     class FauxDatetime(datetime):
         @classmethod
         def now(cls, tz=None):
-            return datetime(2026, 9, 2, 0, 15, tzinfo=timezone.utc)
+            return datetime(2026, 9, 2, 0, 15, tzinfo=UTC)
 
     appels = []
     monkeypatch.setattr(collect, "datetime", FauxDatetime)

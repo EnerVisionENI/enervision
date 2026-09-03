@@ -52,10 +52,10 @@ import math
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-import pandas as pd	
+import pandas as pd
 import postgres_writer
 import psycopg2
 import storage
@@ -131,11 +131,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def utc_now_iso() -> str:
-	return datetime.now(timezone.utc).isoformat()
+	return datetime.now(UTC).isoformat()
 
 
 def run_stamp() -> str:
-	return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+	return datetime.now(UTC).strftime("%Y%m%dT%H%M%S_%fZ")
 
 
 # --------------------------------------------------------------------------- S3
@@ -605,7 +605,7 @@ def write_quarantine(s3: Any, bucket: str, bad_rows: list[dict[str, Any]]) -> in
 	if not bad_rows:
 		return 0
 
-	day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+	day = datetime.now(UTC).strftime("%Y-%m-%d")
 	stamp = run_stamp()
 	for index, row in enumerate(bad_rows):
 		flat_source = str(row.get("source_key", "unknown")).replace("/", "_")

@@ -34,12 +34,11 @@ Usage :
 import argparse
 import calendar
 import os
-from datetime import datetime, timedelta, timezone
-
-import requests
-from botocore.exceptions import BotoCoreError, ClientError
+from datetime import UTC, datetime, timedelta
 
 import collect
+import requests
+from botocore.exceptions import BotoCoreError, ClientError
 
 API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
 
@@ -79,7 +78,7 @@ def _lire_horodatage(valeur):
     except ValueError:
         return None
     if instant.tzinfo is None:
-        instant = instant.replace(tzinfo=timezone.utc)
+        instant = instant.replace(tzinfo=UTC)
     return instant
 
 
@@ -216,7 +215,7 @@ def main(argv=None):
         print(f"--pas-minutes doit valoir au moins 1 : {args.pas_minutes}")
         return 1
 
-    fin = _lire_horodatage(args.fin) if args.fin else datetime.now(timezone.utc)
+    fin = _lire_horodatage(args.fin) if args.fin else datetime.now(UTC)
     if fin is None:
         print(f"--fin invalide : {args.fin}")
         return 1
