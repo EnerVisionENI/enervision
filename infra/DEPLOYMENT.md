@@ -10,8 +10,8 @@ Le dépôt contient une pipeline GitHub Actions dans `.github/workflows/deploy-d
 Le serveur de déploiement (`10.105.200.44`) n'est joignable que depuis le réseau interne : le job `deploy`
 tourne donc sur un **runner GitHub Actions self-hosted installé directement sur ce serveur**, plutôt que sur
 un runner hébergé (`ubuntu-latest`) qui ne pourrait pas l'atteindre en SSH. Le job fait un `actions/checkout`,
-assemble le fichier `.env` de prod (racine) en concaténant les fichiers de secrets stockés dans un dossier
-stable, puis lance `docker compose --profile etl --profile audit --profile proxy up -d --build`
+assemble le fichier `.env` de prod (racine) à partir de secrets GitHub Actions, puis lance
+`docker compose --profile etl --profile audit --profile proxy up -d --build`
 (ou `docker-compose` si le plugin `docker compose` v2 n'est pas installé).
 
 Toute la stack est décrite dans un unique `compose.yaml` à la racine du dépôt. Les services optionnels sont
@@ -51,38 +51,52 @@ Aucun secret SSH n'est nécessaire avec cette approche (plus de `DEPLOY_HOST` / 
 
 ### Préparation du serveur
 
-Le serveur (et donc le runner) doit avoir :
+Le serveur (et donc le runner) doit avoir Docker et Docker Compose installés (`docker compose` v2 ou, à
+défaut, `docker-compose` v1), avec l'utilisateur du runner membre du groupe `docker`.
 
-1. Docker et Docker Compose installés (`docker compose` v2 ou, à défaut, `docker-compose` v1), avec
-   l'utilisateur du runner membre du groupe `docker`.
-2. Les fichiers `.env` de production stockés **en dehors du dossier de travail du runner** (`_work/...`) :
-   ce dossier est recréé par `actions/checkout` au tout premier run (il vide le contenu existant avant de
-   cloner, même avec `clean: false`, qui ne protège que les runs suivants une fois un `.git` déjà en place).
-   Les stocker par exemple dans `/opt/enervision-secrets/` (lisible uniquement par l'utilisateur du runner).
-   Le step *Restore production env file* du workflow concatène ces fichiers en un seul `.env` à la racine
-   du dépôt, avant `docker compose up` :
-   - `postgres.env` — `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`
-   - `api.env` — `JWT_SECRET_KEY`, `INGEST_API_KEY`, `CORS_ORIGINS`, … (voir `.env.example`)
-   - `minio.env` — `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`
-   - `audit-sync.env` — variables `AZURE_STORAGE_*`, `RCLONE_CRYPT_PASSWORD_RAW`, `SYNC_INTERVAL_SECONDES`
-   - `etl.env` — surcharges ETL éventuelles (`API_BASE`, `INTERVALLE_SECONDES`,
-     `GOLD_CRON_HORAIRE`, `GOLD_CRON_QUOTIDIEN`) ; peut être vide
+Aucun fichier de secrets n'est stocké sur le disque du serveur. Le `.env` de prod est reconstruit à chaque
+déploiement par le step *Restore production env file* du workflow, à partir de deux sources :
 
-   Les clés en double entre fichiers (`POSTGRES_*`) doivent porter les mêmes valeurs.
+1. **`infra/env/production.env`** (versionné, non sensible) : identifiants non secrets (`POSTGRES_USER`,
+   `POSTGRES_DB`, `MINIO_ROOT_USER`, …), `CORS_ORIGINS`, noms de containers Azure, surcharges ETL. À adapter
+   directement dans le repo (PR classique) — voir les valeurs à compléter en tête du fichier.
+2. **Secrets GitHub Actions** (Settings du dépôt > Secrets and variables > Actions > *New repository
+   secret*) : uniquement les mots de passe et clés, un secret par valeur :
 
-Première mise en place (sur le serveur) :
+   | Secret GitHub                | Anciennement (fichier / variable)              |
+   |-------------------------------|------------------------------------------------|
+   | `POSTGRES_PASSWORD`           | `postgres.env` → `POSTGRES_PASSWORD`            |
+   | `JWT_SECRET_KEY`              | `api.env` → `JWT_SECRET_KEY`                    |
+   | `INGEST_API_KEY`              | `api.env` → `INGEST_API_KEY`                    |
+   | `MINIO_ROOT_PASSWORD`         | `minio.env` → `MINIO_ROOT_PASSWORD`             |
+   | `AZURE_STORAGE_KEY`           | `audit-sync.env` → `AZURE_STORAGE_KEY`          |
+   | `RCLONE_CRYPT_PASSWORD_RAW`   | `audit-sync.env` → `RCLONE_CRYPT_PASSWORD_RAW`  |
+
+Le step concatène `infra/env/production.env` puis ces 6 secrets pour former le `.env` racine, avant
+`docker compose up`.
+
+Première mise en place, depuis un poste avec [`gh`](https://cli.github.com/) authentifié sur le dépôt et un
+accès aux vraies valeurs de prod (les valeurs actuelles vivent dans `/opt/enervision-secrets/*.env` sur le
+serveur, ou sinon les régénérer) :
 
 ```bash
-mkdir -p /opt/enervision-secrets
-nano /opt/enervision-secrets/postgres.env    # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
-nano /opt/enervision-secrets/api.env         # JWT_SECRET_KEY / INGEST_API_KEY / CORS_ORIGINS ...
-nano /opt/enervision-secrets/minio.env       # MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
-nano /opt/enervision-secrets/audit-sync.env  # AZURE_STORAGE_* / RCLONE_CRYPT_PASSWORD_RAW
-touch /opt/enervision-secrets/etl.env        # vide, sauf surcharge ETL
-chown -R <user_runner>:<user_runner> /opt/enervision-secrets
-chmod 700 /opt/enervision-secrets
-chmod 600 /opt/enervision-secrets/*.env
+gh secret set POSTGRES_PASSWORD       # colle la valeur, Ctrl-D pour valider
+gh secret set JWT_SECRET_KEY
+gh secret set INGEST_API_KEY
+gh secret set MINIO_ROOT_PASSWORD
+gh secret set AZURE_STORAGE_KEY
+gh secret set RCLONE_CRYPT_PASSWORD_RAW
 ```
+
+(ou directement sur GitHub : Settings > Secrets and variables > Actions > *New repository secret*, un
+secret par ligne du tableau ci-dessus).
+
+Pense aussi à compléter `infra/env/production.env` (CORS_ORIGINS et les valeurs `AZURE_STORAGE_*` y sont
+vides par défaut) et à le committer — sans `CORS_ORIGINS` correct le front ne pourra pas appeler l'API en
+prod.
+
+Pour changer un mot de passe (rotation, etc.), il suffit de refaire `gh secret set NOM` avec la nouvelle
+valeur — aucun accès SSH au serveur n'est nécessaire, le prochain déploiement reconstruira le `.env` à jour.
 
 > Les volumes `infra_pgdata` / `infra_miniodata` créés par l'ancien projet Compose `infra` sont réutilisés
 > tels quels : `compose.yaml` épingle ces noms, donc aucune migration de données n'est nécessaire.
@@ -199,6 +213,7 @@ compose.yaml              # Orchestration de TOUTE la stack (racine)
 .env / .env.example       # Configuration unique de la stack (racine)
 
 infra/
+├── env/production.env    # Valeurs de prod NON sensibles (versionné, voir CI/CD ci-dessus)
 ├── nginx.conf            # Config serveur web (copiée dans l'image front)
 ├── postgres/init/        # Schéma (rejoué dans l'ordre alphabétique)
 ├── minio/init-buckets.sh # Création des buckets
