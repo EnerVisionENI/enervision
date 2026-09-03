@@ -28,6 +28,7 @@ derrière des profils Compose :
 | `audit` | `audit-sync`  | synchro MinIO → Azure Blob |
 | `proxy` | `traefik`     | reverse proxy TLS |
 | `observability` | `prometheus`, `grafana`, `node-exporter`, `cadvisor` | métriques serveur (hôte + conteneurs) |
+| `mlflow` | `mlflow`     | tracking/registry des modèles ML (voir `infra/mlflow/DEPLOYMENT.md`) |
 
 En local : `docker compose up -d --build` suffit pour le cœur de la stack ; ajouter `--profile etl` au besoin.
 
