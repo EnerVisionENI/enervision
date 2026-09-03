@@ -166,6 +166,26 @@ def test_partitions_a_rejouer_groupe_par_site_puis_date(s3):
     ]
 
 
+def test_echantillon_equilibre_repartit_sur_tous_les_sites():
+    """Les partitions sont triées par site : un [:N] brut n'en garderait qu'un, et la
+    campagne serait bornée par le rapport cyclique de ce seul capteur."""
+    partitions = (
+        [(f"2025-08-0{jour}", "SITE001") for jour in range(1, 5)]
+        + [(f"2025-08-0{jour}", "SITE002") for jour in range(1, 5)]
+    )
+
+    retenues = repair.echantillon_equilibre(partitions, 4)
+
+    assert sorted({site for _, site in retenues}) == ["SITE001", "SITE002"]
+    assert len(retenues) == 4
+
+
+def test_echantillon_equilibre_sans_limite_rend_tout():
+    partitions = [("2025-08-01", "SITE001"), ("2025-08-02", "SITE001")]
+    assert repair.echantillon_equilibre(partitions, 0) == partitions
+    assert repair.echantillon_equilibre(partitions, 99) == partitions
+
+
 def test_partitions_a_rejouer_filtre_sites_et_periode(s3):
     for jour in ("2025-08-01", "2025-08-02", "2025-08-03"):
         semer_gold_daily(s3, jour, "SITE001", None)
@@ -176,6 +196,61 @@ def test_partitions_a_rejouer_filtre_sites_et_periode(s3):
     )
 
     assert partitions == [("2025-08-02", "SITE001")]
+
+
+# ------------------------------------------------------- collecte par fusion
+
+def test_collecter_journee_fusionne_les_tirages_successifs(monkeypatch):
+    """Le cœur de la reprise. Un tirage ne rend qu'une fraction des heures (41,7 % mesuré),
+    mais chaque appel re-tire indépendamment : l'heure absente d'un tirage revient au
+    suivant. Un essai unique en tout ou rien jetterait ce qu'il obtient."""
+    tirages = [
+        [lecture("2025-08-02T00:00:00"), lecture_vide("2025-08-02T01:00:00")],
+        [lecture_vide("2025-08-02T00:00:00"), lecture("2025-08-02T01:00:00")],
+    ]
+    monkeypatch.setattr(repair, "recuperer_journee", lambda *a, **k: tirages.pop(0) if tirages else [])
+
+    lectures = repair.collecter_journee("SITE001", "2025-08-02", pas_minutes=60, tentatives=3)
+
+    assert sorted(x["timestamp"] for x in lectures) == [
+        "2025-08-02T00:00:00", "2025-08-02T01:00:00",
+    ]
+
+
+def test_collecter_journee_s_arrete_des_que_la_journee_est_complete(monkeypatch):
+    """Inutile de consommer le budget de tentatives une fois les 24 heures couvertes."""
+    appels = []
+
+    def _tirage(*a, **k):
+        appels.append(1)
+        return [lecture(f"2025-08-02T{h:02d}:00:00") for h in range(24)]
+
+    monkeypatch.setattr(repair, "recuperer_journee", _tirage)
+
+    lectures = repair.collecter_journee("SITE001", "2025-08-02", pas_minutes=60, tentatives=8)
+
+    assert len(lectures) == 24
+    assert len(appels) == 1
+
+
+def test_collecter_journee_abandonne_si_le_capteur_tombe(monkeypatch):
+    """Capteur rouge = 0 % de rendement quelle que soit la fenêtre : on n'insiste pas,
+    la partition repassera à la passe suivante."""
+    appels = []
+
+    def _tirage(*a, **k):
+        appels.append(1)
+        return [lecture("2025-08-02T00:00:00")]
+
+    monkeypatch.setattr(repair, "recuperer_journee", _tirage)
+    monkeypatch.setattr(repair, "capteurs_sains", lambda *a, **k: set())
+    etat = repair.EtatCapteurs(ttl_secondes=60)
+
+    lectures = repair.collecter_journee(
+        "SITE001", "2025-08-02", pas_minutes=60, tentatives=8, etat=etat,
+    )
+
+    assert (lectures, appels) == ([], [])
 
 
 # -------------------------------------------------------------- rejeu d'une partition
@@ -270,8 +345,38 @@ def test_main_saute_une_partition_dont_le_capteur_est_retombe(s3, monkeypatch, c
 
     assert repair.main([]) == 0
 
-    assert "2 partition(s) sautée(s)" in capsys.readouterr().out
-    assert s3.keys("bronze") == []
+    sortie = capsys.readouterr().out
+    assert "passe 1 | reprises=0 | mesures=0 | restantes=2" in sortie
+    assert s3.keys("bronze") == []                        # rien tiré, rien écrit
+
+
+def test_main_avec_duree_repasse_sur_ce_qui_restait_vide(s3, monkeypatch, capsys):
+    """Chaque site n'est vert que ~59 % du temps : une passe unique abandonne les
+    partitions dont le capteur était rouge à leur tour. --duree les rattrape."""
+    semer_gold_daily(s3, "2025-08-02", "SITE001", None)
+    # rouge à la 1re passe, vert ensuite
+    etats = [{"SITE001"}, set(), {"SITE001"}]
+    monkeypatch.setattr(repair, "capteurs_sains", lambda *a, **k: etats.pop(0) if etats else {"SITE001"})
+    monkeypatch.setattr(repair, "TTL_ETAT_CAPTEURS", 0)
+    monkeypatch.setattr(repair, "INTERVALLE_ATTENTE_SECONDES", 0)
+    monkeypatch.setattr(repair, "recuperer_journee", lambda *a, **k: [lecture("2025-08-02T00:00:00")])
+
+    assert repair.main(["--duree", "60", "--tentatives", "1"]) == 0
+
+    sortie = capsys.readouterr().out
+    assert "passe 1" in sortie and "passe 2" in sortie
+    assert "partitions=1" in sortie                       # rattrapée à la 2e passe
+
+
+def test_main_une_seule_passe_par_defaut(s3, monkeypatch, capsys):
+    semer_gold_daily(s3, "2025-08-02", "SITE001", None)
+    monkeypatch.setattr(repair, "capteurs_sains", lambda *a, **k: {"SITE001"})
+    monkeypatch.setattr(repair, "recuperer_journee", lambda *a, **k: [lecture("2025-08-02T00:00:00")])
+
+    assert repair.main([]) == 0
+
+    sortie = capsys.readouterr().out
+    assert "passe 1" in sortie and "passe 2" not in sortie
 
 
 def test_main_dry_run_n_ecrit_ni_ne_supprime_rien(s3, monkeypatch, capsys):

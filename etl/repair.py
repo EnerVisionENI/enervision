@@ -15,6 +15,18 @@ suffit de rejouer la fenêtre pendant une phase saine.
 Ce n'est PAS un job planifié : on le lance à la main, ou en boucle avec --attente, quand on
 veut consolider le jeu d'entraînement.
 
+Trois mesures dictent la stratégie, prises sur l'API réelle :
+
+    - un capteur rouge rend 0 % de consommation, quelle que soit la fenêtre demandée ;
+      chaque site est vert environ 59 % du temps, par tranches de quelques dizaines de
+      secondes ;
+    - capteur vert, le rendement s'effondre avec la largeur de la demande : 41,7 % sur une
+      journée (24 points), 19,4 % sur 7 jours, 2,9 % sur 30. D'où des demandes d'UNE journée,
+      répétées, plutôt qu'un gros appel ;
+    - chaque tirage est INDÉPENDANT : une heure absente d'un tirage revient au suivant. En
+      fusionnant 4 à 6 tirages, une journée se couvre entièrement — mesuré, 147 heures
+      récupérées sur 168 pour 31 appels, 4 sites sur 7 à 24/24.
+
 Marche à suivre :
     1. repérer les partitions (record_date, site_id) dont le gold journalier n'a AUCUNE
        consommation moyenne — c'est-à-dire aucun relevé exploitable de la journée ;
@@ -22,12 +34,16 @@ Marche à suivre :
        au vert, sinon on ne ferait que réécrire du vide. L'état est relu au fil du parcours
        (voir EtatCapteurs) : les `failing_until` se comptent en dizaines de secondes, un
        site vert au lancement ne l'est plus quelques partitions plus loin ;
-    3. ne remplacer une partition QUE si le nouveau tirage rapporte des mesures : à défaut
-       on n'y touche pas, une partition vide vaut mieux qu'une partition supprimée ;
-    4. purger l'ancien bronze vide et les batches silver de la partition, puis déposer les
+    3. tirer la journée plusieurs fois et FUSIONNER par horodatage (collecter_journee) :
+       un essai unique en tout ou rien jetterait les ~42 % obtenus à chaque appel ;
+    4. ne remplacer une partition QUE si le tirage rapporte des mesures : à défaut on n'y
+       touche pas, une partition vide vaut mieux qu'une partition supprimée ;
+    5. purger l'ancien bronze vide et les batches silver de la partition, puis déposer les
        nouvelles lectures. Sans cette purge, les anciennes lignes vides et les nouvelles
        coexisteraient sous des clés différentes et gonfleraient records_count ;
-    5. retirer les clés purgées de l'état incrémental et empiler la partition pour le gold.
+    6. retirer les clés purgées de l'état incrémental et empiler la partition pour le gold ;
+    7. avec --duree, repasser sur ce qui reste vide : les sites rouges au moment de leur
+       tour seront verts quelques dizaines de secondes plus tard.
 
 Le bucket audit (WORM) n'est jamais touché : l'empreinte SHA-256 de ce qui a réellement été
 reçu au premier passage reste vérifiable, même après remplacement du bronze.
@@ -41,6 +57,7 @@ Usage :
     python repair.py --site SITE001 --site SITE002
     python repair.py --debut 2025-08-01 --fin 2025-09-01
     python repair.py --attente 1800               # réessaie 30 min le temps que ça revienne
+    python repair.py --duree 3600                 # campagne d'une heure, repasses incluses
     python quality.py && python quality.py --gold-only   # ensuite, pour propager
 """
 
@@ -71,6 +88,10 @@ INTERVALLE_ATTENTE_SECONDES = 30
 # Fraîcheur de l'état des capteurs pendant le parcours des partitions. Assez court pour
 # suivre le clignotement, assez long pour ne pas ajouter un appel par partition.
 TTL_ETAT_CAPTEURS = 15
+
+# Tirages successifs d'une même journée avant d'abandonner. Mesuré : 4 à 6 appels suffisent
+# à couvrir les 24 heures quand le capteur est vert ; au-delà de 8 on paie sans gagner.
+TENTATIVES_DEFAUT = 8
 
 
 def capteurs_sains(api_base=API_BASE):
@@ -223,14 +244,48 @@ def purger_partition(s3, site_id, record_date, *, bronze_bucket, silver_bucket):
     return cles_bronze
 
 
-def rejouer_partition(s3, site_id, record_date, *, pas_minutes, bronze_bucket, silver_bucket, dry_run=False):
+def collecter_journee(site_id, record_date, *, pas_minutes, tentatives=TENTATIVES_DEFAUT, etat=None):
+    """Tire la même journée plusieurs fois et fusionne les résultats par horodatage.
+
+    C'est le cœur de la reprise. Un tirage ne rend qu'une fraction des heures — 41,7 %
+    mesuré sur une demande de 24 points, capteur au vert — mais chaque appel re-tire
+    INDÉPENDAMMENT : la même heure absente d'un tirage revient renseignée au suivant. Un
+    seul essai en tout ou rien jetterait donc les 42 % obtenus.
+
+    Mesuré sur 7 sites et une journée : 4 à 6 appels suffisent à couvrir les 24 heures,
+    soit 147 heures récupérées pour 31 appels. On s'arrête dès la journée complète.
+
+    Le rendement s'effondre si l'on élargit la fenêtre (19 % sur 7 jours, 2,9 % sur 30) :
+    d'où une demande d'une journée à la fois, répétée, plutôt qu'un gros appel."""
+    attendues = max(1, int(24 * 60 / pas_minutes))
+    retenues = {}
+
+    for _ in range(max(1, tentatives)):
+        # Capteur rouge = 0 % de rendement, quelle que soit la fenêtre : inutile d'insister
+        # maintenant, la partition repassera au tour suivant.
+        if etat is not None and not etat.est_sain(site_id):
+            break
+        for lecture in recuperer_journee(site_id, record_date, pas_minutes):
+            horodatage = lecture.get("timestamp") if isinstance(lecture, dict) else None
+            if horodatage and horodatage not in retenues and _porte_une_mesure(lecture):
+                retenues[horodatage] = lecture
+        if len(retenues) >= attendues:
+            break
+
+    return list(retenues.values())
+
+
+def rejouer_partition(
+    s3, site_id, record_date, *,
+    pas_minutes, bronze_bucket, silver_bucket,
+    tentatives=TENTATIVES_DEFAUT, etat=None, dry_run=False,
+):
     """Rejoue une partition. Renvoie (mesures_deposees, cles_bronze_purgees).
 
     (0, []) si le nouveau tirage n'apporte rien : la partition est laissée telle quelle."""
-    lectures = [
-        lecture for lecture in recuperer_journee(site_id, record_date, pas_minutes)
-        if isinstance(lecture, dict) and lecture.get("timestamp") and _porte_une_mesure(lecture)
-    ]
+    lectures = collecter_journee(
+        site_id, record_date, pas_minutes=pas_minutes, tentatives=tentatives, etat=etat,
+    )
     if not lectures:
         return 0, []
 
@@ -290,10 +345,108 @@ def build_parser():
         help="Secondes à patienter, au total, que les capteurs reviennent au vert (0 = ne pas attendre).",
     )
     parser.add_argument(
+        "--tentatives", type=int, default=TENTATIVES_DEFAUT,
+        help=f"Tirages d'une même journée avant d'abandonner (défaut {TENTATIVES_DEFAUT}).",
+    )
+    parser.add_argument(
+        "--duree", type=int, default=0,
+        help="Secondes de campagne : repasse sur les partitions encore vides tant qu'il "
+             "reste du budget (0 = une seule passe).",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Liste ce qui serait rejoué sans rien écrire ni supprimer.",
     )
     return parser
+
+
+def echantillon_equilibre(partitions, maximum):
+    """Tranche répartie sur tous les sites, plutôt que les N premières.
+
+    Les partitions sont ordonnées par site : un simple [:N] n'en retiendrait qu'un seul, et
+    la campagne serait alors bornée par le rapport cyclique de ce unique capteur — mesuré,
+    5 partitions reprises en 3 minutes au lieu d'exploiter les six autres sites verts."""
+    if maximum <= 0 or len(partitions) <= maximum:
+        return partitions
+
+    par_site = {}
+    for partition in partitions:
+        par_site.setdefault(partition[1], []).append(partition)
+
+    retenues = []
+    rang = 0
+    while len(retenues) < maximum:
+        ajoute = False
+        for file in par_site.values():
+            if rang < len(file):
+                retenues.append(file[rang])
+                ajoute = True
+                if len(retenues) >= maximum:
+                    return retenues
+        if not ajoute:
+            break
+        rang += 1
+    return retenues
+
+
+def mener_campagne(s3, args, etat, partitions):
+    """Repasse sur les partitions encore vides tant qu'il reste du budget --duree.
+
+    Une passe ne rattrape que les sites verts à cet instant. Chaque site l'est environ 59 %
+    du temps, et son état change toutes les dizaines de secondes : un parcours unique
+    laisserait donc derrière lui toutes les partitions dont le capteur était rouge quand
+    leur tour est arrivé — 86 sur 150 lors d'un essai réel. Les repasses les rattrapent.
+
+    Renvoie (mesures, partitions_reprises, cles_purgees, restantes)."""
+    restantes = list(partitions)
+    reprises, purgees_totales = set(), set()
+    total_deposees = 0
+    echeance = time.monotonic() + args.duree if args.duree > 0 else None
+    passe = 0
+
+    while restantes:
+        passe += 1
+        avant = len(reprises)
+        # On PART des sites verts et on prend leurs partitions, au lieu de dérouler la liste
+        # en sautant les rouges : dérouler laissait des passes entières sans rien faire
+        # (0 reprise sur 40 partitions) alors que d'autres sites étaient disponibles.
+        sains = set(etat.sains())
+        cibles = [partition for partition in restantes if partition[1] in sains]
+
+        for record_date, site_id in cibles:
+            if echeance is not None and time.monotonic() >= echeance:
+                break
+            deposees, purgees = rejouer_partition(
+                s3, site_id, record_date,
+                pas_minutes=args.pas_minutes,
+                bronze_bucket=args.bronze_bucket,
+                silver_bucket=args.silver_bucket,
+                tentatives=args.tentatives,
+                etat=etat,
+            )
+            if not deposees:
+                continue
+            total_deposees += deposees
+            reprises.add((record_date, site_id))
+            purgees_totales.update(purgees)
+
+        restantes = [partition for partition in restantes if partition not in reprises]
+        print(
+            f"passe {passe} | reprises={len(reprises)} | mesures={total_deposees} | "
+            f"restantes={len(restantes)}"
+        )
+
+        if echeance is None or not restantes or time.monotonic() >= echeance:
+            break
+        if len(reprises) == avant:
+            # Passe blanche : soit aucun site visé n'est vert, soit les partitions restantes
+            # ne rendent rien pour l'instant. Sans ce recul la boucle repart aussitôt et
+            # martèle l'API — 479 passes en 3 minutes lors d'un essai. On attend qu'un
+            # `failing_until` expire, sans dépasser la fraîcheur de l'état des capteurs :
+            # au-delà on dormirait sur un cache périmé.
+            time.sleep(min(TTL_ETAT_CAPTEURS, max(1, int(echeance - time.monotonic()))))
+
+    return total_deposees, reprises, purgees_totales, len(restantes)
 
 
 def attendre_capteurs(etat, sites_voulus, attente_secondes):
@@ -350,8 +503,7 @@ def main(argv=None):
         print("Aucune partition sans consommation à rejouer.")
         return 0
 
-    if args.max_partitions > 0:
-        partitions = partitions[: args.max_partitions]
+    partitions = echantillon_equilibre(partitions, args.max_partitions)
 
     print(f"{len(partitions)} partition(s) sans consommation à rejouer, pas={args.pas_minutes} min")
     if args.dry_run:
@@ -361,39 +513,16 @@ def main(argv=None):
                 pas_minutes=args.pas_minutes,
                 bronze_bucket=args.bronze_bucket,
                 silver_bucket=args.silver_bucket,
+                tentatives=args.tentatives,
+                etat=etat,
                 dry_run=True,
             )
             print(f"  {record_date} {site_id} : {lectures} mesure(s) récupérable(s)")
         return 0
 
-    total_deposees = 0
-    reprises = set()
-    purgees_totales = set()
-    ignorees = 0
-    for record_date, site_id in partitions:
-        # Relu au fil de l'eau : un site vert au démarrage ne l'est souvent plus quelques
-        # partitions plus loin, et tirer pendant sa panne ne ramènerait que du vide.
-        if not etat.est_sain(site_id):
-            ignorees += 1
-            continue
-        deposees, purgees = rejouer_partition(
-            s3, site_id, record_date,
-            pas_minutes=args.pas_minutes,
-            bronze_bucket=args.bronze_bucket,
-            silver_bucket=args.silver_bucket,
-        )
-        if not deposees:
-            continue
-        total_deposees += deposees
-        reprises.add((record_date, site_id))
-        purgees_totales.update(purgees)
-        print(
-            f"  {record_date} {site_id} : {deposees} mesure(s) rejouée(s), "
-            f"{len(purgees)} objet(s) purgé(s)"
-        )
-
-    if ignorees:
-        print(f"{ignorees} partition(s) sautée(s), capteur en panne au moment du passage.")
+    total_deposees, reprises, purgees_totales, restantes = mener_campagne(
+        s3, args, etat, partitions,
+    )
 
     if not reprises:
         print("Aucune partition n'a pu être améliorée : les capteurs sont retombés en panne.")
@@ -401,13 +530,15 @@ def main(argv=None):
 
     # Les clés purgées doivent quitter l'état incrémental, sinon quality.py les considère
     # traitées et ne reprend jamais leur remplacement.
-    etat = quality.load_state(s3, args.manifests_bucket, args.state_key)
-    quality.save_state(s3, args.manifests_bucket, args.state_key, etat - purgees_totales)
+    deja_traitees = quality.load_state(s3, args.manifests_bucket, args.state_key)
+    quality.save_state(
+        s3, args.manifests_bucket, args.state_key, deja_traitees - purgees_totales,
+    )
     quality.add_pending_gold(s3, args.manifests_bucket, args.pending_gold_key, reprises)
 
     print(
         f"Reprise terminée | partitions={len(reprises)} | mesures={total_deposees} | "
-        f"objets purgés={len(purgees_totales)}"
+        f"objets purgés={len(purgees_totales)} | encore vides={restantes}"
     )
     print("Lancez maintenant `python quality.py` puis `python quality.py --gold-only`.")
     return 0
