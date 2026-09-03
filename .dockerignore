@@ -1,8 +1,10 @@
-# Contexte de build partagé par api/Dockerfile et front/Dockerfile (context: .).
+# Contexte de build de front/Dockerfile (context: .) — nécessaire à la racine
+# uniquement parce que ce Dockerfile copie infra/nginx.conf, hors de front/.
+# api/ et etl/ ont chacun leur propre .dockerignore avec leur propre contexte.
 # Sans ce fichier, tout le dépôt — .git, environnements virtuels, node_modules,
-# caches — était envoyé au démon Docker à chaque build des deux images. Le checkout
-# du runner utilise `clean: false` : ces répertoires non versionnés s'y accumulent
-# et ne disparaissent jamais d'eux-mêmes.
+# caches — était envoyé au démon Docker à chaque build. Le checkout du runner
+# utilise `clean: false` : ces répertoires non versionnés s'y accumulent et ne
+# disparaissent jamais d'eux-mêmes.
 
 # Git / CI
 .git

@@ -155,10 +155,15 @@ jobs:
         include:
           - name: api
             dockerfile: api/Dockerfile
+            context: ./api
           - name: front
             dockerfile: front/Dockerfile
+            # ./front ne suffit pas : front/Dockerfile copie aussi infra/nginx.conf,
+            # hors de front/ — donc contexte racine, seule exception des 3.
+            context: .
           - name: etl
             dockerfile: etl/Dockerfile
+            context: ./etl
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -177,7 +182,7 @@ jobs:
       - name: Build ${{ matrix.name }} image
         uses: docker/build-push-action@v6
         with:
-          context: ${{ matrix.name == 'etl' && './etl' || '.' }}
+          context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           push: false
           load: true

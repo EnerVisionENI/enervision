@@ -1,0 +1,9 @@
+# Contexte de build de l'image API (context: ./api). Le Dockerfile copie tout
+# le dossier (COPY . api/), donc sans ce fichier les tests, les dépendances de
+# dev et les caches locaux finissaient dans l'image de prod.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+tests/
+requirements-dev.txt
