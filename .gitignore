@@ -58,3 +58,4 @@ bronze/
 Thumbs.db
 node_modules/
 ml/mlflow.db
+.claude/
