@@ -4,8 +4,12 @@
 
 Le dépôt contient une pipeline GitHub Actions unique dans `.github/workflows/ci-cd.yml`.
 
-- Sur chaque pull request vers `dev`, la pipeline lance les tests API et le build frontend.
-- Sur chaque push vers `dev` (donc aussi après un merge de PR), la pipeline déploie automatiquement sur le serveur.
+- Sur chaque pull request vers `dev` ou `main` : tests API (lint + pytest), tests ETL (lint + pytest), tests
+  du script de sauvegarde, build + tests + lint du frontend, scan de sécurité Trivy sur les 3 images Docker,
+  puis tests end-to-end sur une stack éphémère jetable (voir `compose.ci.yml`).
+- Sur chaque push vers `dev` (donc aussi après un merge de PR) : la même chaîne de vérifications, puis un
+  déploiement automatique sur le serveur si — et seulement si — les tests end-to-end sont passés.
+- Rescan de sécurité Trivy quotidien sur `main` (CVE publiées depuis le dernier build, sans rebuild de code).
 
 Le serveur de déploiement (`10.105.200.44`) n'est joignable que depuis le réseau interne : le job `deploy`
 tourne donc sur un **runner GitHub Actions self-hosted installé directement sur ce serveur**, plutôt que sur
