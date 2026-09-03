@@ -41,6 +41,10 @@ def test_list_alerts_returns_stored_alerts(client, db_session):
     assert body[0]["alert_id"] == "A1"
     assert body[0]["site_id"] == "SITE001"
     assert body[0]["severity"] == "high"
+    # La colonne Postgres est un TIMESTAMP naïf mais réellement en UTC : l'API
+    # doit lui associer explicitement un fuseau, sinon `new Date(...)` côté
+    # front l'interprète comme heure locale (décalage silencieux).
+    assert body[0]["timestamp"] == "2026-09-01T09:00:00Z"
 
 
 def test_list_alerts_ordered_by_timestamp_desc(client, db_session):

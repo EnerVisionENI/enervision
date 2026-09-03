@@ -101,6 +101,17 @@ body {
   }
 }
 
+/* Certaines pages (ex. Dashboard) gèrent leur propre fond pleine largeur :
+   on retire le cadre blanc et son padding (y compris la variante mobile
+   ci-dessus) pour qu'elles occupent tout l'espace disponible plutôt que
+   d'apparaître comme un encart au milieu. Règle placée après la media query
+   pour gagner la cascade à specificité égale, à toutes les largeurs. */
+.main-content--pleine-page {
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+}
+
 /* ---------------------------------------------------------------------------
    Écrans d'authentification (connexion, mot de passe).
    Langage graphique de la maquette produit : console sombre, angles à 3px,

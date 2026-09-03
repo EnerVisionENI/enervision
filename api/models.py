@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, Numeric, String, Uuid, false, func
+from sqlalchemy import Boolean, Numeric, String, Uuid, false, func, JSON, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
 from api.database import Base
@@ -33,3 +33,57 @@ class Alert(Base):
     message: Mapped[str | None] = mapped_column(nullable=True)
     value: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     threshold: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+
+
+class Site(Base):
+    __tablename__ = "sites"
+
+    # Modèle en lecture seule, alimenté par etl/sites.py (cf. commentaire sur
+    # Alert.site_id : même principe, pas de logique d'écriture ici).
+    site_id: Mapped[str] = mapped_column(String(20), primary_key=True)
+    site_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    site_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    capacity_kw: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+
+class MeasurementSilver(Base):
+    __tablename__ = "measurements_silver"
+
+    # Modèle en lecture seule, alimenté par etl/quality.py via postgres_writer.py
+    # (infra/postgres/init/02_silver.sql) — même principe que Alert/Site. Seules
+    # les colonnes utiles au dashboard (multi-métriques) sont mappées : pas
+    # consumption_kwh (toujours identique à consumption_kw dans ce mock),
+    # has_anomaly (jamais vrai sur les données collectées) ni
+    # consumption_change_pct (quasi toujours NULL).
+    source_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    site_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    consumption_kw: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    voltage_v: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    current_a: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    power_factor: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    temperature_celsius: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    humidity_percent: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    quality_score: Mapped[int | None] = mapped_column(nullable=True)
+    data_quality: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    null_reasons: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+
+class AggregateGoldDaily(Base):
+    __tablename__ = "aggregates_gold_daily"
+
+    # Lecture seule, alimenté par etl/quality.py via postgres_writer.py
+    # (infra/postgres/init/03_gold.sql). Une ligne par (site, jour) — recalculée
+    # en entier à chaque run (voir postgres_writer.write_gold_daily), pas un
+    # cumul incrémental. Seules les colonnes utiles aux KPI du dashboard sont
+    # mappées, pas les 19 colonnes de la table.
+    record_date: Mapped[date] = mapped_column(primary_key=True)
+    site_id: Mapped[str] = mapped_column(String(20), primary_key=True)
+    records_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    good_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    avg_consumption_kw: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    max_consumption_kw: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    total_consumption_kwh: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    avg_quality_score: Mapped[float | None] = mapped_column(Numeric, nullable=True)
