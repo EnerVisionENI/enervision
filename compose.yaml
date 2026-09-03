@@ -112,70 +112,9 @@ services:
   # --------------------------------------------------------------------------
   # Pipeline ETL — profile "etl"
   # --------------------------------------------------------------------------
-  # Rattrapage initial : rejoue l'historique puis draine bronze -> silver/gold,
-  # AVANT que etl-collect ne passe en temps réel. Conteneur one-shot (restart "no").
-  # L'état vit dans la table Postgres etl_status : si phase=live, ce conteneur
-  # ressort immédiatement, un redémarrage ne relance donc pas le rattrapage.
-  etl-bootstrap:
-    build:
-      context: ./etl
-      dockerfile: Dockerfile
-    # Les quatre services ETL partagent ce Dockerfile et ce contexte. Sans une clé
-    # `image:` commune, chacun produisait sa propre image : 4 builds (et 4 pip install)
-    # au lieu d'un. Avec le même tag, seul le premier construit, les autres réutilisent.
-    image: enervision-etl:local
-    container_name: enervision-etl-bootstrap
-    profiles: ["etl"]
-    command: ["python", "bootstrap.py"]
-    env_file:
-      - .env
-    environment:
-      API_BASE: ${API_BASE:-http://10.105.200.45:8000}
-      PYTHONUNBUFFERED: "1"
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-      MINIO_BUCKET_BRONZE: bronze
-      MINIO_BUCKET_SILVER: silver
-      MINIO_BUCKET_GOLD: gold
-      MINIO_BUCKET_QUARANTINE: quarantine
-      MINIO_BUCKET_MANIFESTS: manifests
-      MINIO_BUCKET_AUDIT: audit
-      MINIO_USE_SSL: "false"
-      HISTORY_MOIS: ${HISTORY_MOIS:-13}
-      HISTORY_PAS_MINUTES: ${HISTORY_PAS_MINUTES:-60}
-      BOOTSTRAP_DRAIN_CHUNK: ${BOOTSTRAP_DRAIN_CHUNK:-20000}
-      ETL_FETCH_WORKERS: ${ETL_FETCH_WORKERS:-32}
-    depends_on:
-      minio:
-        condition: service_healthy
-      # history.py écrit dans bronze/audit sans les créer : il faut que minio-init
-      # ait fini. etl-collect en hérite transitivement (il dépend de etl-bootstrap).
-      minio-init:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-    restart: "no"
-    # Conteneur one-shot : pas de heartbeat, le HEALTHCHECK de l'image (pensé pour
-    # collect.py) le marquerait "unhealthy" à tort. etl-collect attend de toute
-    # façon `service_completed_successfully`, pas la santé.
-    healthcheck:
-      disable: true
-    networks:
-      - enervision-network
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 1G
-
+  # Collecte 100 % temps réel : etl-collect interroge l'API toutes les
+  # INTERVALLE_SECONDES et promeut bronze -> silver au fil de l'eau. Pas de
+  # rattrapage d'historique — la donnée ne commence qu'au premier cycle de collecte.
   etl-collect:
     build:
       context: ./etl
@@ -207,16 +146,14 @@ services:
       MINIO_USE_SSL: "false"
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
-    # etl-collect ne passe en temps réel qu'une fois le rattrapage terminé
-    # (etl-bootstrap sorti en 0). Si le bootstrap échoue (phase=error), la
-    # collecte ne démarre pas — c'est voulu.
+    # minio-init crée les buckets ; collect.py y écrit sans les créer lui-même.
     depends_on:
       minio:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
-      etl-bootstrap:
-        condition: service_completed_successfully
     restart: unless-stopped
     networks:
       - enervision-network

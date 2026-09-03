@@ -625,15 +625,16 @@ def test_anomalies_calculees_sur_toute_la_partition(monkeypatch):
     assert _gold(s3, "daily").iloc[0]["anomaly_count"] == 1
 
 
-def test_gold_dedoublonne_une_cle_bronze_rejouee(monkeypatch):
-    """Le silver est append-only : réingérer une clé (état purgé, reprise par repair.py)
-    ajoute un batch sans retirer l'ancien. La mesure ne doit pas compter double."""
+def test_gold_dedoublonne_une_cle_bronze_reingeree(monkeypatch):
+    """Le silver est append-only : si une clé est réingérée (état incrémental purgé, objet
+    bronze redéposé), un batch s'ajoute sans retirer l'ancien. La mesure ne doit pas
+    compter double."""
     s3 = FakeS3()
     monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
     s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure())
 
     quality.main([])
-    quality.save_state(s3, "manifests", "etl_state.json", set())   # comme après une reprise
+    quality.save_state(s3, "manifests", "etl_state.json", set())   # état incrémental purgé
     quality.main([])
     assert len(s3.keys("silver")) == 2                             # deux batches, même mesure
 

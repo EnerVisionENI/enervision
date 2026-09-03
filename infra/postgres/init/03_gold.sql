@@ -107,5 +107,5 @@ ALTER TABLE aggregates_gold_hourly ADD COLUMN IF NOT EXISTS avg_humidity_percent
 CREATE INDEX IF NOT EXISTS idx_gold_daily_site ON aggregates_gold_daily(site_id);
 CREATE INDEX IF NOT EXISTS idx_gold_hourly_site ON aggregates_gold_hourly(site_id);
 CREATE INDEX IF NOT EXISTS idx_gold_hourly_date ON aggregates_gold_hourly(record_date);
--- Repérage des fenêtres à rejouer par etl/repair.py : les partitions sans aucune mesure.
+-- Journées sans aucune mesure exploitable (tous les relevés en panne capteur).
 CREATE INDEX IF NOT EXISTS idx_gold_daily_vides ON aggregates_gold_daily(record_date, site_id) WHERE usable_count = 0;

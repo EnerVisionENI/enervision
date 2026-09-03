@@ -7,10 +7,9 @@ enregistrements invalides en quarantaine.
 Les agrégats gold daily/hourly ne sont PAS recalculés dans ce passage. Recalculer une
 partition relit l'intégralité de son silver : fait à chaque cycle de collecte (60 s), le
 cycle débordait de son intervalle et le silver n'était plus alimenté qu'une minute sur
-deux ; fait à chaque tranche du rattrapage initial (bootstrap.py), c'était le même travail
-refait des dizaines de fois. Chaque partition (record_date, site_id) touchée est donc
-empilée dans manifests/gold_pending.json, et un passage dédié `--gold-only` la recalcule —
-le gold n'est de toute façon consommé qu'aux grains horaire et journalier.
+deux. Chaque partition (record_date, site_id) touchée est donc empilée dans
+manifests/gold_pending.json, et un passage dédié `--gold-only` la recalcule — le gold n'est
+de toute façon consommé qu'aux grains horaire et journalier.
 
 MinIO reste la source de vérité ; les mêmes lignes silver/gold sont répliquées dans
 PostgreSQL (voir postgres_writer.py) pour être interrogeables en SQL par l'API/dashboard.
@@ -24,14 +23,12 @@ Buckets :
 	manifests    état incrémental    etl_state.json      (clés bronze déjà traitées)
 	manifests    gold à recalculer   gold_pending.json   (partitions silver modifiées)
 
-Complétude : l'API mock simule des pannes de capteurs vivantes et les applique aux relevés
-historiques au moment du fetch (voir /api/v1/sensors/status). Un backfill lancé pendant une
-panne ramène des lectures « critical » dont les 7 métriques sont nulles. Elles sont
-conservées en silver — le trou doit rester visible et daté — mais marquées is_valid=False,
-comptées à part dans le gold (critical_count, empty_count) et jamais confondues avec une
+Complétude : l'API mock renvoie par intermittence des relevés « critical » dont les 7
+métriques sont nulles (panne capteur simulée, null_reasons = network_loss). Ils sont
+conservés en silver — le trou doit rester visible et daté — mais marqués is_valid=False,
+comptés à part dans le gold (critical_count, empty_count) et jamais confondus avec une
 mesure : `total_consumption_kwh` vaut NaN et non 0 quand rien n'a été mesuré, et le grain
 horaire est complété à 24 lignes pour qu'une heure sans relevé existe explicitement.
-repair.py rejoue ces fenêtres quand les capteurs sont revenus au vert.
 
 Tables PostgreSQL (infra/postgres/init/02_silver.sql, 03_gold.sql, 05_quarantine.sql) :
 	measurements_silver, aggregates_gold_daily, aggregates_gold_hourly,
@@ -49,7 +46,7 @@ Usage :
 	python quality.py --gold-only                        # gold des partitions en attente
 	python quality.py --gold-only --gold-date 2026-09-01 # ... + toute une journée (filet)
 	python quality.py --bronze-bucket bronze --silver-bucket silver --gold-bucket gold
-	python quality.py --fetch-workers 32   # gros rattrapage : lecture bronze en parallèle
+	python quality.py --fetch-workers 32   # lecture bronze en parallèle (reprise après arrêt)
 	python quality.py --fetch-workers 1    # forcer la lecture séquentielle
 """
 
@@ -721,8 +718,8 @@ def rebuild_gold_partition(
 		ignore_index=True,
 	)
 
-	# Le silver est append-only : réingérer une clé bronze (état incrémental purgé, reprise
-	# d'un backfill vide par repair.py) ajoute un batch sans retirer l'ancien. Sans ce
+	# Le silver est append-only : si une clé bronze est réingérée (état incrémental purgé,
+	# objet bronze redéposé), un nouveau batch s'ajoute sans retirer l'ancien. Sans ce
 	# dédoublonnage, la mesure serait comptée deux fois dans records_count et pèserait
 	# double dans chaque moyenne. On garde la version la plus récemment ingérée.
 	if "source_key" in partition_df.columns:
@@ -819,9 +816,8 @@ def process_batch(
 	Renvoie (lignes_silver, quarantined, partitions touchées).
 
 	rebuild_gold=False par défaut : le gold des partitions renvoyées est recalculé plus tard
-	par un passage --gold-only, pour que ce chemin-ci — appelé chaque minute en collecte et à
-	chaque tranche pendant le rattrapage — reste borné par la taille du lot et non par celle
-	du silver déjà accumulé."""
+	par un passage --gold-only, pour que ce chemin-ci — appelé chaque minute en collecte —
+	reste borné par la taille du lot et non par celle du silver déjà accumulé."""
 	silver_rows: list[dict[str, Any]] = []
 	quarantine_rows: list[dict[str, Any]] = []
 
@@ -970,8 +966,7 @@ def run_gold(argv: list[str] | None = None) -> GoldResult:
 def run(argv: list[str] | None = None) -> RunResult:
 	"""Un passage bronze -> silver. N'imprime que les erreurs de lecture par
 	clé (dans fetch_records) ; le résumé et le code de sortie sont l'affaire de
-	main(). bootstrap.py appelle run() en boucle et exploite les compteurs
-	(objets_bronze, processed_total) pour suivre l'avancement du rattrapage.
+	main().
 
 	Le gold des partitions touchées est empilé pour un passage --gold-only, sauf
 	--with-gold."""

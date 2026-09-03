@@ -20,37 +20,21 @@ derrière des profils Compose :
 | Profil | Services | |
 |--------|----------|---|
 | _(aucun)_ | `postgres`, `minio`, `minio-init`, `api`, `front` | toujours démarrés |
-| `etl`   | `etl-bootstrap`, `etl-collect`, `etl-alerts`, `etl-sites` | rattrapage initial, puis collecte mesures + alertes + sites |
+| `etl`   | `etl-collect`, `etl-alerts`, `etl-sites` | collecte temps réel mesures + alertes + sites |
 | `audit` | `audit-sync`  | synchro MinIO → Azure Blob |
 | `proxy` | `traefik`     | reverse proxy TLS |
 
 En local : `docker compose up -d --build` suffit pour le cœur de la stack ; ajouter `--profile etl` au besoin.
 
-### Rattrapage initial de l'ETL (`etl-bootstrap`)
+### Collecte de l'ETL (`etl-collect`)
 
-Au premier `up` du profil `etl`, le conteneur **one-shot `etl-bootstrap`** :
+Collecte **100 % temps réel**, aucun rejeu d'historique. À chaque cycle (`INTERVALLE_SECONDES`, défaut 60 s) :
 
-1. rejoue l'historique de consommation (`history.py`, `HISTORY_MOIS` mois, pas `HISTORY_PAS_MINUTES` min — défauts 13 mois / 60 min) dans la couche bronze ;
-2. draine bronze → silver par tranches (`quality.py`, `BOOTSTRAP_DRAIN_CHUNK` objets par passage) ;
-3. consolide le gold en **un seul passage** (`phase=gold`) ;
-4. passe en `phase=live`.
+1. `etl-collect` interroge l'API pour les 7 sites et dépose un objet JSON par mesure dans `bronze` (+ hash SHA-256 dans `audit`) ;
+2. dans la foulée, `quality.py` promeut les nouveaux objets bronze → `silver` (Parquet), les rejets structurels → `quarantine` ;
+3. le gold n'est pas recalculé ici : les partitions touchées sont empilées dans `manifests/gold_pending.json` et reprises par le planning `GOLD_CRON_HORAIRE` (`quality.py --gold-only`), plus une consolidation complète de la veille via `GOLD_CRON_QUOTIDIEN`.
 
-Le drainage n'agrège pas au fil de l'eau : il empile les partitions touchées dans `manifests/gold_pending.json`. Recalculer une partition à chaque tranche revenait à relire le même silver des dizaines de fois — c'est ce qui allongeait le plus l'étape de déploiement, puisque `docker compose up -d` **attend** la fin de `etl-bootstrap`.
-
-`etl-collect` a `depends_on: etl-bootstrap: condition: service_completed_successfully` : la **collecte temps réel ne démarre qu'une fois le rattrapage terminé**. Si le bootstrap échoue, il passe en `phase=error` et sort en 1 → `etl-collect` ne démarre pas (voulu).
-
-L'état vit dans la table Postgres **`etl_status`** (ligne unique `id = 1`, colonnes `phase` / `bronze_total` / `bronze_done` / `message`). Il rend `etl-bootstrap` **idempotent** : si `phase=live`, le conteneur ressort aussitôt, un redéploiement ne relance donc rien.
-
-```sql
--- suivre l'avancement
-SELECT phase, bronze_done, bronze_total, message, updated_at FROM etl_status;
--- reforcer un rattrapage complet
-UPDATE etl_status SET phase = 'pending' WHERE id = 1;
-```
-
-> Le déploiement qui déclenche le rattrapage est long **par construction** : `docker compose up -d` ne rend la main qu'une fois `etl-bootstrap` terminé (`condition: service_completed_successfully`). C'est un coût unique — les déploiements suivants ressortent aussitôt sur `phase=live`.
-
-> Le rattrapage peut durer plusieurs minutes à quelques dizaines de minutes selon `HISTORY_PAS_MINUTES` (pas plus fin = plus d'objets). `etl-bootstrap` tourne avec sa propre limite mémoire (1 Go) car il exécute le pipeline pandas ; `etl-collect` reste à 256 Mo (≈ 7 objets/cycle).
+`etl-collect` ne dépend que de `minio` / `minio-init` / `postgres` : `docker compose up -d` rend la main dès que la collecte est lancée. La donnée commence au premier cycle — il n'y a pas d'antériorité.
 
 ### Installer le runner self-hosted sur le serveur
 
