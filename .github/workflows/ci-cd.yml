@@ -1,0 +1,285 @@
+# Pipeline unique : remplace deploy-dev.yml + trivy.yml + etl-ci.yml.
+#
+#   test-api ┐
+#   test-etl ├─→ trivy ─→ test-e2e ─→ deploy
+#   build-front ┘
+#
+# test-e2e est pour l'instant COMMENTÉ : le dossier e2e/ vit sur la branche
+# EV-031, pas encore ici. Une fois e2e/ ramené sur cette branche :
+#   1. décommenter le job test-e2e ci-dessous
+#   2. dans le job deploy, remplacer `needs: [trivy]` par `needs: [test-e2e]`
+#      (voir le commentaire sur cette ligne)
+
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+  schedule:
+    # Rescan quotidien de main pour détecter les nouvelles CVE sur des images
+    # inchangées (ex-trivy.yml). Seul le job trivy tourne dans ce cas, cf. les
+    # `if:` ci-dessous.
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: enervision-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-api:
+    name: API tests
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install API dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r api/requirements-dev.txt
+
+      - name: Run API tests
+        run: pytest api/tests -q
+
+  test-etl:
+    name: ETL lint + tests
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./etl
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Install ETL dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run ETL tests
+        run: pytest tests/ -v
+
+  build-front:
+    name: Frontend build
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: front
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: front
+        run: npm run build
+
+  trivy:
+    name: Trivy scan (${{ matrix.name }})
+    # Tourne toujours, y compris sur le cron nocturne (rescan de main) : c'est le
+    # seul job que le déclenchement `schedule` doit exécuter.
+    needs: [test-api, test-etl, build-front]
+    if: always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            dockerfile: api/Dockerfile
+          - name: front
+            dockerfile: front/Dockerfile
+          - name: etl
+            dockerfile: etl/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Trivy vulnerability DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ github.run_id }}
+          restore-keys: |
+            trivy-db-
+
+      - name: Build ${{ matrix.name }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.name == 'etl' && './etl' || '.' }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          load: true
+          tags: enervision-${{ matrix.name }}:scan
+
+      - name: Trivy scan (full report, JSON)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: enervision-${{ matrix.name }}:scan
+          format: json
+          output: trivy-${{ matrix.name }}.json
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: "0"
+
+      - name: Upload Trivy report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-${{ matrix.name }}
+          path: trivy-${{ matrix.name }}.json
+          retention-days: 30
+
+      - name: Trivy scan (fail on CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: enervision-${{ matrix.name }}:scan
+          format: table
+          output: trivy-${{ matrix.name }}.table.txt
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Publish results to job summary
+        if: always()
+        run: |
+          echo "### Trivy scan: ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat trivy-${{ matrix.name }}.table.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # --------------------------------------------------------------------------
+  # DÉSACTIVÉ tant que e2e/ n'est pas ramené depuis EV-031 sur cette branche.
+  # Pour réactiver : décommenter tout le bloc ci-dessous, puis dans le job
+  # `deploy`, changer `needs: [trivy]` en `needs: [test-e2e]`.
+  # --------------------------------------------------------------------------
+  # test-e2e:
+  #   name: E2E (stack éphémère)
+  #   needs: [trivy]
+  #   if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+  #   runs-on: self-hosted
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
+  #       with:
+  #         clean: false
+  #
+  #     - name: Restore production env file
+  #       run: |
+  #         set -e
+  #         cat /opt/enervision-secrets/postgres.env \
+  #             /opt/enervision-secrets/api.env \
+  #             /opt/enervision-secrets/minio.env \
+  #             /opt/enervision-secrets/audit-sync.env \
+  #             /opt/enervision-secrets/etl.env > .env
+  #
+  #     - name: Start ephemeral stack (compose.ci.yml)
+  #       run: |
+  #         set -e
+  #         docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
+  #           up -d --build postgres minio minio-init api etl-collect etl-alerts etl-sites
+  #
+  #     - name: Wait for API health
+  #       run: |
+  #         set -e
+  #         for i in $(seq 1 30); do
+  #           if curl -sf http://localhost:18000/health >/dev/null; then
+  #             echo "API prête."
+  #             exit 0
+  #           fi
+  #           sleep 2
+  #         done
+  #         echo "L'API ne répond toujours pas sur /health après 60s."
+  #         exit 1
+  #
+  #     - name: Set up Python
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: '3.12'
+  #
+  #     - name: Install e2e dependencies
+  #       run: |
+  #         python -m pip install --upgrade pip
+  #         pip install -r e2e/requirements.txt
+  #
+  #     - name: Run e2e tests
+  #       env:
+  #         E2E_API_URL: http://localhost:18000
+  #       run: pytest e2e/ -v
+  #
+  #     - name: Tear down ephemeral stack
+  #       if: always()
+  #       run: |
+  #         docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
+  #           down -v --remove-orphans
+
+  deploy:
+    name: Deploy on server
+    # TODO une fois test-e2e réactivé : needs: [test-e2e]
+    needs: [trivy]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Ne pas supprimer les fichiers non versionnés (.env) présents sur le runner.
+          clean: false
+
+      - name: Restore production env file
+        run: |
+          set -e
+          # Concatène les fichiers de secrets existants en un seul .env racine.
+          # Les clés en double (POSTGRES_* dans postgres.env et api.env) portent
+          # les mêmes valeurs ; la dernière occurrence l'emporte.
+          cat /opt/enervision-secrets/postgres.env \
+              /opt/enervision-secrets/api.env \
+              /opt/enervision-secrets/minio.env \
+              /opt/enervision-secrets/audit-sync.env \
+              /opt/enervision-secrets/etl.env > .env
+
+      - name: Deploy with docker compose
+        run: |
+          set -e
+
+          if docker compose version >/dev/null 2>&1; then
+            DOCKER_COMPOSE="docker compose"
+          else
+            DOCKER_COMPOSE="docker-compose"
+          fi
+
+          $DOCKER_COMPOSE --profile etl --profile audit --profile proxy \
+            up -d --build --remove-orphans

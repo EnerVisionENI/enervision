@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import JSON, DateTime, Numeric, String, Uuid, func
+from sqlalchemy import Boolean, Numeric, String, Uuid, false, func, JSON, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
 from api.database import Base
@@ -14,6 +14,9 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(150), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="viewer")
+    # Vrai tant que le mot de passe temporaire choisi par l'admin n'a pas été
+    # remplacé par l'utilisateur : voir get_active_user dans api/auth.py.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 

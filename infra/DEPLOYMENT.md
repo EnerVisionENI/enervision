@@ -20,11 +20,37 @@ derrière des profils Compose :
 | Profil | Services | |
 |--------|----------|---|
 | _(aucun)_ | `postgres`, `minio`, `minio-init`, `api`, `front` | toujours démarrés |
-| `etl`   | `etl-collect`, `etl-alerts`, `etl-sites` | collecte mesures + alertes + sites |
+| `etl`   | `etl-bootstrap`, `etl-collect`, `etl-alerts`, `etl-sites` | rattrapage initial, puis collecte mesures + alertes + sites |
 | `audit` | `audit-sync`  | synchro MinIO → Azure Blob |
 | `proxy` | `traefik`     | reverse proxy TLS |
 
 En local : `docker compose up -d --build` suffit pour le cœur de la stack ; ajouter `--profile etl` au besoin.
+
+### Rattrapage initial de l'ETL (`etl-bootstrap`)
+
+Au premier `up` du profil `etl`, le conteneur **one-shot `etl-bootstrap`** :
+
+1. rejoue l'historique de consommation (`history.py`, `HISTORY_MOIS` mois, pas `HISTORY_PAS_MINUTES` min — défauts 13 mois / 60 min) dans la couche bronze ;
+2. draine bronze → silver par tranches (`quality.py`, `BOOTSTRAP_DRAIN_CHUNK` objets par passage) ;
+3. consolide le gold en **un seul passage** (`phase=gold`) ;
+4. passe en `phase=live`.
+
+Le drainage n'agrège pas au fil de l'eau : il empile les partitions touchées dans `manifests/gold_pending.json`. Recalculer une partition à chaque tranche revenait à relire le même silver des dizaines de fois — c'est ce qui allongeait le plus l'étape de déploiement, puisque `docker compose up -d` **attend** la fin de `etl-bootstrap`.
+
+`etl-collect` a `depends_on: etl-bootstrap: condition: service_completed_successfully` : la **collecte temps réel ne démarre qu'une fois le rattrapage terminé**. Si le bootstrap échoue, il passe en `phase=error` et sort en 1 → `etl-collect` ne démarre pas (voulu).
+
+L'état vit dans la table Postgres **`etl_status`** (ligne unique `id = 1`, colonnes `phase` / `bronze_total` / `bronze_done` / `message`). Il rend `etl-bootstrap` **idempotent** : si `phase=live`, le conteneur ressort aussitôt, un redéploiement ne relance donc rien.
+
+```sql
+-- suivre l'avancement
+SELECT phase, bronze_done, bronze_total, message, updated_at FROM etl_status;
+-- reforcer un rattrapage complet
+UPDATE etl_status SET phase = 'pending' WHERE id = 1;
+```
+
+> Le déploiement qui déclenche le rattrapage est long **par construction** : `docker compose up -d` ne rend la main qu'une fois `etl-bootstrap` terminé (`condition: service_completed_successfully`). C'est un coût unique — les déploiements suivants ressortent aussitôt sur `phase=live`.
+
+> Le rattrapage peut durer plusieurs minutes à quelques dizaines de minutes selon `HISTORY_PAS_MINUTES` (pas plus fin = plus d'objets). `etl-bootstrap` tourne avec sa propre limite mémoire (1 Go) car il exécute le pipeline pandas ; `etl-collect` reste à 256 Mo (≈ 7 objets/cycle).
 
 ### Installer le runner self-hosted sur le serveur
 
@@ -55,7 +81,8 @@ Le serveur (et donc le runner) doit avoir :
    - `api.env` — `JWT_SECRET_KEY`, `INGEST_API_KEY`, `CORS_ORIGINS`, … (voir `.env.example`)
    - `minio.env` — `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`
    - `audit-sync.env` — variables `AZURE_STORAGE_*`, `RCLONE_CRYPT_PASSWORD_RAW`, `SYNC_INTERVAL_SECONDES`
-   - `etl.env` — surcharges ETL éventuelles (`API_BASE`, `INTERVALLE_SECONDES`) ; peut être vide
+   - `etl.env` — surcharges ETL éventuelles (`API_BASE`, `INTERVALLE_SECONDES`,
+     `GOLD_CRON_HORAIRE`, `GOLD_CRON_QUOTIDIEN`) ; peut être vide
 
    Les clés en double entre fichiers (`POSTGRES_*`) doivent porter les mêmes valeurs.
 
@@ -78,6 +105,19 @@ chmod 600 /opt/enervision-secrets/*.env
 
 Ensuite, chaque push sur `dev` refera automatiquement le `checkout`, l'assemblage du `.env`, puis
 `docker compose --profile etl --profile audit --profile proxy up -d --build`.
+
+### Changements de schéma sur une base existante
+
+Les scripts de `infra/postgres/init/` ne sont rejoués **que sur un volume vide** : sur un serveur déjà
+déployé, une colonne ajoutée au schéma doit être passée à la main une fois (il n'y a pas encore d'outil de
+migration, cf. *Pistes connues* du README). Pour la gestion des comptes utilisateurs (EV-027) :
+
+```bash
+docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  -c "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;"
+```
+
+Sans cette colonne, l'API renvoie une erreur 500 sur toutes les routes qui lisent un utilisateur.
 
 > Si un jour le serveur devient joignable depuis Internet (VPN site-to-site, IP publique, etc.), on peut
 > repasser le job `deploy` sur `ubuntu-latest` avec une connexion SSH classique (secrets `DEPLOY_HOST`,

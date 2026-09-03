@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
-from api.auth import create_access_token, get_current_user, hash_password, require_role, verify_password
+from api.auth import create_access_token, get_current_user, hash_password, verify_password
 from api.database import get_db
 from api.models import User
-from api.schemas import Token, UserCreate, UserOut
+from api.schemas import PasswordChange, Token, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -27,17 +27,29 @@ def read_me(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
-@router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-def create_user(
-    payload: UserCreate,
+@router.post("/password", response_model=UserOut)
+def change_own_password(
+    payload: PasswordChange,
     db: Session = Depends(get_db),
-    _: User = Depends(require_role("admin")),
+    # get_current_user et non get_active_user : c'est justement la seule route,
+    # avec /auth/me, ouverte à un compte encore sur son mot de passe temporaire.
+    current_user: User = Depends(get_current_user),
 ) -> User:
-    if db.query(User).filter(User.email == payload.email).first() is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cet email est déjà utilisé")
+    if not verify_password(payload.current_password, current_user.password_hash):
+        # 400 et non 401 : un 401 déclencherait la déconnexion automatique du
+        # front (intercepteur axios) alors que la session reste valide.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mot de passe actuel incorrect",
+        )
+    if payload.new_password == payload.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Le nouveau mot de passe doit être différent de l'actuel",
+        )
 
-    user = User(email=payload.email, password_hash=hash_password(payload.password), role=payload.role)
-    db.add(user)
+    current_user.password_hash = hash_password(payload.new_password)
+    current_user.must_change_password = False
     db.commit()
-    db.refresh(user)
-    return user
+    db.refresh(current_user)
+    return current_user

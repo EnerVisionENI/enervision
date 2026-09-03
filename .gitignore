@@ -18,6 +18,7 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+uv.lock
 
 # Node / front
 front/node_modules/
@@ -47,3 +48,4 @@ bronze/
 .idea/
 .DS_Store
 Thumbs.db
+node_modules/

@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.config import get_settings
-from api.routers import alerts, auth, sites
+from api.routers import alerts, auth, sensors_failing, users, sites
 
 settings = get_settings()
 
@@ -20,6 +20,8 @@ API_V1_PREFIX = "/api/v1"
 
 app.include_router(auth.router, prefix=API_V1_PREFIX)
 app.include_router(alerts.router, prefix=API_V1_PREFIX)
+app.include_router(sensors_failing.router, prefix=API_V1_PREFIX)
+app.include_router(users.router, prefix=API_V1_PREFIX)
 app.include_router(sites.router, prefix=API_V1_PREFIX)
 
 

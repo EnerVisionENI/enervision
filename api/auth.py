@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 import jwt
@@ -28,7 +28,7 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 
 def create_access_token(user: User) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "sub": str(user.user_id),
         "role": user.role,
@@ -59,8 +59,23 @@ def get_current_user(
     return user
 
 
+def get_active_user(user: User = Depends(get_current_user)) -> User:
+    """Utilisateur connecté *et* à jour de son mot de passe.
+
+    Un compte encore sur son mot de passe temporaire n'accède à rien d'autre que
+    /auth/me et /auth/password : la contrainte est portée par l'API, le front ne
+    fait que la refléter en redirigeant vers l'écran de changement.
+    """
+    if user.must_change_password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Mot de passe temporaire : changez-le avant d'accéder à l'application",
+        )
+    return user
+
+
 def require_role(*allowed_roles: str):
-    def dependency(user: User = Depends(get_current_user)) -> User:
+    def dependency(user: User = Depends(get_active_user)) -> User:
         if user.role not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

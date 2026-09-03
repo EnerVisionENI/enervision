@@ -111,3 +111,274 @@ body {
   padding: 0;
   box-shadow: none;
 }
+
+/* ---------------------------------------------------------------------------
+   Écrans d'authentification (connexion, mot de passe).
+   Langage graphique de la maquette produit : console sombre, angles à 3px,
+   monospace pour les libellés techniques, accent teal. Tout est préfixé .auth-*
+   et les variables sont portées par .auth-page — le thème clair du reste de
+   l'application n'est pas touché.
+   --------------------------------------------------------------------------- */
+
+.auth-page {
+  --auth-bg: #0b1220;
+  --auth-panel: #121a2b;
+  --auth-panel-2: #0e1728;
+  --auth-border: #1f2b42;
+  --auth-text: #e5e9f0;
+  --auth-muted: #6b7a99;
+  --auth-accent: #2dd4bf;
+  --auth-danger: #ef4444;
+  --auth-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: var(--auth-bg);
+  color: var(--auth-text);
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.auth-field label,
+.auth-toggle,
+.auth-hint {
+  font-family: var(--auth-mono);
+  font-size: 0.72em;
+  letter-spacing: 0.04em;
+  color: var(--auth-muted);
+}
+
+.auth-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.auth-toggle {
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.auth-toggle:hover {
+  color: var(--auth-accent);
+}
+
+.auth-input {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--auth-border);
+  border-radius: 3px;
+  background: var(--auth-panel-2);
+  color: var(--auth-text);
+  font-family: var(--auth-mono);
+  font-size: 0.9em;
+  transition: border-color 0.15s ease;
+}
+
+.auth-input::placeholder {
+  color: #3b4a68;
+}
+
+.auth-input:focus {
+  outline: none;
+  border-color: var(--auth-accent);
+}
+
+.auth-submit,
+.auth-secondaire {
+  width: 100%;
+  border-radius: 3px;
+  font-family: var(--auth-mono);
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+/* Teal en filet et en tint, jamais en aplat plein : c'est l'usage qu'en fait la
+   maquette (bordures, traits, texte d'accent). */
+.auth-submit {
+  padding: 12px;
+  border: 1px solid var(--auth-accent);
+  background: rgba(45, 212, 191, 0.1);
+  color: var(--auth-accent);
+  font-size: 0.8em;
+}
+
+.auth-secondaire {
+  padding: 11px;
+  border: 1px solid var(--auth-border);
+  background: none;
+  color: var(--auth-muted);
+  font-size: 0.78em;
+}
+
+.auth-secondaire:hover {
+  color: var(--auth-text);
+  border-color: var(--auth-muted);
+}
+
+.auth-submit:not(:disabled):hover {
+  background: rgba(45, 212, 191, 0.2);
+}
+
+.auth-submit:disabled,
+.auth-secondaire:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Bandeaux : même dispositif que le panneau "recommandation" de la maquette,
+   un filet de couleur à gauche plutôt qu'un aplat. */
+.auth-error,
+.auth-notice {
+  padding: 10px 12px;
+  border-left: 2px solid;
+  background: var(--auth-panel-2);
+  font-size: 0.8em;
+  line-height: 1.55;
+}
+
+.auth-error {
+  border-color: var(--auth-danger);
+  color: #fca5a5;
+}
+
+.auth-notice {
+  border-color: var(--auth-accent);
+  color: var(--auth-muted);
+}
+
+/* ---------------------------------------------------------------------------
+   Éléments d'UI partagés entre les vues (formulaires, boutons, bandeaux).
+   Le reste du style est scopé dans chaque composant.
+   --------------------------------------------------------------------------- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field label {
+  font-size: 0.85em;
+  font-weight: 600;
+  color: #555;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  padding: 11px 14px;
+  border: 1px solid #dcdce6;
+  border-radius: 8px;
+  font-size: 1em;
+  font-family: inherit;
+  color: #333;
+  background: white;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.field input:focus,
+.field select:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+}
+
+.field input::placeholder {
+  color: #b5b5c3;
+}
+
+.field .hint {
+  font-size: 0.8em;
+  color: #888;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 20px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 0.95em;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.btn-secondary {
+  background: white;
+  border-color: #dcdce6;
+  color: #555;
+}
+
+.btn-secondary:not(:disabled):hover {
+  border-color: #667eea;
+  color: #667eea;
+}
+
+.btn-danger {
+  background: #fdecea;
+  border-color: #f5c6c0;
+  color: #c62828;
+}
+
+.btn-danger:not(:disabled):hover {
+  background: #f9d9d5;
+}
+
+.btn-small {
+  padding: 7px 12px;
+  font-size: 0.85em;
+}
+
+.alert {
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.alert-error {
+  background: #fdecea;
+  color: #c62828;
+}
+
+.alert-success {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.alert-info {
+  background: #eef0fd;
+  color: #4c5fd5;
+}

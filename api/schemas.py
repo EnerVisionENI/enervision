@@ -6,6 +6,9 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 Role = Literal["viewer", "operator", "admin"]
 
+# Aligné sur la contrainte appliquée par api/create_admin.py.
+MIN_PASSWORD_LENGTH = 8
+
 
 def _en_utc(valeur: datetime | None) -> datetime | None:
     """La base (colonnes TIMESTAMP sans fuseau) et l'API Mock IoT renvoient des
@@ -28,6 +31,7 @@ class UserOut(BaseModel):
     user_id: uuid.UUID
     email: EmailStr
     role: Role
+    must_change_password: bool
     created_at: datetime
 
     @field_validator("created_at")
@@ -37,9 +41,29 @@ class UserOut(BaseModel):
 
 
 class UserCreate(BaseModel):
+    """Création par un admin : le mot de passe fourni est temporaire, l'utilisateur
+    devra le remplacer à sa première connexion."""
+
     email: EmailStr
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH)
     role: Role = "viewer"
+
+
+class UserUpdate(BaseModel):
+    role: Role
+
+
+class PasswordReset(BaseModel):
+    """Réinitialisation par un admin : redonne un mot de passe temporaire."""
+
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH)
+
+
+class PasswordChange(BaseModel):
+    """Changement par l'utilisateur lui-même, mot de passe actuel exigé."""
+
+    current_password: str
+    new_password: str = Field(min_length=MIN_PASSWORD_LENGTH)
 
 
 class AlertOut(BaseModel):
