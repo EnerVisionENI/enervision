@@ -1,0 +1,55 @@
+{
+  // Tâches Docker de la stack EnerVision (Terminal > Exécuter la tâche...).
+  // Prérequis : Docker Desktop lancé et un .env à la racine (cp .env.example .env).
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Docker: démarrer tout (cœur + ETL)",
+      "detail": "postgres, minio, api, front + les jobs ETL (collect, alerts, sites).",
+      "type": "shell",
+      "command": "docker compose --profile etl up -d --build",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Docker: démarrer le cœur seulement",
+      "detail": "postgres, minio, api, front — sans les jobs ETL.",
+      "type": "shell",
+      "command": "docker compose up -d --build",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Docker: démarrer absolument tout (+ audit, proxy)",
+      "detail": "Ajoute audit-sync et traefik. Demande les secrets AZURE_* dans .env et infra/traefik/acme.json, sinon ces deux services échouent.",
+      "type": "shell",
+      "command": "docker compose --profile etl --profile audit --profile proxy up -d --build",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Docker: arrêter",
+      "detail": "Arrête et supprime les conteneurs du projet (les volumes pgdata/miniodata sont conservés).",
+      "type": "shell",
+      "command": "docker compose down",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Docker: état des services",
+      "type": "shell",
+      "command": "docker compose --profile etl --profile audit --profile proxy ps",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Docker: logs (suivi)",
+      "detail": "Suit les logs de tous les services démarrés. Ctrl+C pour quitter.",
+      "type": "shell",
+      "command": "docker compose --profile etl --profile audit --profile proxy logs -f --tail=100",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    }
+  ]
+}

@@ -18,6 +18,7 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+uv.lock
 
 # Node / front
 front/node_modules/
@@ -41,7 +42,9 @@ tmp/
 bronze/
 
 # IDE / OS
-.vscode/
+# .vscode/tasks.json est versionné (tâches Docker partagées), le reste non.
+.vscode/*
+!.vscode/tasks.json
 .idea/
 .DS_Store
 Thumbs.db
