@@ -4,6 +4,9 @@ FROM python:3.12.9-slim
 # dans `podman logs` / `docker logs` (rien à voir avec le pipeline lui-même).
 ENV PYTHONUNBUFFERED=1
 
+# Patch OS packages regardless of when the base image tag was last rebuilt
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Dépendances installées avant le code, pour profiter du cache Docker
