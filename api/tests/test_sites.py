@@ -172,8 +172,9 @@ def test_list_site_measurements_returns_recent_ordered_ascending(client, db_sess
         "M1",
         timestamp=maintenant - timedelta(minutes=2),
         site_id="SITE001",
-        consumption_kw=55.0,
-        data_quality="good",
+        consumption_kw=None,
+        data_quality="critical",
+        null_reasons=["network_loss"],
     )
 
     response = client.get("/api/v1/sites/SITE001/measurements", headers=headers)
@@ -181,8 +182,10 @@ def test_list_site_measurements_returns_recent_ordered_ascending(client, db_sess
     assert response.status_code == 200
     body = response.json()
     assert len(body) == 2
-    assert body[0]["consumption_kw"] == 55.0
+    assert body[0]["consumption_kw"] is None
+    assert body[0]["null_reasons"] == ["network_loss"]
     assert body[1]["consumption_kw"] == 60.0
+    assert body[1]["null_reasons"] == []
 
 
 def test_list_site_measurements_excludes_rows_outside_the_window(client, db_session):

@@ -50,9 +50,9 @@
               </select>
             </div>
             <div v-if="dernierePuissance !== null" class="lecture-actuelle">
-              {{ formatEntier(dernierePuissance) }}<span class="unite">kW instantané</span>
+              {{ formatEntier(dernierePuissance) }}<span class="unite">kW · dernière mesure</span>
             </div>
-            <p v-else class="pas-de-donnee">Pas de donnée instantanée</p>
+            <p v-else class="pas-de-donnee">Pas de mesure récente</p>
 
             <div class="chart-wrapper">
               <canvas ref="canvasRef"></canvas>
@@ -157,7 +157,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { Chart } from "chart.js/auto";
 import api from "../api/client";
 
-const POLL_INTERVAL_MS = 5000;
+// etl-collect n'écrit measurements_silver qu'une fois par minute : sonder plus
+// souvent ne ferait qu'interroger la même dernière ligne en base. On aligne
+// donc la cadence du front sur celle de la source réelle plutôt que d'appeler
+// l'API Mock IoT en direct (/current), qui donnait une résolution factice
+// (5s) sans rapport avec ce qui est vraiment persisté.
+const POLL_INTERVAL_MS = 60 * 1000;
 
 const OPTIONS_FENETRE = [
   { label: "2 min", ms: 2 * 60 * 1000 },
@@ -176,7 +181,7 @@ const LIBELLES_RAISON = {
 // Contenu de démonstration : aucun moteur de recommandation, de scoring de
 // site ni de suivi de modèle n'existe côté backend. Seuls le sélecteur de
 // site, l'en-tête et le graphique de puissance ci-dessus sont réellement
-// alimentés par l'API (GET /sites, GET /sites/{id}/current).
+// alimentés par l'API (GET /sites, GET /sites/{id}/measurements).
 const PARC_MOCK = [
   { site_id: "SITE001", valeur: 78, alerte: false, points: "0,14 15,10 30,12 45,6 60,8" },
   { site_id: "SITE002", valeur: 474, alerte: false, points: "0,10 15,12 30,6 45,8 60,4" },
@@ -340,9 +345,8 @@ function ajouterPoint(buffer, instant, valeur, seuil) {
 }
 
 function purgerAnciens(buffer) {
-  // Purge par âge réel, pas par nombre de points : l'historique chargé au
-  // démarrage (~1 point/minute) et le direct (1 point/5s) ont des cadences
-  // différentes, un simple compteur de points ne représenterait plus la fenêtre.
+  // Purge par âge réel, pas par nombre de points : au fil des changements de
+  // fenêtre, la longueur du buffer n'est pas un proxy fiable de sa durée.
   const limite = Date.now() - fenetreMs.value;
   while (buffer.instants.length && buffer.instants[0].getTime() < limite) {
     buffer.instants.shift();
@@ -352,33 +356,40 @@ function purgerAnciens(buffer) {
   }
 }
 
-function enregistrerLecture(site, lecture) {
-  const buffer = bufferPour(site.site_id);
-  ajouterPoint(buffer, new Date(lecture.timestamp), lecture.consumption_kw, site.capacity_kw ?? null);
-  purgerAnciens(buffer);
-
-  dernieresLectures[site.site_id] = {
-    puissance: lecture.consumption_kw ?? null,
-    qualite: lecture.data_quality || "",
-    raisons: lecture.null_reasons || [],
-    timestamp: new Date(lecture.timestamp),
-  };
-}
-
 async function chargerHistorique(site) {
+  // Source unique : measurements_silver (alimentée par etl-collect, ~60s).
+  // Rappelé à chaque cycle, ce n'est pas un simple préremplissage mais LA
+  // façon dont le buffer est tenu à jour — donc on le reconstruit à chaque
+  // fois plutôt que d'y ajouter, pour ne jamais dupliquer une ligne déjà vue.
   try {
     const depuisMinutes = Math.ceil(fenetreMs.value / 60000);
     const { data } = await api.get(`/sites/${site.site_id}/measurements`, {
       params: { depuis_minutes: depuisMinutes },
     });
+
     const buffer = bufferPour(site.site_id);
+    buffer.instants = [];
+    buffer.labels = [];
+    buffer.valeurs = [];
+    buffer.seuils = [];
     for (const mesure of data) {
       ajouterPoint(buffer, new Date(mesure.timestamp), mesure.consumption_kw, site.capacity_kw ?? null);
     }
     purgerAnciens(buffer);
+
+    const derniere = data[data.length - 1];
+    dernieresLectures[site.site_id] = derniere
+      ? {
+          puissance: derniere.consumption_kw ?? null,
+          qualite: derniere.data_quality || "",
+          raisons: derniere.null_reasons || [],
+          timestamp: new Date(derniere.timestamp),
+        }
+      : null;
+
+    return true;
   } catch {
-    // Non bloquant : l'historique n'est qu'un préremplissage, le sondage en
-    // direct prend le relais de toute façon.
+    return false;
   }
 }
 
@@ -405,24 +416,15 @@ function afficherSiteSelectionne() {
   tauxDisponibilite.value = total > 0 ? Math.round((valides / total) * 100) : null;
 }
 
-async function sonderTousLesSites() {
+async function actualiserToutesLesMesures() {
   const resultats = await Promise.all(
-    sites.value.map((site) =>
-      api
-        .get(`/sites/${site.site_id}/current`)
-        .then((r) => ({ site, data: r.data, ok: true }))
-        .catch(() => ({ site, ok: false }))
-    )
+    sites.value.map(async (site) => ({ siteId: site.site_id, ok: await chargerHistorique(site) }))
   );
-
-  for (const resultat of resultats) {
-    if (resultat.ok) enregistrerLecture(resultat.site, resultat.data);
-  }
 
   afficherSiteSelectionne();
 
-  const echecSiteActuel = resultats.some((r) => r.site.site_id === siteSelectionne.value && !r.ok);
-  erreurLecture.value = echecSiteActuel ? "Lecture indisponible, nouvelle tentative au prochain cycle." : "";
+  const echecSiteActuel = resultats.some((r) => r.siteId === siteSelectionne.value && !r.ok);
+  erreurLecture.value = echecSiteActuel ? "Mesures indisponibles, nouvelle tentative au prochain cycle." : "";
 }
 
 function arreterSondage() {
@@ -434,8 +436,10 @@ function arreterSondage() {
 
 function demarrerSondage() {
   arreterSondage();
-  sonderTousLesSites();
-  intervalSondage = setInterval(sonderTousLesSites, POLL_INTERVAL_MS);
+  // Pas d'appel immédiat ici : chargerSites() a déjà fait le premier
+  // chargement avant d'appeler demarrerSondage(), l'intervalle ne fait que
+  // prendre le relais pour les cycles suivants.
+  intervalSondage = setInterval(actualiserToutesLesMesures, POLL_INTERVAL_MS);
 }
 
 function selectionnerSite(siteId) {
@@ -446,14 +450,9 @@ function selectionnerSite(siteId) {
 
 async function changerFenetre(ms) {
   fenetreMs.value = Number(ms);
-  // Les buffers déjà en mémoire correspondent à l'ancienne fenêtre (trop
-  // courts si on agrandit, à purger si on réduit) : on les recharge à neuf
-  // plutôt que de les corriger au cas par cas.
-  for (const siteId of Object.keys(historiques)) {
-    delete historiques[siteId];
-  }
-  await Promise.all(sites.value.map((site) => chargerHistorique(site)));
-  afficherSiteSelectionne();
+  // chargerHistorique() reconstruit chaque buffer à neuf : pas besoin de les
+  // vider explicitement avant de relancer le chargement avec la nouvelle fenêtre.
+  await actualiserToutesLesMesures();
 }
 
 async function chargerSites() {
@@ -469,13 +468,11 @@ async function chargerSites() {
     chargementSites.value = false;
     if (data.length > 0) {
       siteSelectionne.value = data[0].site_id;
-      // Préremplir le buffer de chaque site avec son historique réel récent
-      // (measurements_silver, ~1 point/minute) avant même le premier sondage
-      // en direct : le graphique n'est jamais vide au chargement.
-      await Promise.all(data.map((site) => chargerHistorique(site)));
       await nextTick();
       creerGraphique();
-      afficherSiteSelectionne();
+      // Premier chargement de tous les sites depuis measurements_silver,
+      // avant de lancer le cycle périodique (60s) qui prend le relais.
+      await actualiserToutesLesMesures();
       demarrerSondage();
     }
   } catch {

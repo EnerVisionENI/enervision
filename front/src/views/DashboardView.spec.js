@@ -28,26 +28,18 @@ const SITES = [
   { site_id: "SITE002", site_type: "industrial", site_name: "Usine Rennes", location: "Rennes", capacity_kw: 1000, status: "active" },
 ];
 
-const LECTURE_OK = {
-  // Une lecture "current" représente l'instant présent : date dynamique, pas
-  // fixe, sinon la purge par âge réel du buffer (fenêtre glissante de 2 min)
-  // la rejette aussitôt comme trop ancienne.
+const MESURE_OK = {
+  // measurements_silver représente un instant passé : date dynamique, pas
+  // fixe, sinon la purge par âge réel du buffer (fenêtre glissante) la
+  // rejette aussitôt comme trop ancienne.
   timestamp: new Date().toISOString(),
-  site_id: "SITE001",
-  site_type: "office",
   consumption_kw: 179.61,
-  consumption_kwh: 179.61,
-  voltage_v: 404.6,
-  current_a: 269.8,
-  power_factor: 0.931,
-  temperature_celsius: 9.5,
-  humidity_percent: null,
-  null_reasons: [],
   data_quality: "good",
+  null_reasons: [],
 };
 
-const LECTURE_DEGRADEE = {
-  ...LECTURE_OK,
+const MESURE_DEGRADEE = {
+  ...MESURE_OK,
   data_quality: "partial",
   null_reasons: ["humidity_sensor_failure"],
 };
@@ -71,12 +63,11 @@ describe("DashboardView", () => {
     vi.useRealTimers();
   });
 
-  it("charge les sites, sélectionne le premier et affiche sa première lecture", async () => {
+  it("charge les sites, sélectionne le premier et affiche sa dernière mesure", async () => {
     mockApi({
       lectures: {
-        "/sites/SITE001/current": () => Promise.resolve({ data: LECTURE_OK }),
-        "/sites/SITE002/current": () =>
-          Promise.resolve({ data: { ...LECTURE_OK, site_id: "SITE002", consumption_kw: 500 } }),
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [{ ...MESURE_OK, consumption_kw: 500 }] }),
       },
     });
 
@@ -84,7 +75,7 @@ describe("DashboardView", () => {
     await flushPromises();
 
     expect(api.get).toHaveBeenCalledWith("/sites");
-    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/current");
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", { params: { depuis_minutes: 2 } });
     expect(wrapper.text()).toContain("SITE001");
     expect(wrapper.text()).toContain("Bureau Paris La Défense");
     expect(wrapper.text()).toContain("200 kW");
@@ -94,14 +85,18 @@ describe("DashboardView", () => {
     expect(chartInstances[0].data.datasets[1].data).toEqual([200]);
   });
 
-  it("préremplit le graphique avec l'historique réel au chargement", async () => {
-    const ilYA1Min = new Date(Date.now() - 60_000).toISOString();
+  it("affiche toutes les mesures récentes reçues, dans l'ordre chronologique", async () => {
+    const ilYA90s = new Date(Date.now() - 90_000).toISOString();
+    const ilYA30s = new Date(Date.now() - 30_000).toISOString();
     mockApi({
       lectures: {
-        "/sites/SITE001/current": () => Promise.resolve({ data: LECTURE_OK }),
-        "/sites/SITE002/current": () => Promise.resolve({ data: { ...LECTURE_OK, site_id: "SITE002" } }),
         "/sites/SITE001/measurements": () =>
-          Promise.resolve({ data: [{ timestamp: ilYA1Min, consumption_kw: 40, data_quality: "good" }] }),
+          Promise.resolve({
+            data: [
+              { timestamp: ilYA90s, consumption_kw: 40, data_quality: "good", null_reasons: [] },
+              { timestamp: ilYA30s, consumption_kw: 55, data_quality: "good", null_reasons: [] },
+            ],
+          }),
         "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
       },
     });
@@ -109,25 +104,21 @@ describe("DashboardView", () => {
     mount(DashboardView);
     await flushPromises();
 
-    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", { params: { depuis_minutes: 2 } });
-    // Le point historique (40) précède le point du premier sondage en direct
-    // (179.61) : l'historique préremplit le graphique sans être écrasé par
-    // le direct qui prend le relais juste après.
-    expect(chartInstances[0].data.datasets[0].data).toEqual([40, 179.61]);
+    expect(chartInstances[0].data.datasets[0].data).toEqual([40, 55]);
   });
 
   it("affiche le taux réel de disponibilité des lectures sur la fenêtre", async () => {
     const ilYA90s = new Date(Date.now() - 90_000).toISOString();
+    const ilYA60s = new Date(Date.now() - 60_000).toISOString();
     const ilYA30s = new Date(Date.now() - 30_000).toISOString();
     mockApi({
       lectures: {
-        "/sites/SITE001/current": () => Promise.resolve({ data: LECTURE_OK }), // valide
-        "/sites/SITE002/current": () => Promise.resolve({ data: { ...LECTURE_OK, site_id: "SITE002" } }),
         "/sites/SITE001/measurements": () =>
           Promise.resolve({
             data: [
-              { timestamp: ilYA90s, consumption_kw: 40, data_quality: "good" }, // valide
-              { timestamp: ilYA30s, consumption_kw: null, data_quality: "critical" }, // sans valeur
+              { timestamp: ilYA90s, consumption_kw: 40, data_quality: "good", null_reasons: [] },
+              { timestamp: ilYA60s, consumption_kw: null, data_quality: "critical", null_reasons: ["network_loss"] },
+              { timestamp: ilYA30s, consumption_kw: 55, data_quality: "good", null_reasons: [] },
             ],
           }),
         "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
@@ -137,16 +128,16 @@ describe("DashboardView", () => {
     const wrapper = mount(DashboardView);
     await flushPromises();
 
-    // 2 lectures valides (40, 179.61) sur 3 points au total -> 67 %.
+    // 2 lectures valides sur 3 -> 67 %.
     expect(wrapper.find(".disponibilite").text()).toContain("67% de lectures disponibles");
   });
 
-  it("affiche un message explicite quand la lecture n'a pas de valeur", async () => {
+  it("affiche un message explicite quand la dernière mesure n'a pas de valeur", async () => {
     mockApi({
       lectures: {
-        "/sites/SITE001/current": () =>
-          Promise.resolve({ data: { ...LECTURE_OK, consumption_kw: null, data_quality: "critical" } }),
-        "/sites/SITE002/current": () => Promise.resolve({ data: { ...LECTURE_OK, site_id: "SITE002" } }),
+        "/sites/SITE001/measurements": () =>
+          Promise.resolve({ data: [{ ...MESURE_OK, consumption_kw: null, data_quality: "critical" }] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
       },
     });
 
@@ -154,14 +145,14 @@ describe("DashboardView", () => {
     await flushPromises();
 
     expect(wrapper.find(".lecture-actuelle").exists()).toBe(false);
-    expect(wrapper.find(".pas-de-donnee").text()).toBe("Pas de donnée instantanée");
+    expect(wrapper.find(".pas-de-donnee").text()).toBe("Pas de mesure récente");
   });
 
-  it("recharge l'historique de tous les sites avec la nouvelle fenêtre choisie", async () => {
+  it("recharge les mesures de tous les sites avec la nouvelle fenêtre choisie", async () => {
     mockApi({
       lectures: {
-        "/sites/SITE001/current": () => Promise.resolve({ data: LECTURE_OK }),
-        "/sites/SITE002/current": () => Promise.resolve({ data: { ...LECTURE_OK, site_id: "SITE002" } }),
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
       },
     });
 
@@ -175,20 +166,19 @@ describe("DashboardView", () => {
     expect(api.get).toHaveBeenCalledWith("/sites/SITE002/measurements", { params: { depuis_minutes: 60 } });
   });
 
-  it("interroge tous les sites à chaque cycle de sondage, pas seulement celui affiché", async () => {
+  it("interroge les mesures de tous les sites à chaque cycle, pas seulement celui affiché", async () => {
     mockApi({
       lectures: {
-        "/sites/SITE001/current": () => Promise.resolve({ data: LECTURE_OK }),
-        "/sites/SITE002/current": () =>
-          Promise.resolve({ data: { ...LECTURE_OK, site_id: "SITE002", consumption_kw: 500 } }),
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [{ ...MESURE_OK, consumption_kw: 500 }] }),
       },
     });
 
     mount(DashboardView);
     await flushPromises();
 
-    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/current");
-    expect(api.get).toHaveBeenCalledWith("/sites/SITE002/current");
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", { params: { depuis_minutes: 2 } });
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE002/measurements", { params: { depuis_minutes: 2 } });
   });
 
   it("affiche un message d'erreur si le chargement des sites échoue", async () => {
@@ -202,7 +192,10 @@ describe("DashboardView", () => {
 
   it("affiche la qualité dégradée dans la chaîne de confiance", async () => {
     mockApi({
-      lectures: { "/sites/SITE001/current": () => Promise.resolve({ data: LECTURE_DEGRADEE }) },
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_DEGRADEE] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
     });
 
     const wrapper = mount(DashboardView);
@@ -214,44 +207,55 @@ describe("DashboardView", () => {
     expect(qualite.attributes("title")).toBe("capteur humidité en panne");
   });
 
-  it("affiche un message d'erreur si une lecture échoue, sans planter la page", async () => {
+  it("affiche un message d'erreur si une actualisation échoue, sans planter la page", async () => {
     mockApi({
-      lectures: { "/sites/SITE001/current": () => Promise.reject(new Error("boom")) },
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.reject(new Error("boom")),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
     });
 
     const wrapper = mount(DashboardView);
     await flushPromises();
 
     expect(wrapper.find(".erreur").text()).toBe(
-      "Lecture indisponible, nouvelle tentative au prochain cycle."
+      "Mesures indisponibles, nouvelle tentative au prochain cycle."
     );
   });
 
-  it("sonde à nouveau toutes les 5 secondes et fait grandir la courbe", async () => {
+  it("sonde à nouveau toutes les 60 secondes et actualise la courbe", async () => {
     let compteur = 0;
     mockApi({
       lectures: {
-        "/sites/SITE001/current": () => {
+        "/sites/SITE001/measurements": () => {
           compteur += 1;
-          return Promise.resolve({ data: { ...LECTURE_OK, consumption_kw: 100 + compteur } });
+          const mesures = [];
+          for (let i = 0; i < compteur; i++) {
+            mesures.push({
+              ...MESURE_OK,
+              timestamp: new Date(Date.now() - (compteur - i) * 1000).toISOString(),
+              consumption_kw: 100 + i,
+            });
+          }
+          return Promise.resolve({ data: mesures });
         },
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
       },
     });
 
     mount(DashboardView);
     await flushPromises();
-    expect(chartInstances[0].data.datasets[0].data).toEqual([101]);
+    expect(chartInstances[0].data.datasets[0].data).toEqual([100]);
 
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(chartInstances[0].data.datasets[0].data).toEqual([101, 102]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(chartInstances[0].data.datasets[0].data).toEqual([100, 101]);
   });
 
-  it("change de site instantanément au clic, sans nouvel appel ni retour à 0 donnée", async () => {
+  it("change de site instantanément au clic, sans nouvel appel réseau", async () => {
     mockApi({
       lectures: {
-        "/sites/SITE001/current": () => Promise.resolve({ data: LECTURE_OK }),
-        "/sites/SITE002/current": () =>
-          Promise.resolve({ data: { ...LECTURE_OK, site_id: "SITE002", consumption_kw: 500 } }),
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [{ ...MESURE_OK, consumption_kw: 500 }] }),
       },
     });
 
@@ -275,9 +279,8 @@ describe("DashboardView", () => {
   it("change de site au clic sur une carte du parc (contenu de démonstration)", async () => {
     mockApi({
       lectures: {
-        "/sites/SITE001/current": () => Promise.resolve({ data: LECTURE_OK }),
-        "/sites/SITE002/current": () =>
-          Promise.resolve({ data: { ...LECTURE_OK, site_id: "SITE002", consumption_kw: 500 } }),
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [{ ...MESURE_OK, consumption_kw: 500 }] }),
       },
     });
 

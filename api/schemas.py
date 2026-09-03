@@ -97,6 +97,7 @@ class MeasurementOut(BaseModel):
     timestamp: datetime
     consumption_kw: float | None = None
     data_quality: str | None = None
+    null_reasons: list[str] = []
 
     @field_validator("timestamp")
     @classmethod

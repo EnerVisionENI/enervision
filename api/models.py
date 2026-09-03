@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Numeric, String, Uuid, func
+from sqlalchemy import JSON, DateTime, Numeric, String, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from api.database import Base
@@ -57,3 +57,4 @@ class MeasurementSilver(Base):
     site_id: Mapped[str] = mapped_column(String(20), nullable=False)
     consumption_kw: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     data_quality: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    null_reasons: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
