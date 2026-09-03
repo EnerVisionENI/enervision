@@ -1,14 +1,13 @@
 # Pipeline unique : remplace deploy-dev.yml + trivy.yml + etl-ci.yml.
 #
 #   test-api ┐
-#   test-etl ├─→ trivy ─→ test-e2e ─→ deploy
+#   test-etl ├─→ trivy ─→ test-e2e (stack éphémère, compose.ci.yml) ─→ deploy
 #   build-front ┘
 #
-# test-e2e est pour l'instant COMMENTÉ : le dossier e2e/ vit sur la branche
-# EV-031, pas encore ici. Une fois e2e/ ramené sur cette branche :
-#   1. décommenter le job test-e2e ci-dessous
-#   2. dans le job deploy, remplacer `needs: [trivy]` par `needs: [test-e2e]`
-#      (voir le commentaire sur cette ligne)
+# test-e2e tourne contre une copie jetable de la stack (ports/volumes/noms de
+# conteneurs distincts, cf. compose.ci.yml), jamais contre la vraie prod. Si les
+# tests e2e échouent, deploy ne se lance pas (needs: [test-e2e]) : la prod reste
+# sur l'ancienne version qui marchait.
 
 name: CI/CD
 
@@ -180,86 +179,69 @@ jobs:
           cat trivy-${{ matrix.name }}.table.txt >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-  # --------------------------------------------------------------------------
-  # DÉSACTIVÉ tant que e2e/ n'est pas ramené depuis EV-031 sur cette branche.
-  # Pour réactiver : décommenter tout le bloc ci-dessous, puis dans le job
-  # `deploy`, changer `needs: [trivy]` en `needs: [test-e2e]`.
-  # --------------------------------------------------------------------------
-  # test-e2e:
-  #   name: E2E (stack éphémère)
-  #   needs: [trivy]
-  #   if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-  #   runs-on: self-hosted
-  #   steps:
-  #     - name: Checkout code
-  #       uses: actions/checkout@v4
-  #       with:
-  #         clean: false
-  #
-  #     - name: Restore production env file
-  #       env:
-  #         POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-  #         JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
-  #         INGEST_API_KEY: ${{ secrets.INGEST_API_KEY }}
-  #         MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
-  #         AZURE_STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
-  #         RCLONE_CRYPT_PASSWORD_RAW: ${{ secrets.RCLONE_CRYPT_PASSWORD_RAW }}
-  #       run: |
-  #         set -e
-  #         cp infra/env/production.env .env
-  #         {
-  #           echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
-  #           echo "JWT_SECRET_KEY=$JWT_SECRET_KEY"
-  #           echo "INGEST_API_KEY=$INGEST_API_KEY"
-  #           echo "MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD"
-  #           echo "AZURE_STORAGE_KEY=$AZURE_STORAGE_KEY"
-  #           echo "RCLONE_CRYPT_PASSWORD_RAW=$RCLONE_CRYPT_PASSWORD_RAW"
-  #         } >> .env
-  #
-  #     - name: Start ephemeral stack (compose.ci.yml)
-  #       run: |
-  #         set -e
-  #         docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
-  #           up -d --build postgres minio minio-init api etl-collect etl-alerts etl-sites
-  #
-  #     - name: Wait for API health
-  #       run: |
-  #         set -e
-  #         for i in $(seq 1 30); do
-  #           if curl -sf http://localhost:18000/health >/dev/null; then
-  #             echo "API prête."
-  #             exit 0
-  #           fi
-  #           sleep 2
-  #         done
-  #         echo "L'API ne répond toujours pas sur /health après 60s."
-  #         exit 1
-  #
-  #     - name: Set up Python
-  #       uses: actions/setup-python@v5
-  #       with:
-  #         python-version: '3.12'
-  #
-  #     - name: Install e2e dependencies
-  #       run: |
-  #         python -m pip install --upgrade pip
-  #         pip install -r e2e/requirements.txt
-  #
-  #     - name: Run e2e tests
-  #       env:
-  #         E2E_API_URL: http://localhost:18000
-  #       run: pytest e2e/ -v
-  #
-  #     - name: Tear down ephemeral stack
-  #       if: always()
-  #       run: |
-  #         docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
-  #           down -v --remove-orphans
+  test-e2e:
+    name: E2E (stack éphémère)
+    needs: [trivy]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Restore production env file
+        run: |
+          set -e
+          cat /opt/enervision-secrets/postgres.env \
+              /opt/enervision-secrets/api.env \
+              /opt/enervision-secrets/minio.env \
+              /opt/enervision-secrets/audit-sync.env \
+              /opt/enervision-secrets/etl.env > .env
+
+      - name: Start ephemeral stack (compose.ci.yml)
+        run: |
+          set -e
+          docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
+            up -d --build postgres minio minio-init api etl-collect etl-alerts etl-sites
+
+      - name: Wait for API health
+        run: |
+          set -e
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:18000/health >/dev/null; then
+              echo "API prête."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "L'API ne répond toujours pas sur /health après 60s."
+          exit 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install e2e dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r e2e/requirements.txt
+
+      - name: Run e2e tests
+        env:
+          E2E_API_URL: http://localhost:18000
+        run: pytest e2e/ -v
+
+      - name: Tear down ephemeral stack
+        if: always()
+        run: |
+          docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
+            down -v --remove-orphans
 
   deploy:
     name: Deploy on server
-    # TODO une fois test-e2e réactivé : needs: [test-e2e]
-    needs: [trivy]
+    needs: [test-e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: self-hosted
 
@@ -271,26 +253,16 @@ jobs:
           clean: false
 
       - name: Restore production env file
-        env:
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
-          INGEST_API_KEY: ${{ secrets.INGEST_API_KEY }}
-          MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
-          AZURE_STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
-          RCLONE_CRYPT_PASSWORD_RAW: ${{ secrets.RCLONE_CRYPT_PASSWORD_RAW }}
         run: |
           set -e
-          # Valeurs non sensibles (versionnées) + mots de passe/clés (secrets
-          # GitHub Actions) concaténés en un seul .env racine.
-          cp infra/env/production.env .env
-          {
-            echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
-            echo "JWT_SECRET_KEY=$JWT_SECRET_KEY"
-            echo "INGEST_API_KEY=$INGEST_API_KEY"
-            echo "MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD"
-            echo "AZURE_STORAGE_KEY=$AZURE_STORAGE_KEY"
-            echo "RCLONE_CRYPT_PASSWORD_RAW=$RCLONE_CRYPT_PASSWORD_RAW"
-          } >> .env
+          # Concatène les fichiers de secrets existants en un seul .env racine.
+          # Les clés en double (POSTGRES_* dans postgres.env et api.env) portent
+          # les mêmes valeurs ; la dernière occurrence l'emporte.
+          cat /opt/enervision-secrets/postgres.env \
+              /opt/enervision-secrets/api.env \
+              /opt/enervision-secrets/minio.env \
+              /opt/enervision-secrets/audit-sync.env \
+              /opt/enervision-secrets/etl.env > .env
 
       - name: Deploy with docker compose
         run: |

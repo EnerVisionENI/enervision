@@ -15,13 +15,16 @@
 # les lancer ici bloquerait le test indéfiniment. On attend le résultat de leurs
 # cycles par polling à la place.
 
+import os
 import time
 import uuid
 
 import httpx
 import pytest
 
-API_URL = "http://localhost:8000"
+# Surchargée par la CI (E2E_API_URL) pour pointer sur la stack éphémère de test-e2e
+# (port 18000, cf. compose.ci.yml) au lieu de la vraie prod (port 8000).
+API_URL = os.environ.get("E2E_API_URL", "http://localhost:8000")
 API_V1 = f"{API_URL}/api/v1"
 
 # Compte seedé par infra/postgres/init.sql, pas un compte de test créé à la volée.
