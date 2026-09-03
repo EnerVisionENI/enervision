@@ -27,9 +27,9 @@ import pytest
 API_URL = os.environ.get("E2E_API_URL", "http://localhost:8000")
 API_V1 = f"{API_URL}/api/v1"
 
-# Compte seedé par infra/postgres/init.sql, pas un compte de test créé à la volée.
 ADMIN_EMAIL = "admin@enervision.io"
 ADMIN_PASSWORD = "admin"
+ADMIN_PASSWORD_RENOUVELE = "e2e-admin-password"
 
 
 def poll(fn, *, timeout=90, interval=5):
@@ -65,7 +65,19 @@ def test_health():
 def admin_token():
     resp = login(ADMIN_EMAIL, ADMIN_PASSWORD)
     assert resp.status_code == 200, resp.text
-    return resp.json()["access_token"]
+    token = resp.json()["access_token"]
+
+    me = httpx.get(f"{API_V1}/auth/me", headers=auth_header(token))
+    assert me.status_code == 200, me.text
+    if me.json()["must_change_password"]:
+        changed = httpx.post(
+            f"{API_V1}/auth/password",
+            json={"current_password": ADMIN_PASSWORD, "new_password": ADMIN_PASSWORD_RENOUVELE},
+            headers=auth_header(token),
+        )
+        assert changed.status_code == 200, changed.text
+
+    return token
 
 
 def test_login_wrong_password_rejected():
@@ -113,6 +125,14 @@ def test_full_user_lifecycle(admin_token):
     me_resp = httpx.get(f"{API_V1}/auth/me", headers=auth_header(viewer_token))
     assert me_resp.status_code == 200
     assert me_resp.json()["role"] == "viewer"
+    assert me_resp.json()["must_change_password"] is True
+
+    change_resp = httpx.post(
+        f"{API_V1}/auth/password",
+        json={"current_password": new_password, "new_password": "motdepasse456"},
+        headers=auth_header(viewer_token),
+    )
+    assert change_resp.status_code == 200, change_resp.text
 
     alerts_resp = httpx.get(f"{API_V1}/alerts", headers=auth_header(viewer_token))
     assert alerts_resp.status_code == 200
