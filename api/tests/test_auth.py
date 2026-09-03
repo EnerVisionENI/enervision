@@ -126,7 +126,10 @@ def test_pending_password_change_blocks_other_routes(client, db_session):
     make_user(db_session, "temp@enervision.fr", "password123", "viewer", must_change_password=True)
     headers = auth_headers(client, "temp@enervision.fr", "password123")
 
-    response = client.get("/api/v1/alerts", headers=headers)
+    # Toutes les routes protégées, pas seulement /alerts : une nouvelle route qui
+    # dépendrait de get_current_user au lieu de get_active_user ouvrirait une brèche.
+    for route in ("/api/v1/alerts", "/api/v1/users", "/api/v1/sensors/failing"):
+        response = client.get(route, headers=headers)
 
-    assert response.status_code == 403
-    assert "Mot de passe temporaire" in response.json()["detail"]
+        assert response.status_code == 403, route
+        assert "Mot de passe temporaire" in response.json()["detail"], route
