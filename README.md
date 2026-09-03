@@ -22,21 +22,41 @@ Application multi-services conteneurisée, orchestrée par un unique `compose.ya
 
 ```
 API Mock IoT ──(HTTP)──> etl/collect.py ──> MinIO bucket "bronze"  (1 objet JSON / mesure)
-                                              │        + hash SHA-256 dupliqué dans "audit" (WORM)
+   toutes les 60 s                            │        + hash SHA-256 dupliqué dans "audit" (WORM)
                                               ▼
                               etl/quality.py ──> "silver" (Parquet nettoyé)
-                              rejets ──────────> "quarantine"
+                              rejets ──────────> "quarantine" (Parquet, record_date=…/site_id=…)
 
                               etl/quality.py --gold-only ──> "gold" (agrégats daily / hourly)
                               (à l'heure : partitions modifiées ; au jour : rattrapage veille)
 ```
 
+Collecte **100 % temps réel** : `etl-collect` interroge l'API toutes les
+`INTERVALLE_SECONDES` (défaut 60 s) et promeut bronze → silver au fil de l'eau. Pas de
+rejeu d'historique — la donnée commence au premier cycle.
+
 Le gold est recalculé sur son propre planning, pas à chaque collecte : un recalcul relit
 tout le silver de la partition, et le faire chaque minute faisait déborder le cycle de
 collecte (silver alimenté toutes les 2 min au lieu d'une). Les partitions touchées sont
 empilées dans `manifests/gold_pending.json` et reprises par `--gold-only`. Fréquences
-réglables via `GOLD_CRON_HORAIRE` / `GOLD_CRON_QUOTIDIEN` ; le rattrapage initial
-(`etl-bootstrap`) les consolide de la même façon, en un seul passage à la fin du drainage.
+réglables via `GOLD_CRON_HORAIRE` / `GOLD_CRON_QUOTIDIEN`.
+
+### Trous de données et complétude
+
+L'API mock renvoie par intermittence des relevés « critical » dont toutes les métriques
+sont nulles (panne capteur simulée, `null_reasons: ["network_loss"]`). Le pipeline ne les
+confond jamais avec des mesures :
+
+- ils restent en silver — un trou doit être visible **et daté** — mais avec
+  `is_valid = false` et `usable_metrics_count = 0` ;
+- le gold les compte à part (`critical_count`, `empty_count`) et les compteurs de qualité
+  bouclent sans reste sur `records_count` ;
+- les moyennes valent `NULL` et **jamais 0** quand rien n'a été mesuré,
+  `total_consumption_kwh` compris : un 0 factice s'apprend comme une consommation nulle
+  réelle ;
+- le grain horaire est complété à 24 lignes par jour et par site, une heure sans relevé
+  ayant `records_count = 0`, pour qu'une série temporelle ne recolle pas deux heures non
+  adjacentes.
 
 ## Démarrage local
 

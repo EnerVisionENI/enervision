@@ -1,9 +1,9 @@
 """EV-035 : réplique dans PostgreSQL des données silver/gold calculées par quality.py.
 
 MinIO/Parquet reste la source de vérité (voir quality.py) ; Postgres n'est qu'une copie
-interrogeable en SQL pour l'API/dashboard. Schéma : infra/postgres/init/02_silver.sql et
-03_gold.sql. Une panne Postgres ne doit pas interrompre l'ETL MinIO : chaque fonction est
-appelée depuis quality.py dans un bloc try/except qui log et continue.
+interrogeable en SQL pour l'API/dashboard. Schéma : infra/postgres/init/02_silver.sql,
+03_gold.sql et 05_quarantine.sql. Une panne Postgres ne doit pas interrompre l'ETL MinIO :
+chaque fonction est appelée depuis quality.py dans un bloc try/except qui log et continue.
 
 Environment (mêmes noms que alerts.py) :
 	POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
@@ -15,6 +15,7 @@ import json
 import os
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import psycopg2
 import psycopg2.extras
@@ -30,28 +31,53 @@ def make_pg_connection() -> Any:
 	)
 
 
+def load_site_capacities(conn: Any) -> dict[str, float]:
+	"""{site_id: capacity_kw} depuis la table `sites`, pour dériver load_percent en silver.
+	Dict vide si Postgres est absent, la table vide, ou la requête échoue — load_percent
+	sera alors NULL, jamais inventé. La capacité est une métadonnée quasi statique du site."""
+	if conn is None:
+		return {}
+	try:
+		with conn.cursor() as cur:
+			cur.execute("SELECT site_id, capacity_kw FROM sites WHERE capacity_kw IS NOT NULL")
+			return {str(site_id): float(capacity) for site_id, capacity in cur.fetchall()}
+	except psycopg2.Error:
+		conn.rollback()
+		return {}
+
+
 SILVER_COLUMNS = [
 	"source_key", "timestamp", "site_id", "site_type",
 	"consumption_kw", "consumption_kwh", "voltage_v", "current_a",
 	"power_factor", "temperature_celsius", "humidity_percent",
+	"capacity_kw", "load_percent",
 	"null_reasons", "data_quality", "ingested_at", "record_date",
-	"record_hour", "missing_fields", "quality_score", "is_valid",
-	"has_anomaly", "consumption_change_pct",
+	"record_hour", "missing_fields", "usable_metrics_count",
+	"quality_score", "is_valid", "has_anomaly", "consumption_change_pct",
 ]
 
-GOLD_DAILY_COLUMNS = [
-	"record_date", "site_id", "site_type", "records_count", "good_count",
-	"partial_count", "degraded_count", "missing_consumption_count",
+# Compteurs de couverture puis métriques, communs aux deux grains (voir
+# quality.GOLD_COUNTERS / GOLD_METRICS).
+_GOLD_MEASURES = [
+	"records_count", "usable_count", "empty_count", "good_count", "partial_count",
+	"degraded_count", "critical_count", "unknown_count", "missing_consumption_count",
+	"anomaly_count",
 	"avg_consumption_kw", "min_consumption_kw", "max_consumption_kw",
-	"total_consumption_kwh", "avg_voltage_v", "avg_current_a",
-	"avg_power_factor", "avg_temperature_celsius", "avg_humidity_percent",
-	"avg_quality_score",
+	"total_consumption_kwh", "avg_load_percent", "max_load_percent", "capacity_kw",
+	"avg_voltage_v", "avg_current_a", "avg_power_factor",
+	"avg_temperature_celsius", "avg_humidity_percent", "avg_quality_score",
 ]
 
-GOLD_HOURLY_COLUMNS = [
-	"record_date", "record_hour", "site_id", "site_type", "records_count",
-	"avg_consumption_kw", "max_consumption_kw", "min_consumption_kw",
-	"avg_quality_score",
+# Le grain journalier ajoute la complétude horaire (couverture des 24 heures).
+_GOLD_DAILY_EXTRA = ["covered_hours", "expected_hours", "completeness_pct"]
+
+GOLD_DAILY_COLUMNS = ["record_date", "site_id", "site_type", *_GOLD_MEASURES, *_GOLD_DAILY_EXTRA]
+
+GOLD_HOURLY_COLUMNS = ["record_date", "record_hour", "site_id", "site_type", *_GOLD_MEASURES]
+
+QUARANTINE_COLUMNS = [
+	"source_key", "error_type", "error_message", "site_id", "record_date",
+	"raw_timestamp", "raw_record", "captured_at",
 ]
 
 _JSON_COLUMNS = {"null_reasons", "missing_fields"}
@@ -60,9 +86,20 @@ _JSON_COLUMNS = {"null_reasons", "missing_fields"}
 def _sql_value(row: dict[str, Any], column: str) -> Any:
 	value = row.get(column)
 	if column in _JSON_COLUMNS:
-		return json.dumps(value if isinstance(value, list) else [])
+		# Relu depuis un Parquet, une colonne de liste revient en ndarray et non en list :
+		# le test `isinstance(value, list)` seul écrasait null_reasons / missing_fields par
+		# [], c'est-à-dire précisément la colonne qui explique pourquoi la mesure manque.
+		if value is None or isinstance(value, (str, bytes)):
+			return json.dumps([])
+		if isinstance(value, (list, tuple, np.ndarray, pd.Series)):
+			return json.dumps([str(item) for item in value])
+		return json.dumps([])
 	if isinstance(value, pd.Timestamp):
-		return value.to_pydatetime()
+		return None if pd.isna(value) else value.to_pydatetime()
+	# psycopg2 n'adapte pas les scalaires numpy (int64, bool_, float64) : les agrégats gold
+	# sortent du groupby dans ces types-là, on les ramène en natifs Python.
+	if isinstance(value, np.generic):
+		value = value.item()
 	if value is None or (isinstance(value, float) and pd.isna(value)):
 		return None
 	return value
@@ -85,6 +122,23 @@ def write_silver(conn: Any, df: pd.DataFrame) -> None:
 			f"INSERT INTO measurements_silver ({columns_sql}) VALUES %s "
 			f"ON CONFLICT (source_key) DO UPDATE SET {update_sql}",
 			_rows_for(df, SILVER_COLUMNS),
+		)
+	conn.commit()
+
+
+def write_quarantine(conn: Any, df: pd.DataFrame) -> None:
+	"""Insère les rejets d'un lot. Idempotent sur source_key, comme le silver : rejouer un
+	lot déjà traité met à jour les mêmes lignes au lieu d'empiler des doublons."""
+	if df.empty:
+		return
+	columns_sql = ", ".join(QUARANTINE_COLUMNS)
+	update_sql = ", ".join(f"{c} = EXCLUDED.{c}" for c in QUARANTINE_COLUMNS if c != "source_key")
+	with conn.cursor() as cur:
+		psycopg2.extras.execute_values(
+			cur,
+			f"INSERT INTO measurements_quarantine ({columns_sql}) VALUES %s "
+			f"ON CONFLICT (source_key) DO UPDATE SET {update_sql}",
+			_rows_for(df, QUARANTINE_COLUMNS),
 		)
 	conn.commit()
 

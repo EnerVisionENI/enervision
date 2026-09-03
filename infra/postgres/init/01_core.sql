@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS users (
     created_at           TIMESTAMP DEFAULT now()
 );
 
+INSERT INTO users (email, password_hash, role)
 -- Rattrapage pour une base déjà initialisée : les scripts de infra/postgres/init/
 -- ne sont rejoués que sur un volume vide, cet ALTER est donc à passer à la main
 -- (docker compose exec postgres psql ...) sur un environnement existant.
