@@ -35,8 +35,13 @@ def client(db_session):
     app.dependency_overrides.clear()
 
 
-def make_user(db_session, email: str, password: str, role: str) -> User:
-    user = User(email=email, password_hash=hash_password(password), role=role)
+def make_user(db_session, email: str, password: str, role: str, must_change_password: bool = False) -> User:
+    user = User(
+        email=email,
+        password_hash=hash_password(password),
+        role=role,
+        must_change_password=must_change_password,
+    )
     db_session.add(user)
     db_session.commit()
     db_session.refresh(user)

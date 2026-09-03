@@ -2,7 +2,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api.auth import get_current_user
+from api.auth import get_active_user
 from api.models import User
 from api.routers import sensors_failing
 
@@ -14,7 +14,7 @@ def utilisateur_de_test():
     return User(user_id="test-id", email="test@enervision.fr", role="viewer")
 
 
-app.dependency_overrides[get_current_user] = utilisateur_de_test
+app.dependency_overrides[get_active_user] = utilisateur_de_test
 client = TestClient(app)
 
 

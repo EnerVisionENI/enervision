@@ -26,7 +26,9 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\""]
+      # -d explicite : sans lui, pg_isready vise une base nommée comme l'utilisateur
+      # (ev_admin), qui n'existe pas — le check passait mais logguait un FATAL toutes les 10 s.
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
       timeout: 5s
       retries: 5
