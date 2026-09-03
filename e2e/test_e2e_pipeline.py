@@ -93,14 +93,14 @@ def test_alerts_requires_auth():
 def test_full_user_lifecycle(admin_token):
     """Parcours complet du cycle utilisateur : un admin crée un compte viewer, ce
     compte peut se connecter et consulter les alertes, mais pas créer d'autres
-    comptes (admin-only, cf. api/routers/auth.py::create_user). Email suffixé par
+    comptes (admin-only, cf. api/routers/users.py::create_user). Email suffixé par
     un uuid pour rester rejouable contre la base partagée et persistante (pas de
     reset entre deux runs, contrairement à api/tests/)."""
     new_email = f"e2e-viewer-{uuid.uuid4().hex[:8]}@enervision.io"
     new_password = "motdepasse123"
 
     create_resp = httpx.post(
-        f"{API_V1}/auth/users",
+        f"{API_V1}/users",
         json={"email": new_email, "password": new_password, "role": "viewer"},
         headers=auth_header(admin_token),
     )
@@ -118,7 +118,7 @@ def test_full_user_lifecycle(admin_token):
     assert alerts_resp.status_code == 200
 
     forbidden_resp = httpx.post(
-        f"{API_V1}/auth/users",
+        f"{API_V1}/users",
         json={"email": f"e2e-blocked-{uuid.uuid4().hex[:8]}@enervision.io", "password": "xxxxxxxx"},
         headers=auth_header(viewer_token),
     )
