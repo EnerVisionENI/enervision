@@ -12,14 +12,14 @@ import os
 
 from dotenv import load_dotenv
 
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
 from core.data import load_gold_hourly, split_train_calib_test
 from core.evaluation import conformal_margin, empirical_coverage, mase
 from core.mlflow_tracking import log_run
 from models.challenger import predict_challenger, train_challenger
 from models.naive import naive_forecast
 from models.towt import predict_towt, train_towt
-
-load_dotenv()
 
 
 def main(site_id: str):

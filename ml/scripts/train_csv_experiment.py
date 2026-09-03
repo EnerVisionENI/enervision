@@ -17,18 +17,19 @@ import warnings
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+warnings.filterwarnings("ignore")
+
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
-from dotenv import load_dotenv
 
 from core.data import load_gold_hourly
 from core.evaluation import conformal_margin, empirical_coverage, mase
 from models.naive import naive_forecast
-
-warnings.filterwarnings("ignore")
-load_dotenv()
 
 CSV_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "csv")
 SITES = ["SITE001", "SITE002", "SITE003", "SITE004", "SITE005", "SITE006", "SITE007"]

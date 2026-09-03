@@ -31,11 +31,15 @@ import warnings
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+warnings.filterwarnings("ignore")
+
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+
 import mlflow
 import mlflow.lightgbm
 import mlflow.statsmodels
 import pandas as pd
-from dotenv import load_dotenv
 from mlflow.tracking import MlflowClient
 
 from core.evaluation import conformal_margin, empirical_coverage, mase
@@ -47,9 +51,6 @@ from scripts.train_csv_experiment import (
     train_lgbm,
     train_ols,
 )
-
-warnings.filterwarnings("ignore")
-load_dotenv()
 
 TRAIN_END = "2024-09-30"
 CALIB_END = "2024-11-15"
