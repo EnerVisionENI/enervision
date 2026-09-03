@@ -2,7 +2,7 @@
 
 ## CI/CD automatique
 
-Le dépôt contient une pipeline GitHub Actions dans `.github/workflows/deploy-dev.yml`.
+Le dépôt contient une pipeline GitHub Actions unique dans `.github/workflows/ci-cd.yml`.
 
 - Sur chaque pull request vers `dev`, la pipeline lance les tests API et le build frontend.
 - Sur chaque push vers `dev` (donc aussi après un merge de PR), la pipeline déploie automatiquement sur le serveur.
@@ -117,6 +117,49 @@ docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
 
 Sans cette colonne, l'API renvoie une erreur 500 sur toutes les routes qui lisent un utilisateur.
 
+### Sauvegarde users/sites vers Azure (EV-040)
+
+Contrairement au reste de la stack, `infra/backup/backup.py` n'est **pas** un service `compose.yaml` : c'est
+un script autonome planifié par la **crontab système du serveur**, pas par GitHub Actions. Il se connecte à
+Postgres via le port exposé sur l'hôte (`localhost:5433`, comme un `psql` lancé à la main), pas via le réseau
+Docker interne — donc `docker compose up` n'a pas besoin de tourner pour que ce script fonctionne, seul le
+conteneur `postgres` doit être démarré.
+
+Il réutilise le `.env` racine déjà en place, sans variable nouvelle : mêmes `AZURE_STORAGE_ACCOUNT` / `_KEY` /
+`_CONTAINER` et `RCLONE_CRYPT_PASSWORD_RAW` que `audit-sync`, et envoie vers les dossiers `users/` et `sites/`
+du **même** container Azure que bronze/silver/gold (`enervision-backup`), via le même remote rclone
+`azure-crypt` — c'est ce remote, seul, qui chiffre les fichiers à l'envoi (une seule couche de chiffrement,
+pas de chiffrement applicatif en plus côté script).
+
+**Dépendances système à installer sur le serveur** (le script tourne hors Docker, ces outils doivent être
+présents sur l'hôte) :
+
+```bash
+# rclone (déjà présent si le paquet Debian suffit ; sinon voir https://rclone.org/install.sh)
+sudo apt install -y rclone
+
+# postgresql-client-16, pour matcher exactement postgres:16-alpine (un client plus ancien
+# refuse de dumper un serveur plus récent avec "aborting because of server version mismatch")
+sudo apt install -y curl ca-certificates gnupg
+sudo install -d /usr/share/postgresql-common/pgdg
+sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+  https://www.postgresql.org/media/keys/ACCC4CF8.asc
+echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+  | sudo tee /etc/apt/sources.list.d/pgdg.list
+sudo apt update && sudo apt install -y postgresql-client-16
+
+# gzip est déjà présent sur toute distribution Linux standard.
+```
+
+**Crontab** (`crontab -e`, sur l'utilisateur qui a accès au dépôt et à Docker) :
+
+```cron
+0 3 * * * cd /opt/enervision && set -a && . .env && set +a && python3 infra/backup/backup.py >> /var/log/enervision-backup.log 2>&1
+```
+
+Une fois par jour à 3h UTC. `set -a` exporte automatiquement toutes les variables lues depuis `.env` vers
+l'environnement du script (équivalent de `source` avec export).
+
 > Si un jour le serveur devient joignable depuis Internet (VPN site-to-site, IP publique, etc.), on peut
 > repasser le job `deploy` sur `ubuntu-latest` avec une connexion SSH classique (secrets `DEPLOY_HOST`,
 > `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PORT`, `DEPLOY_PATH`).
@@ -217,7 +260,8 @@ infra/
 ├── nginx.conf            # Config serveur web (copiée dans l'image front)
 ├── postgres/init/        # Schéma (rejoué dans l'ordre alphabétique)
 ├── minio/init-buckets.sh # Création des buckets
-├── audit-sync/           # Script de synchro Azure
+├── audit-sync/           # Script de synchro Azure (bronze/silver/gold/audit)
+├── backup/               # Sauvegarde chiffrée users/sites vers Azure, via cron (EV-040)
 └── traefik/              # Reverse proxy (profil "proxy")
 
 api/Dockerfile            # Image API (contexte de build = racine)
@@ -230,5 +274,6 @@ etl/Dockerfile            # Image ETL (contexte de build = etl/)
 1. **HTTPS** : Configurer certains et Traefik pour SSL
 2. **Variables d'env** : Utiliser des fichiers `.env`
 3. **Logs** : Configurer ELK ou autre solution de logging
-4. **Backup** : Mettre en place une stratégie de backup
+4. **Backup** : `users`/`sites` couverts par `infra/backup/backup.py` (EV-040, cron quotidien) ; le reste
+   du schéma (`alerts`, `measurements_silver`, `aggregates_gold_*`, ...) n'a pas encore de sauvegarde dédiée
 5. **Monitoring** : Ajouter Prometheus/Grafana

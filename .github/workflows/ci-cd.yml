@@ -80,6 +80,30 @@ jobs:
       - name: Run ETL tests
         run: pytest tests/ -v
 
+  test-backup:
+    name: Backup script tests
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./infra/backup
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
+
+      # Pas de pg_dump/rclone ici : ces commandes sont mockées dans les tests. gzip,
+      # lui, est utilisé pour de vrai (déjà présent sur ubuntu-latest).
+      - name: Run backup script tests
+        run: pytest tests/ -v
+
   build-front:
     name: Frontend build
     if: github.event_name != 'schedule'
@@ -115,7 +139,7 @@ jobs:
     name: Trivy scan (${{ matrix.name }})
     # Tourne toujours, y compris sur le cron nocturne (rescan de main) : c'est le
     # seul job que le déclenchement `schedule` doit exécuter.
-    needs: [test-api, test-etl, build-front]
+    needs: [test-api, test-etl, test-backup, build-front]
     if: always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     strategy:
