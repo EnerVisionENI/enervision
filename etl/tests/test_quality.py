@@ -21,11 +21,21 @@ from botocore.exceptions import ClientError
 @pytest.fixture(autouse=True)
 def _no_postgres(monkeypatch):
     """Les tests ne touchent aucun vrai Postgres : run() bascule alors sur
-    pg_conn=None et n'écrit que dans MinIO (le faux S3)."""
+    pg_conn=None et n'écrit que dans MinIO (le faux S3). Les capacités site
+    (normalement lues dans la table `sites`) sont donc absentes par défaut —
+    un test qui veut load_percent monkeypatche `load_site_capacities`."""
     def _boom():
         raise psycopg2.OperationalError("pas de Postgres en test")
 
     monkeypatch.setattr(quality.postgres_writer, "make_pg_connection", _boom)
+
+
+@pytest.fixture
+def capacites(monkeypatch):
+    """Injecte des capacités site sans Postgres, pour tester load_percent."""
+    valeurs = {"SITE001": 200.0, "SITE002": 1000.0}
+    monkeypatch.setattr(quality.postgres_writer, "load_site_capacities", lambda _conn: valeurs)
+    return valeurs
 
 
 class _Body:
@@ -487,6 +497,106 @@ def test_lecture_sans_metrique_reste_en_silver_marquee_invalide(monkeypatch):
     assert list(silver["is_valid"]) == [False, True]
 
 
+# ----------------------------------------------------- load_percent en silver
+
+def test_load_percent_calcule_depuis_la_capacite_du_site(monkeypatch, capacites):
+    """load_percent = consumption_kw / capacity_kw * 100 : le seul indicateur de charge
+    comparable d'un site à l'autre."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure("SITE001", consumption_kw=150.0))  # /200
+    s3.seed_bronze("SITE002/2025-01-01/000000.json", mesure("SITE002", consumption_kw=250.0))  # /1000
+
+    assert quality.main([]) == 0
+
+    rows = {}
+    for key in s3.keys("silver"):
+        for row in s3.parquet("silver", key).to_dict("records"):
+            rows[row["site_id"]] = row
+    assert rows["SITE001"]["capacity_kw"] == 200.0
+    assert rows["SITE001"]["load_percent"] == 75.0
+    assert rows["SITE002"]["load_percent"] == 25.0
+
+
+def test_load_percent_null_si_capacite_inconnue(monkeypatch):
+    """Sans capacité (table sites vide, ou Postgres indisponible), load_percent est NULL —
+    jamais inventé."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE009/2025-01-01/000000.json", mesure("SITE009", consumption_kw=50.0))
+
+    assert quality.main([]) == 0
+
+    row = s3.parquet("silver", s3.keys("silver")[0]).iloc[0]
+    assert pd.isna(row["capacity_kw"])
+    assert pd.isna(row["load_percent"])
+
+
+def test_gold_agrege_load_percent(monkeypatch, capacites):
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure("SITE001", "2025-01-01T00:00:00", consumption_kw=100.0))
+    s3.seed_bronze("SITE001/2025-01-01/010000.json", mesure("SITE001", "2025-01-01T01:00:00", consumption_kw=180.0))
+
+    quality.main([])
+    quality.main(["--gold-only"])
+    daily = _gold(s3, "daily").iloc[0]
+
+    assert daily["capacity_kw"] == 200.0
+    assert daily["avg_load_percent"] == 70.0       # (50 + 90) / 2
+    assert daily["max_load_percent"] == 90.0
+
+
+# --------------------------------------------------- validation de plage
+
+def test_valeur_hors_plage_part_en_quarantaine(monkeypatch):
+    """Une métrique présente mais physiquement impossible n'est pas une mesure douteuse,
+    c'est un capteur en défaut : tout l'enregistrement part en quarantaine."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure(voltage_v=5000.0))     # max 1000
+    s3.seed_bronze("SITE001/2025-01-01/010000.json", mesure(timestamp="2025-01-01T01:00:00"))
+
+    assert quality.main([]) == 0
+
+    silver = s3.parquet("silver", s3.keys("silver")[0])
+    assert len(silver) == 1                                  # seule la 2e est passée
+    rejet = s3.parquet("quarantine", s3.keys("quarantine")[0]).iloc[0]
+    assert rejet["error_type"] == "out_of_range"
+    assert "voltage_v=5000" in rejet["error_message"]
+
+
+def test_valeur_negative_impossible_rejetee(monkeypatch):
+    """Consommation négative et facteur de puissance > 1 : deux impossibilités physiques,
+    toutes deux en quarantaine."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure(consumption_kw=-5.0))
+    s3.seed_bronze("SITE001/2025-01-01/010000.json", mesure(timestamp="2025-01-01T01:00:00", power_factor=3.0))
+    s3.seed_bronze("SITE001/2025-01-01/020000.json", mesure(timestamp="2025-01-01T02:00:00"))
+
+    assert quality.main([]) == 0
+
+    assert len(s3.parquet("silver", s3.keys("silver")[0])) == 1        # seule la 3e passe
+    rejets = pd.concat([s3.parquet("quarantine", k) for k in s3.keys("quarantine")])
+    assert list(rejets["error_type"]) == ["out_of_range", "out_of_range"]
+
+
+def test_valeurs_aux_bornes_restent_valides(monkeypatch):
+    """0 V (site à l'arrêt) et facteur de puissance = 1 exactement sont physiques."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze(
+        "SITE001/2025-01-01/000000.json",
+        mesure(voltage_v=0.0, power_factor=1.0, humidity_percent=100.0),
+    )
+
+    assert quality.main([]) == 0
+
+    assert len(s3.parquet("silver", s3.keys("silver")[0])) == 1
+    assert s3.keys("quarantine") == []
+
+
 # ------------------------------------------------------------ compteurs du gold
 
 def test_compteurs_gold_partitionnent_records_count(monkeypatch):
@@ -598,6 +708,45 @@ def test_gold_horaire_a_les_memes_metriques_que_le_journalier(monkeypatch):
     communes = set(quality.GOLD_COUNTER_NAMES) | set(quality.GOLD_METRIC_NAMES)
     assert communes <= set(_gold(s3, "hourly").columns)
     assert communes <= set(_gold(s3, "daily").columns)
+
+
+# --------------------------------------------- complétude horaire du gold daily
+
+def test_gold_daily_mesure_la_couverture_des_24_heures(monkeypatch):
+    """usable_count / records_count ne dit pas la complétude : 3 relevés reçus à 3 heures
+    distinctes = 3/24 couvert, pas 100 %."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    for heure in (0, 6, 18):
+        s3.seed_bronze(
+            f"SITE001/2025-01-01/{heure:02d}0000.json",
+            mesure(timestamp=f"2025-01-01T{heure:02d}:00:00"),
+        )
+
+    quality.main([])
+    quality.main(["--gold-only"])
+    daily = _gold(s3, "daily").iloc[0]
+
+    assert daily["records_count"] == 3
+    assert daily["covered_hours"] == 3
+    assert daily["expected_hours"] == 24
+    assert daily["completeness_pct"] == 12.5
+
+
+def test_gold_daily_couverture_ignore_les_heures_100pct_vides(monkeypatch):
+    """Une heure dont le seul relevé est critical (0 métrique) ne compte pas comme couverte."""
+    s3 = FakeS3()
+    monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure(timestamp="2025-01-01T00:00:00"))
+    s3.seed_bronze("SITE001/2025-01-01/010000.json", mesure_vide(timestamp="2025-01-01T01:00:00"))
+
+    quality.main([])
+    quality.main(["--gold-only"])
+    daily = _gold(s3, "daily").iloc[0]
+
+    assert daily["records_count"] == 2
+    assert daily["covered_hours"] == 1                       # seule l'heure 0 porte une mesure
+    assert daily["completeness_pct"] == round(1 / 24 * 100, 1)
 
 
 # ------------------------------------------------------------------ anomalies

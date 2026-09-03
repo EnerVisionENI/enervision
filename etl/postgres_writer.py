@@ -31,27 +31,47 @@ def make_pg_connection() -> Any:
 	)
 
 
+def load_site_capacities(conn: Any) -> dict[str, float]:
+	"""{site_id: capacity_kw} depuis la table `sites`, pour dériver load_percent en silver.
+	Dict vide si Postgres est absent, la table vide, ou la requête échoue — load_percent
+	sera alors NULL, jamais inventé. La capacité est une métadonnée quasi statique du site."""
+	if conn is None:
+		return {}
+	try:
+		with conn.cursor() as cur:
+			cur.execute("SELECT site_id, capacity_kw FROM sites WHERE capacity_kw IS NOT NULL")
+			return {str(site_id): float(capacity) for site_id, capacity in cur.fetchall()}
+	except psycopg2.Error:
+		conn.rollback()
+		return {}
+
+
 SILVER_COLUMNS = [
 	"source_key", "timestamp", "site_id", "site_type",
 	"consumption_kw", "consumption_kwh", "voltage_v", "current_a",
 	"power_factor", "temperature_celsius", "humidity_percent",
+	"capacity_kw", "load_percent",
 	"null_reasons", "data_quality", "ingested_at", "record_date",
 	"record_hour", "missing_fields", "usable_metrics_count",
 	"quality_score", "is_valid", "has_anomaly", "consumption_change_pct",
 ]
 
-# Compteurs de couverture puis métriques : même liste aux deux grains, l'horaire n'est plus
-# un sous-ensemble appauvri du journalier (voir quality.GOLD_COUNTERS / GOLD_METRICS).
+# Compteurs de couverture puis métriques, communs aux deux grains (voir
+# quality.GOLD_COUNTERS / GOLD_METRICS).
 _GOLD_MEASURES = [
 	"records_count", "usable_count", "empty_count", "good_count", "partial_count",
 	"degraded_count", "critical_count", "unknown_count", "missing_consumption_count",
 	"anomaly_count",
 	"avg_consumption_kw", "min_consumption_kw", "max_consumption_kw",
-	"total_consumption_kwh", "avg_voltage_v", "avg_current_a", "avg_power_factor",
+	"total_consumption_kwh", "avg_load_percent", "max_load_percent", "capacity_kw",
+	"avg_voltage_v", "avg_current_a", "avg_power_factor",
 	"avg_temperature_celsius", "avg_humidity_percent", "avg_quality_score",
 ]
 
-GOLD_DAILY_COLUMNS = ["record_date", "site_id", "site_type", *_GOLD_MEASURES]
+# Le grain journalier ajoute la complétude horaire (couverture des 24 heures).
+_GOLD_DAILY_EXTRA = ["covered_hours", "expected_hours", "completeness_pct"]
+
+GOLD_DAILY_COLUMNS = ["record_date", "site_id", "site_type", *_GOLD_MEASURES, *_GOLD_DAILY_EXTRA]
 
 GOLD_HOURLY_COLUMNS = ["record_date", "record_hour", "site_id", "site_type", *_GOLD_MEASURES]
 

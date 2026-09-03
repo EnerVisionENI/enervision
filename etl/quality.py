@@ -28,7 +28,16 @@ métriques sont nulles (panne capteur simulée, null_reasons = network_loss). Il
 conservés en silver — le trou doit rester visible et daté — mais marqués is_valid=False,
 comptés à part dans le gold (critical_count, empty_count) et jamais confondus avec une
 mesure : `total_consumption_kwh` vaut NaN et non 0 quand rien n'a été mesuré, et le grain
-horaire est complété à 24 lignes pour qu'une heure sans relevé existe explicitement.
+horaire est complété à 24 lignes pour qu'une heure sans relevé existe explicitement. Le
+gold journalier porte en plus covered_hours / completeness_pct (des 24 heures, combien
+sont réellement couvertes).
+
+Bornes : une métrique présente mais physiquement impossible (tension à 5000 V, facteur de
+puissance à 3) envoie tout l'enregistrement en quarantaine (error_type out_of_range) au
+lieu du silver — voir NUMERIC_BOUNDS.
+
+Contexte site : silver et gold portent capacity_kw (table Postgres `sites`) et load_percent
+= consumption_kw / capacity_kw * 100, seul indicateur de charge comparable entre sites.
 
 Tables PostgreSQL (infra/postgres/init/02_silver.sql, 03_gold.sql, 05_quarantine.sql) :
 	measurements_silver, aggregates_gold_daily, aggregates_gold_hourly,
@@ -87,6 +96,22 @@ OPTIONAL_NUMERIC_COLUMNS = [
 ]
 
 MANDATORY_COLUMNS = ["timestamp", "site_id"]
+
+# Bornes physiques par métrique. Une valeur PRÉSENTE mais hors de ces bornes n'est pas une
+# mesure douteuse, c'est un capteur en défaut : tout l'enregistrement part en quarantaine
+# (error_type "out_of_range") plutôt que de polluer le silver. `safe_float` ne rejetait
+# jusqu'ici que NaN/inf — une tension à 5000 V ou un facteur de puissance à 3 passaient.
+# 0 est toléré (site à l'arrêt, coupure) ; c'est le négatif ou l'aberrant haut qui trahit
+# la panne. Bornes larges à dessein : on vise l'impossible, pas l'inhabituel.
+NUMERIC_BOUNDS = {
+	"consumption_kw": (0.0, 100_000.0),
+	"consumption_kwh": (0.0, 100_000.0),
+	"voltage_v": (0.0, 1_000.0),
+	"current_a": (0.0, 100_000.0),
+	"power_factor": (-1.0, 1.0),
+	"temperature_celsius": (-60.0, 90.0),
+	"humidity_percent": (0.0, 100.0),
+}
 
 # Niveaux de `data_quality` émis par l'API mock, et pénalité de score associée.
 # "critical" (null_reasons = network_loss : TOUTES les métriques absentes) tombait
@@ -476,6 +501,18 @@ def build_quarantine_row(
 	}
 
 
+def check_ranges(metrics: dict[str, float | None]) -> str | None:
+	"""Renvoie le premier dépassement de borne physique, ou None si tout est plausible.
+	`metrics` : valeurs déjà passées par safe_float (float ou None)."""
+	for column, value in metrics.items():
+		if value is None:
+			continue
+		low, high = NUMERIC_BOUNDS.get(column, (float("-inf"), float("inf")))
+		if not (low <= value <= high):
+			return f"{column}={value} hors plage [{low}, {high}]"
+	return None
+
+
 def normalize_record(
 	record: dict[str, Any],
 	source_key: str,
@@ -506,17 +543,21 @@ def normalize_record(
 			record=record,
 		)
 
+	metrics = {column: safe_float(record.get(column)) for column in NUMERIC_COLUMNS}
+	out_of_range = check_ranges(metrics)
+	if out_of_range is not None:
+		return None, build_quarantine_row(
+			source_key,
+			"out_of_range",
+			out_of_range,
+			record=record,
+		)
+
 	normalized: dict[str, Any] = {
 		"timestamp": timestamp,
 		"site_id": str(record.get("site_id")),
 		"site_type": record.get("site_type"),
-		"consumption_kw": safe_float(record.get("consumption_kw")),
-		"consumption_kwh": safe_float(record.get("consumption_kwh")),
-		"voltage_v": safe_float(record.get("voltage_v")),
-		"current_a": safe_float(record.get("current_a")),
-		"power_factor": safe_float(record.get("power_factor")),
-		"temperature_celsius": safe_float(record.get("temperature_celsius")),
-		"humidity_percent": safe_float(record.get("humidity_percent")),
+		**metrics,
 		"null_reasons": normalize_null_reasons(record.get("null_reasons")),
 		"data_quality": record.get("data_quality") or "unknown",
 		"source_key": source_key,
@@ -570,6 +611,9 @@ GOLD_METRICS: dict[str, tuple[str, Any]] = {
 	"min_consumption_kw": ("consumption_kw", "min"),
 	"max_consumption_kw": ("consumption_kw", "max"),
 	"total_consumption_kwh": ("consumption_kwh", _somme_ou_nan),
+	"avg_load_percent": ("load_percent", "mean"),
+	"max_load_percent": ("load_percent", "max"),
+	"capacity_kw": ("capacity_kw", "max"),
 	"avg_voltage_v": ("voltage_v", "mean"),
 	"avg_current_a": ("current_a", "mean"),
 	"avg_power_factor": ("power_factor", "mean"),
@@ -577,6 +621,11 @@ GOLD_METRICS: dict[str, tuple[str, Any]] = {
 	"avg_humidity_percent": ("humidity_percent", "mean"),
 	"avg_quality_score": ("quality_score", "mean"),
 }
+
+# Colonnes de mesure lues par GOLD_METRICS : garanties présentes dans le df avant agrégat,
+# pour qu'un recalcul gold sur du silver écrit par une version antérieure (sans load_percent
+# ni capacity_kw) ne plante pas — la colonne manquante devient une série NaN.
+GOLD_METRIC_SOURCES = {source for source, _ in GOLD_METRICS.values()}
 
 GOLD_COUNTER_NAMES = list(GOLD_COUNTERS)
 GOLD_METRIC_NAMES = list(GOLD_METRICS)
@@ -613,8 +662,12 @@ def _completeness_flags(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _aggregate(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+	prepared = _completeness_flags(df)
+	for source in GOLD_METRIC_SOURCES:
+		if source not in prepared.columns:
+			prepared[source] = pd.NA
 	agrege = (
-		_completeness_flags(df)
+		prepared
 		.groupby(keys, dropna=False)
 		.agg(**GOLD_COUNTERS, **GOLD_METRICS)
 		.reset_index()
@@ -624,8 +677,32 @@ def _aggregate(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
 	return agrege
 
 
+EXPECTED_HOURS_PER_DAY = 24
+
+
 def aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
-	return _aggregate(df, ["record_date", "site_id", "site_type"])
+	daily = _aggregate(df, ["record_date", "site_id", "site_type"])
+
+	# Complétude RÉELLE : sur les 24 heures d'une journée, combien portent au moins une
+	# mesure exploitable. usable_count / records_count ne le dit pas — 6 relevés tous reçus
+	# à la même heure font 6/6 = 100 % alors que 23 heures manquent. C'est la métrique que
+	# le dashboard et l'entraînement doivent regarder.
+	flagged = _completeness_flags(df)
+	usable_hours = (
+		flagged.loc[flagged["is_usable"]]
+		.assign(_hour=lambda d: pd.to_datetime(d["record_hour"]).dt.floor("h"))
+		.groupby(["record_date", "site_id"])["_hour"]
+		.nunique()
+		.rename("covered_hours")
+		.reset_index()
+	)
+	daily = daily.merge(usable_hours, on=["record_date", "site_id"], how="left")
+	daily["covered_hours"] = daily["covered_hours"].fillna(0).astype("int64")
+	daily["expected_hours"] = EXPECTED_HOURS_PER_DAY
+	daily["completeness_pct"] = (
+		(daily["covered_hours"] / EXPECTED_HOURS_PER_DAY * 100).round(1)
+	)
+	return daily
 
 
 def aggregate_hourly(df: pd.DataFrame) -> pd.DataFrame:
@@ -664,6 +741,12 @@ def fill_hourly_grid(hourly: pd.DataFrame, record_date: Any, site_id: Any) -> pd
 	for compteur in GOLD_COUNTER_NAMES:
 		if compteur in complet.columns:
 			complet[compteur] = complet[compteur].fillna(0).astype("int64")
+	# La capacité du site est connue même pour une heure sans relevé : on la propage, pour
+	# que load_percent reste calculable à ce grain.
+	if "capacity_kw" in complet.columns:
+		connue = complet["capacity_kw"].dropna()
+		if not connue.empty:
+			complet["capacity_kw"] = connue.iloc[0]
 	return complet.sort_values("record_hour").reset_index(drop=True)
 
 
@@ -694,6 +777,26 @@ def add_simple_anomalies(df: pd.DataFrame) -> pd.DataFrame:
 	df["delta_flag"] = df["consumption_change_pct"].fillna(0) > 0.35
 	df["has_anomaly"] = df["zscore_flag"] | df["delta_flag"]
 	return df.drop(columns=["prev_consumption_kw", "site_mean", "site_std", "zscore_flag", "delta_flag"])
+
+
+def add_site_context(df: pd.DataFrame, capacities: dict[str, float]) -> pd.DataFrame:
+	"""Ajoute `capacity_kw` (métadonnée du site, table Postgres `sites`) et `load_percent`
+	= consumption_kw / capacity_kw * 100.
+
+	load_percent est LA métrique de supervision énergétique — « SITE005 à 81 % de charge » —
+	et le seul indicateur comparable d'un site à l'autre (75 kW dans un bureau de 200 kW ≠
+	75 kW dans une usine de 1000 kW). NaN si la capacité du site est inconnue (table `sites`
+	non peuplée, ou Postgres indisponible pendant ce passage) ou la consommation absente ;
+	on ne l'invente pas."""
+	df = df.copy()
+	if "consumption_kw" not in df.columns:
+		df["capacity_kw"] = pd.NA
+		df["load_percent"] = pd.NA
+		return df
+	df["capacity_kw"] = pd.to_numeric(df["site_id"].map(capacities), errors="coerce")
+	denom = df["capacity_kw"].replace(0, pd.NA)
+	df["load_percent"] = (df["consumption_kw"] / denom * 100).round(2)
+	return df
 
 
 def rebuild_gold_partition(
@@ -842,6 +945,7 @@ def process_batch(
 		if column in silver_df.columns:
 			silver_df[column] = pd.to_numeric(silver_df[column], errors="coerce")
 	silver_df = add_simple_anomalies(silver_df)
+	silver_df = add_site_context(silver_df, postgres_writer.load_site_capacities(pg_conn))
 
 	stamp = run_stamp()
 	touched_partitions: set[tuple[str, str]] = set()
