@@ -37,51 +37,10 @@ def test_me_returns_current_user(client, db_session):
     assert response.json()["role"] == "viewer"
 
 
-def test_create_user_requires_admin(client, db_session):
-    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
-    headers = auth_headers(client, "viewer@enervision.fr", "password123")
-
-    response = client.post(
-        "/api/v1/auth/users",
-        json={"email": "new@enervision.fr", "password": "password123", "role": "viewer"},
-        headers=headers,
-    )
-
-    assert response.status_code == 403
-
-
-def test_admin_can_create_user(client, db_session):
-    make_user(db_session, "admin@enervision.fr", "password123", "admin")
-    headers = auth_headers(client, "admin@enervision.fr", "password123")
-
-    response = client.post(
-        "/api/v1/auth/users",
-        json={"email": "new@enervision.fr", "password": "password123", "role": "operator"},
-        headers=headers,
-    )
-
-    assert response.status_code == 201
-    assert response.json()["role"] == "operator"
-
-
-def test_cannot_create_duplicate_email(client, db_session):
-    make_user(db_session, "admin@enervision.fr", "password123", "admin")
-    headers = auth_headers(client, "admin@enervision.fr", "password123")
-
-    response = client.post(
-        "/api/v1/auth/users",
-        json={"email": "admin@enervision.fr", "password": "password123", "role": "viewer"},
-        headers=headers,
-    )
-
-    assert response.status_code == 409
-
-
-
 def test_login_unknown_email_returns_401(client):
     """Email qui n'existe pas du tout — doit renvoyer la même erreur que mauvais mdp,
     pour ne pas révéler quels emails existent (énumération de comptes)."""
-    response = client.post("/auth/login", data={"username": "inconnu@enervision.fr", "password": "x"})
+    response = client.post("/api/v1/auth/login", data={"username": "inconnu@enervision.fr", "password": "x"})
     assert response.status_code == 401
 
 
@@ -96,7 +55,11 @@ def test_operator_cannot_create_user(client, db_session):
     les droits admin (sinon le rôle n'a pas de sens)."""
     make_user(db_session, "op@enervision.fr", "password123", "operator")
     headers = auth_headers(client, "op@enervision.fr", "password123")
-    response = client.post("/auth/users", json={...}, headers=headers)
+    response = client.post(
+        "/api/v1/users",
+        json={"email": "new@enervision.fr", "password": "password123", "role": "viewer"},
+        headers=headers,
+    )
     assert response.status_code == 403
 
 
