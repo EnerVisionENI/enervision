@@ -214,14 +214,30 @@ sudo apt update && sudo apt install -y postgresql-client-16
 # gzip est déjà présent sur toute distribution Linux standard.
 ```
 
-**Crontab** (`crontab -e`, sur l'utilisateur qui a accès au dépôt et à Docker) :
+Le `.env` que ce script doit charger est le **`.env` racine complet** (celui que le job `deploy` régénère à
+chaque déploiement, `infra/env/production.env` + les 6 secrets GitHub Actions ci-dessus, `POSTGRES_PASSWORD`
+compris) — pas `infra/env/production.env` seul, qui ne contient que la partie non sensible et ne suffit pas à
+faire tourner le script (`KeyError: 'POSTGRES_PASSWORD'` sinon). C'est exactement le même fichier que les
+services `env_file: - .env` de `compose.yaml` (`api`, `etl-*`, `audit-sync`) lisent déjà pour tourner : il
+vit sur le disque du serveur, dans le dossier où le runner self-hosted a cloné le dépôt et où `docker compose
+up` est lancé — pas seulement le temps du job GitHub Actions.
+
+Pour trouver ce dossier sans le deviner (utile aussi pour un test manuel, en dehors de tout cron) :
+
+```bash
+docker inspect ev006-postgres --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}'
+```
+
+**Crontab** (`crontab -e`, sur l'utilisateur qui a accès au dépôt et à Docker) — `<dossier_du_depot>` est le
+résultat de la commande ci-dessus :
 
 ```cron
-0 3 * * * cd /opt/enervision && set -a && . .env && set +a && python3 infra/backup/backup.py >> /var/log/enervision-backup.log 2>&1
+0 3 * * * cd <dossier_du_depot> && set -a && . .env && set +a && python3 infra/backup/backup.py >> /var/log/enervision-backup.log 2>&1
 ```
 
 Une fois par jour à 3h UTC. `set -a` exporte automatiquement toutes les variables lues depuis `.env` vers
-l'environnement du script (équivalent de `source` avec export).
+l'environnement du script (équivalent de `source` avec export) — c'est l'équivalent, à la main, de ce que
+`env_file:` fait pour Docker Compose.
 
 > Si un jour le serveur devient joignable depuis Internet (VPN site-to-site, IP publique, etc.), on peut
 > repasser le job `deploy` sur `ubuntu-latest` avec une connexion SSH classique (secrets `DEPLOY_HOST`,
