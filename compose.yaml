@@ -300,6 +300,78 @@ services:
         max-file: "3"
 
   # --------------------------------------------------------------------------
+  # Prévision de consommation — profile "mlflow"
+  #
+  # Recalcule l'horizon de prévision de chaque site à chaque déclenchement de PREDICT_CRON et
+  # écrit dans la table predictions_forecast (voir ml/predict.py). Dans le profile "mlflow" et
+  # non "etl" : sans le serveur de tracking, il n'y a aucun modèle à charger.
+  #
+  # Ce service ne crée pas sa table : les scripts d'init Postgres ne rejouent pas sur un volume
+  # déjà initialisé (infra_pgdata vient de l'ancien projet Compose), il faut donc l'appliquer
+  # une fois à la main sur le serveur, avant le premier démarrage :
+  #   docker compose exec -T postgres psql -U ev_admin -d ev_monitoring   #     < infra/postgres/init/06_predictions.sql
+  # --------------------------------------------------------------------------
+  ml-predict:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    image: enervision-ml:local
+    container_name: enervision-ml-predict
+    profiles: ["mlflow"]
+    # Surcharge le CMD de l'image (train.py) : ici on veut le planificateur, pas un entraînement.
+    command: ["python", "predict.py", "--schedule"]
+    env_file:
+      - .env
+    environment:
+      # Les valeurs de `environment` priment sur celles de env_file : elles remplacent les
+      # localhost du .env par les noms de services du réseau interne.
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Par défaut le client MLflow retente 7 fois avec un backoff x2 et un timeout de 120 s :
+      # un serveur injoignable rend le cycle muet pendant un quart d'heure avant de le dire.
+      # Un cycle qui échoue en quelques secondes et le logge vaut mieux, le cron reprend ensuite.
+      MLFLOW_HTTP_REQUEST_MAX_RETRIES: "2"
+      MLFLOW_HTTP_REQUEST_TIMEOUT: "20"
+      # Calé après le recalcul gold horaire (GOLD_CRON_HORAIRE, H+3) : la prévision doit voir
+      # les agrégats de l'heure écoulée, pas ceux d'avant.
+      PREDICT_CRON: ${PREDICT_CRON:-20 * * * *}
+      PREDICT_HORIZON_HOURS: ${PREDICT_HORIZON_HOURS:-24}
+      PREDICT_CLIMATOLOGY_DAYS: ${PREDICT_CLIMATOLOGY_DAYS:-30}
+      # À trancher par `predict.py --check --probe-tz` sur donnée réelle : les 168 coefficients
+      # horaires des modèles ont été appris dans un fuseau que le CSV d'entraînement ne dit pas.
+      PREDICT_TZ: ${PREDICT_TZ:-UTC}
+      PREDICT_MODEL_STAGE: ${PREDICT_MODEL_STAGE:-Production}
+      PYTHONUNBUFFERED: "1"
+      # Avec le schéma, contrairement aux services etl : ml/core/data.py passe MINIO_ENDPOINT
+      # tel quel à boto3 comme endpoint_url.
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # service_started et non service_healthy : le service mlflow n'a pas de healthcheck.
+      # C'est pourquoi le premier cycle est décalé d'une minute (voir run_scheduled).
+      mlflow:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - enervision-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          # Plus large que les services etl : l'import de mlflow + pandas + lightgbm coûte à lui
+          # seul quelques centaines de Mo, avant tout chargement de modèle.
+          memory: 1G
+
+  # --------------------------------------------------------------------------
   # Reverse proxy Traefik — profile "proxy"
   # --------------------------------------------------------------------------
   traefik:
