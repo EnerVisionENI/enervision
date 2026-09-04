@@ -33,6 +33,7 @@ npm-debug.log*
 # MLflow (artefacts locaux)
 mlruns/
 mlartifacts/
+ml/reports/*.json  # Rapports générés (sauf les .md versionés)
 
 # Data locale — ne jamais commiter de données (tout vit dans MinIO)
 *.parquet
@@ -40,6 +41,7 @@ mlartifacts/
 data/
 tmp/
 bronze/
+ml/data/csv/
 
 # IDE / OS
 # .vscode/tasks.json est versionné (tâches Docker partagées), le reste non.
@@ -49,3 +51,5 @@ bronze/
 .DS_Store
 Thumbs.db
 node_modules/
+ml/mlflow.db
+.claude/

@@ -393,5 +393,5 @@ jobs:
             DOCKER_COMPOSE="docker-compose"
           fi
 
-          $DOCKER_COMPOSE --profile etl --profile audit --profile proxy \
+          $DOCKER_COMPOSE --profile etl --profile audit --profile proxy --profile mlflow \
             up -d --build --remove-orphans

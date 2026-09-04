@@ -3,7 +3,8 @@
 #   docker compose up -d --build                 # cœur : postgres, minio, api, front
 #   docker compose --profile etl up -d --build   # + pipeline ETL
 #   docker compose --profile observability up -d # + Prometheus / Grafana / exporters
-#   docker compose --profile etl --profile audit --profile proxy --profile observability up -d --build   # tout
+#   docker compose --profile mlflow up -d --build   # + tracking MLflow (voir infra/mlflow/DEPLOYMENT.md)
+#   docker compose --profile etl --profile audit --profile proxy --profile observability --profile mlflow up -d --build   # tout
 #
 # Toutes les variables sensibles viennent de .env à la racine (voir .env.example).
 
@@ -254,6 +255,49 @@ services:
       - ./infra/audit-sync/sync-audit-to-azure.sh:/sync-audit-to-azure.sh:ro
     networks:
       - enervision-network
+
+  # --------------------------------------------------------------------------
+  # MLflow (tracking + registry des modèles ML) — profile "mlflow"
+  #
+  # Réutilise le postgres existant (base "mlflow" séparée, à créer une fois
+  # à la main sur le serveur — voir infra/mlflow/DEPLOYMENT.md, les scripts
+  # d'init postgres ne rejouent pas sur un volume déjà initialisé) et le
+  # minio existant (bucket "mlflow-artifacts", créé par infra/minio/init-buckets.sh).
+  # --------------------------------------------------------------------------
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.22.0
+    container_name: enervision-mlflow
+    profiles: ["mlflow"]
+    # L'image officielle n'embarque pas psycopg2 (driver postgres) : installé au
+    # démarrage, faute d'image mieux adaptée disponible sur le registre public.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        pip install --no-cache-dir psycopg2-binary &&
+        mlflow server
+        --backend-store-uri=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
+        --default-artifact-root=s3://mlflow-artifacts
+        --host=0.0.0.0
+        --port=5000
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - enervision-network
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # --------------------------------------------------------------------------
   # Reverse proxy Traefik — profile "proxy"

@@ -8,7 +8,7 @@ MINIO_PASS="${MINIO_ROOT_PASSWORD}"
 
 mc alias set $MINIO_ALIAS $MINIO_URL $MINIO_USER $MINIO_PASS
 
-for bucket in bronze silver gold quarantine manifests; do
+for bucket in bronze silver gold quarantine manifests mlflow-artifacts; do
   if ! mc ls $MINIO_ALIAS/$bucket >/dev/null 2>&1; then
     echo "Création du bucket $bucket..."
     mc mb $MINIO_ALIAS/$bucket
@@ -28,4 +28,4 @@ else
   echo "Bucket audit déjà existant."
 fi
 
-echo "Buckets prêts : bronze, silver, gold, quarantine, manifests, audit"
+echo "Buckets prêts : bronze, silver, gold, quarantine, manifests, mlflow-artifacts, audit"
