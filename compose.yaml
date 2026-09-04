@@ -2,7 +2,8 @@
 #
 #   docker compose up -d --build                 # cœur : postgres, minio, api, front
 #   docker compose --profile etl up -d --build   # + pipeline ETL
-#   docker compose --profile etl --profile audit --profile proxy up -d --build   # tout
+#   docker compose --profile observability up -d # + Prometheus / Grafana / exporters
+#   docker compose --profile etl --profile audit --profile proxy --profile observability up -d --build   # tout
 #
 # Toutes les variables sensibles viennent de .env à la racine (voir .env.example).
 
@@ -273,6 +274,100 @@ services:
       - enervision-network
     restart: unless-stopped
 
+  # --------------------------------------------------------------------------
+  # Observabilité — profile "observability"
+  # --------------------------------------------------------------------------
+  # Métriques serveur : node-exporter (hôte : CPU / RAM / disque / réseau de la
+  # VM) et cAdvisor (par conteneur) sont scrapés par Prometheus ; Grafana les
+  # affiche via un dashboard et une datasource provisionnés automatiquement
+  # depuis ./infra/grafana. Aucun de ces services n'est nécessaire au
+  # fonctionnement de l'application.
+  #
+  #   docker compose --profile observability up -d
+  #   Grafana     http://localhost:3001   (admin / ${GRAFANA_ADMIN_PASSWORD:-admin})
+  #   Prometheus  http://localhost:9090
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: enervision-prometheus
+    profiles: ["observability"]
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    networks:
+      - enervision-network
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: enervision-node-exporter
+    profiles: ["observability"]
+    restart: unless-stopped
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|rootfs|run/credentials/.+|var/lib/docker/.+)($$|/)"
+      - "--collector.filesystem.fs-types-exclude=^(autofs|overlay|tmpfs|squashfs|nsfs|shm)$$"
+    pid: host
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - enervision-network
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: enervision-cadvisor
+    profiles: ["observability"]
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg
+    ports:
+      # 8080 côté hôte est pris par le dashboard Traefik (profile proxy).
+      - "8081:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - enervision-network
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: enervision-grafana
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    ports:
+      # 3000 côté hôte est pris par le front.
+      - "3001:3000"
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - enervision-network
+
 networks:
   enervision-network:
     driver: bridge
@@ -284,3 +379,6 @@ volumes:
     name: infra_pgdata
   miniodata:
     name: infra_miniodata
+  # Données de l'observabilité (profile "observability").
+  promdata:
+  grafanadata:

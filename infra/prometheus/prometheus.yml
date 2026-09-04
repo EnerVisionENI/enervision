@@ -1,0 +1,27 @@
+# Prometheus — profile "observability" (voir compose.yaml).
+# Scrape uniquement les cibles du réseau Compose interne enervision-network.
+# Pas d'alerting configuré ici : Grafana sert de couche de visualisation.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: enervision
+
+scrape_configs:
+  # Prometheus lui-même.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Métriques hôte (CPU, RAM, disque, réseau de la VM) via node-exporter.
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          instance: enervision-server
+
+  # Métriques par conteneur (CPU / mémoire / réseau) via cAdvisor.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]

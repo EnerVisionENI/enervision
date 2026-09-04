@@ -27,6 +27,7 @@ derrière des profils Compose :
 | `etl`   | `etl-collect`, `etl-alerts`, `etl-sites` | collecte temps réel mesures + alertes + sites |
 | `audit` | `audit-sync`  | synchro MinIO → Azure Blob |
 | `proxy` | `traefik`     | reverse proxy TLS |
+| `observability` | `prometheus`, `grafana`, `node-exporter`, `cadvisor` | métriques serveur (hôte + conteneurs) |
 
 En local : `docker compose up -d --build` suffit pour le cœur de la stack ; ajouter `--profile etl` au besoin.
 
@@ -168,6 +169,52 @@ l'environnement du script (équivalent de `source` avec export).
 > repasser le job `deploy` sur `ubuntu-latest` avec une connexion SSH classique (secrets `DEPLOY_HOST`,
 > `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PORT`, `DEPLOY_PATH`).
 
+### Observabilité — métriques serveur (profile `observability`)
+
+Quatre services, tous optionnels et sans impact sur l'application :
+
+| Service | Image | Rôle | Port hôte |
+|---|---|---|---|
+| `node-exporter` | `prom/node-exporter` | métriques de l'hôte : CPU, RAM, disque, réseau, load | 9100 |
+| `cadvisor` | `gcr.io/cadvisor/cadvisor` | métriques par conteneur : CPU, mémoire, réseau | 8081 |
+| `prometheus` | `prom/prometheus` | scrape les deux exporters, rétention 15 j (volume `promdata`) | 9090 |
+| `grafana` | `grafana/grafana` | dashboards (volume `grafanadata`) | 3001 |
+
+```bash
+docker compose --profile observability up -d
+```
+
+Grafana est **provisionné automatiquement** au premier démarrage depuis
+[`infra/grafana/`](grafana/) : la datasource Prometheus et le dashboard
+*EnerVision — Serveur (hôte & conteneurs)* apparaissent sans aucune action
+manuelle. Les fichiers montés en lecture seule sont la source de vérité — éditer
+un dashboard dans l'UI ne le persiste pas, il faut modifier le JSON dans
+[`infra/grafana/dashboards/`](grafana/dashboards/).
+
+- Grafana : http://localhost:3001 — identifiants `GRAFANA_ADMIN_USER` /
+  `GRAFANA_ADMIN_PASSWORD` (défaut `admin` / `admin` si non définis).
+- Prometheus : http://localhost:9090 (cibles sous *Status → Targets*).
+
+La config de scrape est dans [`infra/prometheus/prometheus.yml`](prometheus/prometheus.yml).
+Pour ajouter des métriques applicatives plus tard (API FastAPI, PostgreSQL via
+`postgres-exporter`, …), déclarer le service dans `compose.yaml` avec
+`profiles: ["observability"]` et ajouter un bloc `scrape_configs`.
+
+**Activer en production (CI/CD).** Le profile `observability` n'est pas déployé
+par défaut. Pour l'ajouter :
+
+1. Créer le secret GitHub Actions `GRAFANA_ADMIN_PASSWORD` (`gh secret set
+   GRAFANA_ADMIN_PASSWORD`), au même titre que les 6 autres du tableau plus haut.
+2. Dans [`.github/workflows/ci-cd.yml`](../.github/workflows/ci-cd.yml), ajouter
+   `GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}` au step
+   *Restore production env file* du job `deploy` et l'écho correspondant dans le
+   `.env` reconstruit.
+3. Ajouter `--profile observability` à la commande `docker compose … up` du step
+   *Deploy with docker compose*.
+4. Ne pas exposer les ports 9090 / 3001 / 8081 / 9100 sur Internet — soit les
+   laisser sur le réseau interne uniquement, soit les passer derrière Traefik
+   avec authentification.
+
 ## Commandes de déploiement
 
 ### 1. Dépendances système
@@ -266,6 +313,8 @@ infra/
 ├── minio/init-buckets.sh # Création des buckets
 ├── audit-sync/           # Script de synchro Azure (bronze/silver/gold/audit)
 ├── backup/               # Sauvegarde chiffrée users/sites vers Azure, via cron (EV-040)
+├── prometheus/           # Config de scrape Prometheus (profil "observability")
+├── grafana/              # Datasource + dashboards provisionnés (profil "observability")
 └── traefik/              # Reverse proxy (profil "proxy")
 
 api/Dockerfile            # Image API (contexte de build = racine)
@@ -280,4 +329,4 @@ etl/Dockerfile            # Image ETL (contexte de build = etl/)
 3. **Logs** : Configurer ELK ou autre solution de logging
 4. **Backup** : `users`/`sites` couverts par `infra/backup/backup.py` (EV-040, cron quotidien) ; le reste
    du schéma (`alerts`, `measurements_silver`, `aggregates_gold_*`, ...) n'a pas encore de sauvegarde dédiée
-5. **Monitoring** : Ajouter Prometheus/Grafana
+5. **Monitoring** : profile `observability` (Prometheus + Grafana + node-exporter + cAdvisor) — voir ci-dessous
