@@ -43,20 +43,6 @@ CREATE TABLE IF NOT EXISTS users (
     created_at           TIMESTAMP DEFAULT now()
 );
 
--- État du rattrapage ETL, ligne unique (id = 1), écrite par etl/bootstrap.py.
--- phase : pending | history | draining | live | error
-CREATE TABLE IF NOT EXISTS etl_status (
-    id            SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    phase         VARCHAR(20) NOT NULL DEFAULT 'pending',
-    bronze_total  INTEGER NOT NULL DEFAULT 0,
-    bronze_done   INTEGER NOT NULL DEFAULT 0,
-    message       TEXT,
-    started_at    TIMESTAMP,
-    updated_at    TIMESTAMP DEFAULT now()
-);
-
-INSERT INTO etl_status (id, phase) VALUES (1, 'pending') ON CONFLICT (id) DO NOTHING;
-
 -- Compte d'amorçage : mot de passe trivial, donc marqué à renouveler dès la
 -- première connexion.
 INSERT INTO users (email, password_hash, role, must_change_password)
