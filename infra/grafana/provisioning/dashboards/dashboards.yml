@@ -1,0 +1,16 @@
+# Charge tous les dashboards JSON déposés dans ./infra/grafana/dashboards
+# (monté sur /var/lib/grafana/dashboards en lecture seule).
+
+apiVersion: 1
+
+providers:
+  - name: EnerVision
+    orgId: 1
+    folder: EnerVision
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

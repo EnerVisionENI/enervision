@@ -243,8 +243,15 @@ Services optionnels, derrière des profils Compose :
 
 ```bash
 docker compose --profile etl up -d --build                        # + pipeline ETL
-docker compose --profile etl --profile audit --profile proxy up -d --build   # tout
+docker compose --profile observability up -d --build              # + Prometheus / Grafana / exporters
+docker compose --profile etl --profile audit --profile proxy --profile observability up -d --build   # tout
 ```
+
+Profile `observability` : métriques serveur (hôte via node-exporter, conteneurs
+via cAdvisor), scrapées par Prometheus et affichées dans Grafana
+(http://localhost:3001, `admin` / `admin` par défaut) avec datasource et
+dashboard provisionnés automatiquement. Détails dans
+[`infra/DEPLOYMENT.md`](infra/DEPLOYMENT.md).
 
 Créer le premier compte admin (aucune route publique de création) :
 
