@@ -35,6 +35,7 @@ jobs:
     name: API lint + tests
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -43,9 +44,13 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: api/requirements-dev.txt
 
+      # Version fixée : une nouvelle release de ruff peut activer de nouvelles
+      # règles par défaut et faire échouer la CI sans qu'aucun code n'ait changé.
       - name: Install ruff
-        run: pip install ruff
+        run: pip install ruff==0.16.6
 
       # Config partagée dans pyproject.toml (racine) : mêmes règles que etl/.
       - name: Lint (ruff)
@@ -63,6 +68,7 @@ jobs:
     name: ETL lint + tests
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: ./etl
@@ -74,9 +80,12 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: etl/requirements-dev.txt
 
+      # Même version que test-api : mêmes règles pyproject.toml, même risque de dérive.
       - name: Install ruff
-        run: pip install ruff
+        run: pip install ruff==0.16.6
 
       - name: Lint (ruff)
         run: ruff check .
@@ -91,6 +100,7 @@ jobs:
     name: Backup script tests
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: ./infra/backup
@@ -102,6 +112,8 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: infra/backup/requirements-dev.txt
 
       - name: Install test dependencies
         run: pip install -r requirements-dev.txt
@@ -115,6 +127,7 @@ jobs:
     name: Frontend lint + tests + build
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -149,6 +162,7 @@ jobs:
     needs: [test-api, test-etl, test-backup, build-front]
     if: always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -230,8 +244,20 @@ jobs:
     # doit pas pouvoir être mergé sans avoir été vu. Concurrency dédiée ci-dessous
     # car compose.ci.yml utilise des noms de conteneurs/ports fixes (un seul
     # runner self-hosted) : deux stacks e2e ne peuvent pas tourner en parallèle.
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/dev')
+    #
+    # Risque accepté : runner self-hosted déclenché sur pull_request avec accès aux
+    # secrets. Acceptable uniquement parce que le dépôt est privé et que seuls des
+    # contributeurs de confiance peuvent ouvrir des PR — sur un dépôt public ou avec
+    # des forks externes, ce même déclencheur permettrait d'exécuter du code
+    # arbitraire sur cette machine (voir la doc GitHub sur les self-hosted runners).
+    # workflow_dispatch restreint à dev : ce if est réécrit à partir du fichier
+    # présent sur la branche sélectionnée au lancement, donc ce n'est pas une
+    # vraie barrière de sécurité contre un acteur qui la modifierait sur sa
+    # propre branche — seulement un garde-fou contre un lancement manuel par
+    # erreur depuis une mauvaise branche par un contributeur de confiance.
+    if: github.event_name == 'pull_request' || (github.ref == 'refs/heads/dev' && github.event_name != 'schedule')
     runs-on: self-hosted
+    timeout-minutes: 20
     concurrency:
       group: enervision-ci-e2e
       cancel-in-progress: false
@@ -242,26 +268,14 @@ jobs:
           clean: false
 
       - name: Restore production env file
-        env:
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
-          INGEST_API_KEY: ${{ secrets.INGEST_API_KEY }}
-          MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
-          AZURE_STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
-          RCLONE_CRYPT_PASSWORD_RAW: ${{ secrets.RCLONE_CRYPT_PASSWORD_RAW }}
-        run: |
-          set -e
-          # Valeurs non sensibles (versionnées) + mots de passe/clés (secrets
-          # GitHub Actions) concaténés en un seul .env racine.
-          cp infra/env/production.env .env
-          {
-            echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
-            echo "JWT_SECRET_KEY=$JWT_SECRET_KEY"
-            echo "INGEST_API_KEY=$INGEST_API_KEY"
-            echo "MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD"
-            echo "AZURE_STORAGE_KEY=$AZURE_STORAGE_KEY"
-            echo "RCLONE_CRYPT_PASSWORD_RAW=$RCLONE_CRYPT_PASSWORD_RAW"
-          } >> .env
+        uses: ./.github/actions/restore-env
+        with:
+          postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
+          jwt_secret_key: ${{ secrets.JWT_SECRET_KEY }}
+          ingest_api_key: ${{ secrets.INGEST_API_KEY }}
+          minio_root_password: ${{ secrets.MINIO_ROOT_PASSWORD }}
+          azure_storage_key: ${{ secrets.AZURE_STORAGE_KEY }}
+          rclone_crypt_password_raw: ${{ secrets.RCLONE_CRYPT_PASSWORD_RAW }}
 
       - name: Start ephemeral stack (compose.ci.yml)
         run: |
@@ -306,8 +320,15 @@ jobs:
   deploy:
     name: Deploy on server
     needs: [test-e2e]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    # workflow_dispatch autorisé, mais seulement depuis dev : voir le commentaire
+    # équivalent sur test-e2e sur les limites de cette garde en tant que if.
+    # needs: [test-e2e] s'applique aussi au lancement manuel — pas de raccourci
+    # pour bypasser l'e2e même en dispatch.
+    if: github.ref == 'refs/heads/dev' && github.event_name != 'schedule'
     runs-on: self-hosted
+    # 25 min : un up -d --build à froid (cache Docker vide) rebuild 3 images
+    # (api, etl, front) sous 3 profils — 15 min était trop juste dans ce cas.
+    timeout-minutes: 25
 
     steps:
       - name: Checkout code
@@ -317,26 +338,14 @@ jobs:
           clean: false
 
       - name: Restore production env file
-        env:
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
-          INGEST_API_KEY: ${{ secrets.INGEST_API_KEY }}
-          MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
-          AZURE_STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
-          RCLONE_CRYPT_PASSWORD_RAW: ${{ secrets.RCLONE_CRYPT_PASSWORD_RAW }}
-        run: |
-          set -e
-          # Valeurs non sensibles (versionnées) + mots de passe/clés (secrets
-          # GitHub Actions) concaténés en un seul .env racine.
-          cp infra/env/production.env .env
-          {
-            echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
-            echo "JWT_SECRET_KEY=$JWT_SECRET_KEY"
-            echo "INGEST_API_KEY=$INGEST_API_KEY"
-            echo "MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD"
-            echo "AZURE_STORAGE_KEY=$AZURE_STORAGE_KEY"
-            echo "RCLONE_CRYPT_PASSWORD_RAW=$RCLONE_CRYPT_PASSWORD_RAW"
-          } >> .env
+        uses: ./.github/actions/restore-env
+        with:
+          postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
+          jwt_secret_key: ${{ secrets.JWT_SECRET_KEY }}
+          ingest_api_key: ${{ secrets.INGEST_API_KEY }}
+          minio_root_password: ${{ secrets.MINIO_ROOT_PASSWORD }}
+          azure_storage_key: ${{ secrets.AZURE_STORAGE_KEY }}
+          rclone_crypt_password_raw: ${{ secrets.RCLONE_CRYPT_PASSWORD_RAW }}
 
       - name: Deploy with docker compose
         run: |
