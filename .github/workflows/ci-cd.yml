@@ -177,9 +177,12 @@ jobs:
   build:
     name: Build + scan + push (${{ matrix.name }})
     # Tourne toujours, y compris sur le cron nocturne (rescan de main) : c'est le
-    # seul job que le déclenchement `schedule` doit exécuter. Sur `schedule`, on
-    # rebuild depuis les sources pour rescanner, mais on ne pousse rien (le code
-    # n'a pas changé — seule la base de CVE a bougé), cf. le step de push.
+    # seul job que le déclenchement `schedule` doit exécuter.
+    #
+    # Le job est idempotent : si le tag sha-<commit> existe déjà sur GHCR, il est
+    # tiré au lieu d'être reconstruit. Un « Re-run all jobs » ne recompile donc
+    # rien, et le cron nocturne rescanne l'image RÉELLEMENT publiée plutôt qu'un
+    # rebuild qui serait, par construction, un artefact différent.
     needs: [test-api, test-etl, test-backup, build-front]
     if: always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
@@ -221,6 +224,31 @@ jobs:
           owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           echo "IMAGE=${REGISTRY}/${owner}/enervision-${{ matrix.name }}" >> "$GITHUB_ENV"
 
+      # Login en amont du build : nécessaire pour interroger la registry au step
+      # suivant, pas seulement pour pousser à la fin.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Le tag est dérivé du SHA de commit : s'il est déjà sur GHCR, l'image
+      # correspondante a forcément passé le scan (l'ordre build -> scan -> push
+      # garantit que rien n'entre dans la registry sans être validé). Inutile de
+      # la reconstruire — on la tire, ce qui rend le job idempotent.
+      - name: Check whether the image is already published
+        id: published
+        run: |
+          set -e
+          if docker manifest inspect "${IMAGE}:${IMAGE_TAG}" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "Image ${IMAGE}:${IMAGE_TAG} déjà publiée — build ignoré."
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "Image ${IMAGE}:${IMAGE_TAG} absente — build nécessaire."
+          fi
+
       - name: Cache Trivy vulnerability DB
         uses: actions/cache@v4
         with:
@@ -232,10 +260,12 @@ jobs:
       # push: false / load: true — l'image reste sur le runner le temps du scan.
       # Le push a lieu plus bas, seulement si Trivy passe.
       #
-      # Le cache GHA remplace le cache de couches qu'on avait "gratuitement"
-      # avant sur le runner self-hosted (quand deploy faisait le build) : sans
-      # lui, chaque run repartirait d'un pip install / npm ci à froid.
+      # Cache de couches stocké sur GHCR à côté des images (type=registry) plutôt
+      # que dans le cache GHA : pas de plafond de 10 Go partagé avec le reste du
+      # dépôt, pas d'éviction au bout de 7 jours d'inactivité, et l'export est
+      # plus rapide que le mode=max de type=gha.
       - name: Build ${{ matrix.name }} image
+        if: steps.published.outputs.found != 'true'
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
@@ -243,8 +273,13 @@ jobs:
           push: false
           load: true
           tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+
+      # Trivy scanne une image locale : il faut la tirer quand on a sauté le build.
+      - name: Pull already published image
+        if: steps.published.outputs.found == 'true'
+        run: docker pull "${IMAGE}:${IMAGE_TAG}"
 
       - name: Trivy scan (full report, JSON)
         uses: aquasecurity/trivy-action@v0.36.0
@@ -282,34 +317,31 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       # À partir d'ici, le scan est passé : l'image peut entrer dans la registry.
-      # Pas de push sur `schedule` (rien de nouveau à publier, cf. en-tête du job).
+      # Rien à pousser si elle y était déjà, ni sur `schedule` (le cron ne fait
+      # que rescanner du déjà-publié, il ne produit aucun artefact nouveau).
       #
       # Sur pull_request le push a bien lieu : test-e2e doit pouvoir pull l'image
       # exacte qui vient d'être scannée. Le GITHUB_TOKEN d'une PR issue d'un fork
       # est en lecture seule et ce step échouerait — le dépôt est privé et sans
       # forks (même hypothèse que celle déjà assumée pour le runner self-hosted
       # sur pull_request, cf. commentaire dans test-e2e).
-      - name: Log in to GHCR
-        if: github.event_name != 'schedule'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Push ${{ matrix.name }} image
-        if: github.event_name != 'schedule'
+        if: github.event_name != 'schedule' && steps.published.outputs.found != 'true'
         run: |
           set -e
           docker push "${IMAGE}:${IMAGE_TAG}"
 
-          # Tag mouvant en plus du tag SHA, uniquement sur push de branche :
-          # confort pour identifier à l'oeil ce que porte dev/main dans l'UI des
-          # packages. Le pipeline, lui, ne s'appuie que sur le tag SHA.
-          if [ "${{ github.event_name }}" = "push" ]; then
-            docker tag "${IMAGE}:${IMAGE_TAG}" "${IMAGE}:${{ github.ref_name }}"
-            docker push "${IMAGE}:${{ github.ref_name }}"
-          fi
+      # Tag mouvant en plus du tag SHA, uniquement sur push de branche : confort
+      # pour identifier à l'oeil ce que porte dev/main dans l'UI des packages. Le
+      # pipeline, lui, ne s'appuie que sur le tag SHA. Réappliqué même quand le
+      # build a été sauté : un « Re-run » sur un ancien commit doit pouvoir
+      # repositionner le tag de branche.
+      - name: Update moving branch tag
+        if: github.event_name == 'push'
+        run: |
+          set -e
+          docker tag "${IMAGE}:${IMAGE_TAG}" "${IMAGE}:${{ github.ref_name }}"
+          docker push "${IMAGE}:${{ github.ref_name }}"
 
   test-e2e:
     name: E2E (stack éphémère)
