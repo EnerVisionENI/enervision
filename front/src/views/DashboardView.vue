@@ -63,6 +63,12 @@
               </div>
               <div class="legende-graphe">
                 <div class="legende-item"><span class="legende-trait teal"></span>mesure réelle</div>
+                <div v-if="metriqueFocusInfo.avecPrediction" class="legende-item">
+                  <span class="legende-trait violet"></span>prédiction ML
+                </div>
+                <div v-if="metriqueFocusInfo.avecPrediction" class="legende-item">
+                  <span class="legende-bande"></span>incertitude
+                </div>
                 <div v-if="metriqueFocusInfo.avecSeuil" class="legende-item">
                   <span class="legende-trait orange"></span>puissance souscrite
                 </div>
@@ -221,6 +227,7 @@ const METRIQUES = [
     fond: "rgba(45, 212, 191, 0.08)",
     debuteAZero: true,
     avecSeuil: true,
+    avecPrediction: true,
   },
   {
     cle: "voltage_v",
@@ -310,6 +317,55 @@ const RECOMMANDATION_MOCK = {
 // mesurée / puissance souscrite), pas une couleur mise au hasard.
 const SEUIL_ALERTE_PARC = 0.9;
 
+// Prédiction de puissance : horizon maximal du "modèle", jamais plus long que
+// la fenêtre d'historique affichée — sur 6 h on prolonge donc d'1 h, sur 15 min
+// de 15 min, pour que la partie prédite n'écrase jamais l'historique à l'écran.
+const HORIZON_PREDICTION_MS = 60 * 60 * 1000;
+const NB_POINTS_PREDICTION = 60;
+const COULEUR_PREDICTION = "#a78bfa";
+const COULEUR_BANDE_PREDICTION = "rgba(167, 139, 250, 0.15)";
+
+// Mock du résultat d'un modèle ML de prévision de charge : aucun modèle n'est
+// encore entraîné ni exposé par l'API. Marche aléatoire faiblement bruitée et
+// ramenée vers la moyenne récente, bornée par la puissance souscrite du site.
+// La bande d'incertitude s'élargit avec l'horizon — comme une vraie prévision
+// perdrait en confiance — sans prétendre à un intervalle calibré.
+function genererPrediction(valeursReelles, dernierInstant, capaciteKw, horizonMs) {
+  const valeurs = valeursReelles.filter((v) => v !== null && v !== undefined);
+  if (valeurs.length === 0 || !dernierInstant) return null;
+
+  const derniereValeur = valeurs[valeurs.length - 1];
+  const fenetreRecente = valeurs.slice(-15);
+  const moyenneRecente = fenetreRecente.reduce((a, b) => a + b, 0) / fenetreRecente.length;
+  const ecartType =
+    Math.sqrt(fenetreRecente.reduce((s, v) => s + (v - moyenneRecente) ** 2, 0) / fenetreRecente.length) ||
+    moyenneRecente * 0.05 ||
+    5;
+
+  const plafond = capaciteKw ?? Infinity;
+  const pas = horizonMs / NB_POINTS_PREDICTION;
+
+  const instants = [];
+  const predites = [];
+  const bornesHautes = [];
+  const bornesBasses = [];
+
+  let courante = derniereValeur;
+  for (let i = 1; i <= NB_POINTS_PREDICTION; i++) {
+    const bruit = (Math.random() - 0.5) * 2 * ecartType * 0.4;
+    const rappel = (moyenneRecente - courante) * 0.08;
+    courante = Math.min(plafond, Math.max(0, courante + bruit + rappel));
+
+    const incertitude = ecartType * Math.sqrt(i) * 0.6;
+    instants.push(new Date(dernierInstant.getTime() + i * pas));
+    predites.push(courante);
+    bornesHautes.push(Math.min(plafond, courante + incertitude));
+    bornesBasses.push(Math.max(0, courante - incertitude));
+  }
+
+  return { instants, valeurs: predites, bornesHautes, bornesBasses };
+}
+
 function libelleRaison(raison) {
   return LIBELLES_RAISON[raison] || raison.replaceAll("_", " ");
 }
@@ -391,7 +447,7 @@ const dernieresLectures = {};
 let intervalSondage = null;
 let intervalHorloge = null;
 
-function construireDatasets(m) {
+function construireDatasets(m, { avecPrediction = false } = {}) {
   const datasets = [
     {
       label: m.label,
@@ -417,6 +473,41 @@ function construireDatasets(m) {
       pointHoverRadius: 3,
       fill: false,
     });
+  }
+  // Uniquement sur le grand graphique, et seulement pour la puissance appelée :
+  // les petites cartes restent des sparklines de mesures réelles.
+  if (avecPrediction && m.avecPrediction) {
+    datasets.push(
+      {
+        label: "Prédiction ML",
+        data: [],
+        borderColor: COULEUR_PREDICTION,
+        borderDash: [5, 4],
+        tension: 0.3,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        fill: false,
+      },
+      {
+        // Borne haute de l'incertitude, remplie jusqu'au dataset suivant (la
+        // borne basse) : c'est ce qui dessine la bande autour de la prédiction.
+        label: "Borne haute",
+        data: [],
+        borderColor: "transparent",
+        backgroundColor: COULEUR_BANDE_PREDICTION,
+        fill: "+1",
+        tension: 0.3,
+        pointRadius: 0,
+      },
+      {
+        label: "Borne basse",
+        data: [],
+        borderColor: "transparent",
+        fill: false,
+        tension: 0.3,
+        pointRadius: 0,
+      }
+    );
   }
   return datasets;
 }
@@ -454,7 +545,7 @@ function creerGraphiqueGrand() {
   chartGrand?.destroy();
   chartGrand = new Chart(canvasGrandRef.value, {
     type: "line",
-    data: { labels: [], datasets: construireDatasets(m) },
+    data: { labels: [], datasets: construireDatasets(m, { avecPrediction: true }) },
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -483,6 +574,9 @@ function creerGraphiqueGrand() {
           titleColor: "#e5e9f0",
           bodyColor: "#e5e9f0",
           padding: 10,
+          // Les deux bornes de l'incertitude ne sont là que pour dessiner la
+          // bande : les lire dans l'infobulle n'apprendrait rien.
+          filter: (item) => item.dataset.label !== "Borne haute" && item.dataset.label !== "Borne basse",
           callbacks: {
             label: (ctx) => `${ctx.dataset.label}: ${formatValeur(ctx.parsed.y, m.decimales)} ${m.unite}`,
           },
@@ -498,9 +592,51 @@ function rafraichirGraphiqueGrand() {
   if (!chartGrand) return;
   const buffer = bufferPour(siteSelectionne.value);
   const m = metriqueFocusInfo.value;
-  chartGrand.data.labels = buffer.labels;
-  chartGrand.data.datasets[0].data = buffer.metriques[m.cle];
-  if (m.avecSeuil) chartGrand.data.datasets[1].data = buffer.seuils;
+  const valeurs = buffer.metriques[m.cle];
+
+  if (!m.avecPrediction) {
+    chartGrand.data.labels = buffer.labels;
+    chartGrand.data.datasets[0].data = valeurs;
+    if (m.avecSeuil) chartGrand.data.datasets[1].data = buffer.seuils;
+    chartGrand.update();
+    return;
+  }
+
+  const capacite = siteActuel.value?.capacity_kw ?? null;
+  const prediction = genererPrediction(
+    valeurs,
+    buffer.instants[buffer.instants.length - 1],
+    capacite,
+    Math.min(HORIZON_PREDICTION_MS, fenetreMs.value)
+  );
+
+  if (!prediction) {
+    chartGrand.data.labels = buffer.labels;
+    chartGrand.data.datasets[0].data = valeurs;
+    chartGrand.data.datasets[1].data = buffer.seuils;
+    chartGrand.data.datasets[2].data = [];
+    chartGrand.data.datasets[3].data = [];
+    chartGrand.data.datasets[4].data = [];
+    chartGrand.update();
+    return;
+  }
+
+  // Copies : buffer.labels et buffer.seuils sont partagés avec les petites
+  // cartes, les prolonger en place corromprait leur affichage.
+  const labelsPrediction = prediction.instants.map((i) => i.toLocaleTimeString("fr-FR"));
+  // Le dataset prédiction est vide sur toute la portion réelle sauf son dernier
+  // point, repris tel quel : le trait pointillé démarre exactement là où le
+  // trait plein s'arrête, sans trou entre les deux courbes.
+  const avantPrediction = new Array(Math.max(0, valeurs.length - 1)).fill(null);
+  const derniereValeurReelle = valeurs[valeurs.length - 1] ?? null;
+  const amorce = valeurs.length > 0 ? [...avantPrediction, derniereValeurReelle] : [];
+
+  chartGrand.data.labels = [...buffer.labels, ...labelsPrediction];
+  chartGrand.data.datasets[0].data = valeurs;
+  chartGrand.data.datasets[1].data = [...buffer.seuils, ...labelsPrediction.map(() => capacite)];
+  chartGrand.data.datasets[2].data = [...amorce, ...prediction.valeurs];
+  chartGrand.data.datasets[3].data = [...amorce, ...prediction.bornesHautes];
+  chartGrand.data.datasets[4].data = [...amorce, ...prediction.bornesBasses];
   chartGrand.update();
 }
 
@@ -1029,6 +1165,18 @@ onBeforeUnmount(() => {
 .legende-trait.orange {
   border-color: #f59e0b;
   border-top-style: dashed;
+}
+
+.legende-trait.violet {
+  border-color: #a78bfa;
+  border-top-style: dashed;
+}
+
+.legende-bande {
+  width: 16px;
+  height: 8px;
+  background: rgba(167, 139, 250, 0.3);
+  border-radius: 2px;
 }
 
 .confiance-liste {

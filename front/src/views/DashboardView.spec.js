@@ -257,6 +257,133 @@ describe("DashboardView", () => {
     expect(api.get).toHaveBeenCalledWith("/sites/SITE002/measurements", { params: { depuis_minutes: 2 } });
   });
 
+  // Le grand graphique de la puissance appelée est prolongé par une prédiction
+  // mockée (aucun modèle ML côté backend) : trait pointillé + bande
+  // d'incertitude, à la suite des mesures réelles.
+  function graphiqueGrand() {
+    return chartInstances.filter((c) => !c.destroyed).find((c) => c.options.scales.x.display !== false);
+  }
+
+  function mesuresSurUneHeure({ n = 20, base = 100 } = {}) {
+    const mesures = [];
+    for (let i = n; i > 0; i--) {
+      mesures.push({ ...MESURE_OK, timestamp: new Date(Date.now() - i * 60_000).toISOString(), consumption_kw: base + (i % 3) });
+    }
+    return mesures;
+  }
+
+  it("prolonge la puissance appelée par une prédiction, à la suite des mesures réelles", async () => {
+    const reelles = mesuresSurUneHeure({ n: 20, base: 100 });
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: reelles }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+    await wrapper.find(".select-fenetre").setValue(String(60 * 60 * 1000)); // 1 h
+    await flushPromises();
+
+    const grand = graphiqueGrand();
+    const [reel, , prediction, bornesHautes, bornesBasses] = grand.data.datasets.map((d) => d.data);
+
+    // 20 points réels + 60 points de prédiction sur l'axe des abscisses.
+    expect(grand.data.labels).toHaveLength(80);
+    expect(reel).toHaveLength(20);
+    expect(prediction).toHaveLength(80);
+    // Vide sur la portion réelle sauf le dernier point, repris tel quel pour que
+    // le pointillé démarre exactement là où le trait plein s'arrête.
+    expect(prediction.slice(0, 19).every((v) => v === null)).toBe(true);
+    expect(prediction[19]).toBe(reelles[reelles.length - 1].consumption_kw);
+    expect(prediction.slice(20).every((v) => typeof v === "number")).toBe(true);
+
+    // La bande d'incertitude encadre la prédiction sur tout l'horizon.
+    for (let i = 20; i < 80; i++) {
+      expect(bornesBasses[i]).toBeLessThanOrEqual(prediction[i]);
+      expect(bornesHautes[i]).toBeGreaterThanOrEqual(prediction[i]);
+    }
+  });
+
+  it("borne la prédiction par la puissance souscrite du site", async () => {
+    // SITE001 : capacity_kw 200, mesures à 198-200 kW — même bruitée, aucune
+    // valeur prédite ne doit dépasser le plafond contractuel ni passer sous 0.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure({ base: 198 }) }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+    await wrapper.find(".select-fenetre").setValue(String(60 * 60 * 1000)); // 1 h
+    await flushPromises();
+
+    const prediction = graphiqueGrand().data.datasets[2].data.slice(20);
+    expect(prediction).toHaveLength(60);
+    for (const v of prediction) {
+      expect(v).toBeLessThanOrEqual(200);
+      expect(v).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("ne prédit que la puissance appelée, jamais les autres métriques", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+    expect(graphiqueGrand().data.datasets.some((d) => d.label === "Prédiction ML")).toBe(true);
+    expect(wrapper.text()).toContain("prédiction ML");
+
+    const carteTension = wrapper.findAll(".graphique-carte").find((c) => c.text().includes("Tension"));
+    await carteTension.trigger("click");
+    await flushPromises();
+
+    // La tension n'a ni prédiction ni seuil : un seul dataset, celui des mesures.
+    expect(graphiqueGrand().data.datasets.some((d) => d.label === "Prédiction ML")).toBe(false);
+    expect(wrapper.text()).not.toContain("prédiction ML");
+  });
+
+  it("laisse les petites cartes en sparkline, sans prédiction", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+
+    // chartInstances[0] = petite carte "Puissance appelée" : mesure + seuil, rien d'autre.
+    expect(chartInstances[0].data.datasets.map((d) => d.label)).toEqual([
+      "Puissance appelée",
+      "Puissance souscrite (kW)",
+    ]);
+  });
+
+  it("n'affiche aucune prédiction tant qu'aucune mesure n'a de valeur", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () =>
+          Promise.resolve({ data: [{ ...MESURE_OK, consumption_kw: null, data_quality: "critical" }] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+
+    expect(graphiqueGrand().data.datasets[2].data).toEqual([]);
+  });
+
   it("affiche un message d'erreur si le chargement des sites échoue", async () => {
     api.get.mockRejectedValueOnce(new Error("boom"));
 
