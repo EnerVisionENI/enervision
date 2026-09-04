@@ -81,6 +81,11 @@ services:
     build:
       context: ./api
       dockerfile: Dockerfile
+    # Sans API_IMAGE, on retombe sur un tag local et `up -d --build` fonctionne
+    # comme avant (dev). En CI, API_IMAGE pointe sur ghcr.io/...:sha-<commit>,
+    # ce qui permet de `pull` l'image déjà buildée et scannée au lieu de la
+    # reconstruire (cf. .github/workflows/ci-cd.yml).
+    image: ${API_IMAGE:-enervision-api:local}
     container_name: enervision-api
     ports:
       - "8000:8000"
@@ -102,6 +107,8 @@ services:
     build:
       context: .
       dockerfile: front/Dockerfile
+    # Voir le commentaire sur api.image.
+    image: ${FRONT_IMAGE:-enervision-front:local}
     container_name: enervision-front
     ports:
       - "3000:80"
@@ -123,7 +130,7 @@ services:
     build:
       context: ./etl
       dockerfile: Dockerfile
-    image: enervision-etl:local
+    image: ${ETL_IMAGE:-enervision-etl:local}
     container_name: enervision-etl-collect
     profiles: ["etl"]
     # Aucun volume : bronze, silver, gold, quarantine et l'état incrémental
@@ -177,7 +184,7 @@ services:
     build:
       context: ./etl
       dockerfile: Dockerfile
-    image: enervision-etl:local
+    image: ${ETL_IMAGE:-enervision-etl:local}
     container_name: enervision-etl-alerts
     profiles: ["etl"]
     command: ["python", "alerts.py"]
@@ -213,7 +220,7 @@ services:
     build:
       context: ./etl
       dockerfile: Dockerfile
-    image: enervision-etl:local
+    image: ${ETL_IMAGE:-enervision-etl:local}
     container_name: enervision-etl-sites
     profiles: ["etl"]
     command: ["python", "sites.py"]
