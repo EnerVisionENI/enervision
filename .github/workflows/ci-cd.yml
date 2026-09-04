@@ -268,14 +268,32 @@ jobs:
           clean: false
 
       - name: Restore production env file
-        uses: ./.github/actions/restore-env
-        with:
-          postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
-          jwt_secret_key: ${{ secrets.JWT_SECRET_KEY }}
-          ingest_api_key: ${{ secrets.INGEST_API_KEY }}
-          minio_root_password: ${{ secrets.MINIO_ROOT_PASSWORD }}
-          azure_storage_key: ${{ secrets.AZURE_STORAGE_KEY }}
-          rclone_crypt_password_raw: ${{ secrets.RCLONE_CRYPT_PASSWORD_RAW }}
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+          INGEST_API_KEY: ${{ secrets.INGEST_API_KEY }}
+          MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
+          AZURE_STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
+          RCLONE_CRYPT_PASSWORD_RAW: ${{ secrets.RCLONE_CRYPT_PASSWORD_RAW }}
+        run: |
+          set -e
+          # Valeurs non sensibles (versionnées) + mots de passe/clés (secrets
+          # GitHub Actions) concaténés en un seul .env racine.
+          #
+          # Dupliqué à l'identique dans le job deploy (volontairement, pas une
+          # dette technique) : garder ce step inline plutôt que dans une action
+          # composite partagée limite le rayon d'impact si ce job e2e (déclenché
+          # sur pull_request) était un jour compromis — une action partagée
+          # modifiée affecterait test-e2e ET deploy en même temps.
+          cp infra/env/production.env .env
+          {
+            echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
+            echo "JWT_SECRET_KEY=$JWT_SECRET_KEY"
+            echo "INGEST_API_KEY=$INGEST_API_KEY"
+            echo "MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD"
+            echo "AZURE_STORAGE_KEY=$AZURE_STORAGE_KEY"
+            echo "RCLONE_CRYPT_PASSWORD_RAW=$RCLONE_CRYPT_PASSWORD_RAW"
+          } >> .env
 
       - name: Start ephemeral stack (compose.ci.yml)
         run: |
@@ -338,14 +356,29 @@ jobs:
           clean: false
 
       - name: Restore production env file
-        uses: ./.github/actions/restore-env
-        with:
-          postgres_password: ${{ secrets.POSTGRES_PASSWORD }}
-          jwt_secret_key: ${{ secrets.JWT_SECRET_KEY }}
-          ingest_api_key: ${{ secrets.INGEST_API_KEY }}
-          minio_root_password: ${{ secrets.MINIO_ROOT_PASSWORD }}
-          azure_storage_key: ${{ secrets.AZURE_STORAGE_KEY }}
-          rclone_crypt_password_raw: ${{ secrets.RCLONE_CRYPT_PASSWORD_RAW }}
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+          INGEST_API_KEY: ${{ secrets.INGEST_API_KEY }}
+          MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
+          AZURE_STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
+          RCLONE_CRYPT_PASSWORD_RAW: ${{ secrets.RCLONE_CRYPT_PASSWORD_RAW }}
+        run: |
+          set -e
+          # Valeurs non sensibles (versionnées) + mots de passe/clés (secrets
+          # GitHub Actions) concaténés en un seul .env racine.
+          #
+          # Dupliqué à l'identique dans le job test-e2e (volontairement) : voir
+          # le commentaire équivalent là-bas.
+          cp infra/env/production.env .env
+          {
+            echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
+            echo "JWT_SECRET_KEY=$JWT_SECRET_KEY"
+            echo "INGEST_API_KEY=$INGEST_API_KEY"
+            echo "MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD"
+            echo "AZURE_STORAGE_KEY=$AZURE_STORAGE_KEY"
+            echo "RCLONE_CRYPT_PASSWORD_RAW=$RCLONE_CRYPT_PASSWORD_RAW"
+          } >> .env
 
       - name: Deploy with docker compose
         run: |
