@@ -41,13 +41,7 @@ ml/reports/*.json  # Rapports générés (sauf les .md versionés)
 data/
 tmp/
 bronze/
-
-# Exception : ml/data/csv/ est la seule base d'entraînement des modèles ML
-# (gold MinIO réel encore trop creux pour entraîner, voir ml/RAPPORT_ENTRAINEMENT.md) —
-# à versionner comme n'importe quel fichier de code, pas une donnée d'exploitation.
-!ml/data/
-!ml/data/csv/
-!ml/data/csv/**
+ml/data/csv/
 
 # IDE / OS
 # .vscode/tasks.json est versionné (tâches Docker partagées), le reste non.
