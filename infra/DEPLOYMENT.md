@@ -200,6 +200,31 @@ Pour ajouter des métriques applicatives plus tard (API FastAPI, PostgreSQL via
 `postgres-exporter`, …), déclarer le service dans `compose.yaml` avec
 `profiles: ["observability"]` et ajouter un bloc `scrape_configs`.
 
+**Prérequis hôte pour les métriques par conteneur (cAdvisor).** cAdvisor 0.49
+ne sait lire les couches d'images que via le *storage driver* classique
+`overlay2`. Si `docker info` affiche `Storage Driver: overlayfs`
+(= *containerd snapshotter*, défaut de Docker Engine ≥ 28), cAdvisor enregistre
+son *docker factory* mais **jette chaque conteneur** (`failed to identify the
+read-write layer ID … image/overlayfs/layerdb/…: no such file or directory`) :
+les métriques hôte (node-exporter) continuent, mais la row *Conteneurs* du
+dashboard reste vide. Repasser le démon en `overlay2` sur le serveur :
+
+```bash
+# /etc/docker/daemon.json — ajouter (ou fusionner) :
+{ "features": { "containerd-snapshotter": false } }
+
+sudo systemctl restart docker
+docker info --format '{{.Driver}}'      # doit afficher: overlay2
+```
+
+`systemctl restart docker` arrête tous les conteneurs le temps du redémarrage,
+et les images du *containerd store* ne sont plus visibles par le store
+`overlay2` : le `docker compose … up -d --build` suivant les reconstruit /
+re-télécharge. À faire pendant une fenêtre de maintenance. Une fois en
+`overlay2`, `container_*{name="enervision-api"}` etc. se peuplent avec la config
+`cadvisor` en place (elle force déjà `DOCKER_API_VERSION=1.44`, sans quoi
+Engine ≥ 25 refuse le client de cAdvisor).
+
 **Activer en production (CI/CD).** Le profile `observability` n'est pas déployé
 par défaut. Pour l'ajouter :
 
