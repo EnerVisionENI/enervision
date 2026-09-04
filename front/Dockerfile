@@ -1,5 +1,8 @@
 # Build stage
-FROM node:20-alpine AS builder
+# Node 20 est EOL (avril 2026) et ne satisfait plus les engines de certaines
+# deps transitives (js-beautify -> nopt -> abbrev, qui exigent >=22.22 /
+# >=24.15 / >=26) : aligné sur le node-version de ci-cd.yml (build-front).
+FROM node:24-alpine AS builder
 
 WORKDIR /app
 

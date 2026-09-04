@@ -135,7 +135,10 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Node 20 est EOL (avril 2026) et ne satisfait plus les engines de
+          # certaines deps transitives (js-beautify -> nopt -> abbrev, qui
+          # exigent >=22.22 / >=24.15 / >=26) : alignée sur front/Dockerfile.
+          node-version: '24'
           cache: npm
           cache-dependency-path: front/package-lock.json
 
