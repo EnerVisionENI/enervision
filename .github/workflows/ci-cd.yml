@@ -301,6 +301,12 @@ jobs:
           path: trivy-${{ matrix.name }}.json
           retention-days: 30
 
+      # trivyignores n'est renseigne que pour l'image ml : les exceptions y sont justifiees
+      # une par une avec une date d'expiration (voir .trivy/ml.trivyignore.yaml). Une chaine
+      # vide equivaut a l'absence de fichier, donc api/front/etl restent scannees sans aucune
+      # derogation — une CVE masquee pour ml ne doit pas l'etre pour les autres.
+      #
+      # Volontairement absent du step precedent : le rapport JSON archive doit rester complet.
       - name: Trivy scan (fail on CRITICAL/HIGH)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -310,6 +316,7 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
+          trivyignores: ${{ matrix.name == 'ml' && '.trivy/ml.trivyignore.yaml' || '' }}
 
       - name: Publish results to job summary
         if: always()
