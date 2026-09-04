@@ -370,19 +370,17 @@ services:
       - enervision-network
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    # >= 0.50 : négocie l'API Docker (Engine >= 28 refuse l'API 1.41 que
+    # cAdvisor 0.49 code en dur — son "docker factory" échoue alors à
+    # s'enregistrer, les séries container_* sortent sans label `name` et le
+    # dashboard, qui filtre sur {name!=""}, reste vide).
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
     container_name: enervision-cadvisor
     profiles: ["observability"]
     restart: unless-stopped
     privileged: true
     devices:
       - /dev/kmsg
-    environment:
-      # Docker Engine >= 25 impose une API >= 1.44 ; cAdvisor 0.49 négocie en
-      # 1.41 et son "docker factory" échoue alors à s'enregistrer (les séries
-      # container_* sortent sans label `name`, le dashboard filtre sur
-      # {name!=""} → vide). On force une version supportée.
-      DOCKER_API_VERSION: "1.44"
     command:
       # Ne remonter que les conteneurs Docker (pas tous les cgroups système).
       - "--docker_only=true"
