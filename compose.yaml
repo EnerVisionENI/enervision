@@ -322,7 +322,11 @@ services:
     build:
       context: ./ml
       dockerfile: Dockerfile
-    image: enervision-ml:local
+    # Même mécanique que api/front/etl : sans ML_IMAGE on retombe sur un tag local
+    # (dev, `up -d --build`), et en CI ML_IMAGE pointe sur ghcr.io/...:sha-<commit>
+    # pour que le deploy `pull` l'image déjà buildée et scannée — ce job passe
+    # `--no-build` et ne sait pas construire (cf. .github/workflows/ci-cd.yml).
+    image: ${ML_IMAGE:-enervision-ml:local}
     container_name: enervision-ml-predict
     profiles: ["mlflow"]
     # Surcharge le CMD de l'image (train.py) : ici on veut le planificateur, pas un entraînement.

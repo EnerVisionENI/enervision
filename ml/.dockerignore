@@ -1,0 +1,13 @@
+# Contexte de build de l'image ML (context: ./ml). Le Dockerfile fait un `COPY . .` :
+# sans ce filtre, un simple __pycache__ modifié invalide la couche de copie et le
+# cache de build GHCR, alors que rien d'utile n'a changé.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+# Rapports générés (les .md versionnés restent utiles comme doc, les .json non).
+reports/*.json
+# Jeu d'entraînement : hors git, et l'inférence n'en a pas besoin.
+data/
+mlflow.db
+mlruns/
