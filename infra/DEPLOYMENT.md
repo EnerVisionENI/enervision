@@ -5,18 +5,75 @@
 Le dépôt contient une pipeline GitHub Actions unique dans `.github/workflows/ci-cd.yml`.
 
 - Sur chaque pull request vers `dev` ou `main` : tests API (lint + pytest), tests ETL (lint + pytest), tests
-  du script de sauvegarde, build + tests + lint du frontend, scan de sécurité Trivy sur les 3 images Docker,
-  puis tests end-to-end sur une stack éphémère jetable (voir `compose.ci.yml`).
+  du script de sauvegarde, build + tests + lint du frontend, puis le job `build` (construction des 3 images,
+  scan de sécurité Trivy, publication sur GHCR), puis tests end-to-end sur une stack éphémère jetable
+  (voir `compose.ci.yml`).
 - Sur chaque push vers `dev` (donc aussi après un merge de PR) : la même chaîne de vérifications, puis un
   déploiement automatique sur le serveur si — et seulement si — les tests end-to-end sont passés.
 - Rescan de sécurité Trivy quotidien sur `main` (CVE publiées depuis le dernier build, sans rebuild de code).
 
+### Registry d'images (GHCR)
+
+Les images sont construites **une seule fois par run**, dans le job `build`, et publiées sur
+GitHub Container Registry :
+
+| Image | Référence |
+|-------|-----------|
+| API   | `ghcr.io/enervisionani/enervision-api` |
+| Front | `ghcr.io/enervisionani/enervision-front` |
+| ETL   | `ghcr.io/enervisionani/enervision-etl` |
+
+Chaque image porte un tag immuable `sha-<commit>`, plus un tag mouvant `dev` / `main` sur push de branche.
+`test-e2e` et `deploy` font un `docker pull` du tag `sha-<commit>` du run : ils ne reconstruisent plus rien.
+
+Deux raisons à ce découpage :
+
+1. **Le scan Trivy et les tests e2e portent enfin sur l'artefact déployé.** Avant, chaque job rebuildait ses
+   propres images : celle scannée, celle testée et celle mise en prod étaient trois builds distincts du même
+   Dockerfile, et une base image ou une dépendance transitive peut bouger entre deux builds.
+2. **Le déploiement ne compile plus sur le serveur de prod.** Le job `deploy` se réduit à un `pull` + un `up`.
+
+L'ordre est **build → scan → push** : une image qui échoue au scan `CRITICAL/HIGH` n'atteint jamais la
+registry. L'authentification utilise le `GITHUB_TOKEN` du run (permission `packages: write` sur le seul job
+`build`) — aucun PAT à créer ni à faire tourner.
+
+Les images sont **privées** par défaut, héritant de la visibilité du dépôt. Pour un `docker pull` manuel
+depuis un poste :
+
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u <votre-login> --password-stdin
+docker pull ghcr.io/enervisionani/enervision-api:dev
+```
+
+(le token doit porter le scope `read:packages`).
+
+#### Rollback
+
+C'est le principal gain opérationnel : revenir à une version précédente ne demande plus de rebuild, seulement
+de repointer les tags. Sur le serveur, à la racine du dépôt :
+
+```bash
+export API_IMAGE=ghcr.io/enervisionani/enervision-api:sha-<commit-connu-bon>
+export FRONT_IMAGE=ghcr.io/enervisionani/enervision-front:sha-<commit-connu-bon>
+export ETL_IMAGE=ghcr.io/enervisionani/enervision-etl:sha-<commit-connu-bon>
+docker compose --profile etl --profile audit --profile proxy --profile mlflow pull
+docker compose --profile etl --profile audit --profile proxy --profile mlflow up -d --no-build
+```
+
+Ces trois variables sont celles que `compose.yaml` interpole dans les champs `image:` des services buildés.
+Non définies, elles retombent sur des tags locaux (`enervision-api:local`, …), donc **le workflow de dev local
+ne change pas** : `docker compose up -d --build` continue de builder depuis les sources.
+
+### Runner self-hosted
+
 Le serveur de déploiement (`10.105.200.44`) n'est joignable que depuis le réseau interne : le job `deploy`
 tourne donc sur un **runner GitHub Actions self-hosted installé directement sur ce serveur**, plutôt que sur
 un runner hébergé (`ubuntu-latest`) qui ne pourrait pas l'atteindre en SSH. Le job fait un `actions/checkout`,
-assemble le fichier `.env` de prod (racine) à partir de secrets GitHub Actions, puis lance
-`docker compose --profile etl --profile audit --profile proxy up -d --build`
-(ou `docker-compose` si le plugin `docker compose` v2 n'est pas installé).
+assemble le fichier `.env` de prod (racine) à partir de secrets GitHub Actions, se connecte à GHCR, puis lance
+`docker compose --profile etl --profile audit --profile proxy --profile mlflow pull` suivi de
+`… up -d --no-build --remove-orphans`
+(ou `docker-compose` si le plugin `docker compose` v2 n'est pas installé). Le `pull` est séparé du `up` pour
+que la stack en cours reste intacte si la registry est injoignable.
 
 Toute la stack est décrite dans un unique `compose.yaml` à la racine du dépôt. Les services optionnels sont
 derrière des profils Compose :

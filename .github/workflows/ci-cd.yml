@@ -1,8 +1,18 @@
 # Pipeline unique : remplace deploy-dev.yml + trivy.yml + etl-ci.yml.
 #
 #   test-api ┐
-#   test-etl ├─→ trivy ─→ test-e2e (stack éphémère, compose.ci.yml) ─→ deploy
+#   test-etl ├─→ build (build → Trivy → push GHCR) ─→ test-e2e ─→ deploy
 #   build-front ┘
+#
+# Les images sont construites UNE SEULE FOIS, dans le job `build`, taguées par
+# SHA de commit et poussées sur ghcr.io. test-e2e et deploy les `pull` — ils ne
+# reconstruisent plus rien. C'est ce qui rend le scan Trivy et les tests e2e
+# valables : l'artefact scanné, l'artefact testé et l'artefact déployé sont le
+# même digest, pas trois builds successifs d'un même Dockerfile (une base image
+# ou une dépendance transitive peut bouger entre deux builds).
+#
+# Ordre build → scan → push (et pas push → scan) : une image qui échoue au scan
+# CRITICAL/HIGH n'atteint jamais la registry.
 #
 # test-e2e tourne contre une copie jetable de la stack (ports/volumes/noms de
 # conteneurs distincts, cf. compose.ci.yml), jamais contre la vraie prod. Si les
@@ -29,6 +39,12 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  REGISTRY: ghcr.io
+  # Tag immuable : un tag mouvant (`dev`, `latest`) ne permettrait pas de
+  # garantir que deploy récupère l'image que Trivy a scannée dans CE run.
+  IMAGE_TAG: sha-${{ github.sha }}
 
 jobs:
   test-api:
@@ -158,14 +174,22 @@ jobs:
         working-directory: front
         run: npm run build
 
-  trivy:
-    name: Trivy scan (${{ matrix.name }})
+  build:
+    name: Build + scan + push (${{ matrix.name }})
     # Tourne toujours, y compris sur le cron nocturne (rescan de main) : c'est le
-    # seul job que le déclenchement `schedule` doit exécuter.
+    # seul job que le déclenchement `schedule` doit exécuter. Sur `schedule`, on
+    # rebuild depuis les sources pour rescanner, mais on ne pousse rien (le code
+    # n'a pas changé — seule la base de CVE a bougé), cf. le step de push.
     needs: [test-api, test-etl, test-backup, build-front]
     if: always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Nécessaire pour pousser sur ghcr.io avec le GITHUB_TOKEN du run : pas de
+      # PAT à gérer ni à faire tourner. Accordé ici seulement, pas au niveau du
+      # workflow — les jobs de test n'ont aucune raison d'écrire dans la registry.
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -188,6 +212,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # ghcr.io refuse un namespace contenant des majuscules, et
+      # github.repository_owner vaut "EnerVisionENI". Actions n'a pas de
+      # fonction toLower() dans les expressions : on le calcule en shell.
+      - name: Compute image reference
+        run: |
+          set -e
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE=${REGISTRY}/${owner}/enervision-${{ matrix.name }}" >> "$GITHUB_ENV"
+
       - name: Cache Trivy vulnerability DB
         uses: actions/cache@v4
         with:
@@ -196,6 +229,12 @@ jobs:
           restore-keys: |
             trivy-db-
 
+      # push: false / load: true — l'image reste sur le runner le temps du scan.
+      # Le push a lieu plus bas, seulement si Trivy passe.
+      #
+      # Le cache GHA remplace le cache de couches qu'on avait "gratuitement"
+      # avant sur le runner self-hosted (quand deploy faisait le build) : sans
+      # lui, chaque run repartirait d'un pip install / npm ci à froid.
       - name: Build ${{ matrix.name }} image
         uses: docker/build-push-action@v6
         with:
@@ -203,12 +242,14 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: false
           load: true
-          tags: enervision-${{ matrix.name }}:scan
+          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
       - name: Trivy scan (full report, JSON)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: enervision-${{ matrix.name }}:scan
+          image-ref: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
           format: json
           output: trivy-${{ matrix.name }}.json
           severity: CRITICAL,HIGH,MEDIUM
@@ -225,7 +266,7 @@ jobs:
       - name: Trivy scan (fail on CRITICAL/HIGH)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: enervision-${{ matrix.name }}:scan
+          image-ref: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
           format: table
           output: trivy-${{ matrix.name }}.table.txt
           severity: CRITICAL,HIGH
@@ -240,9 +281,39 @@ jobs:
           cat trivy-${{ matrix.name }}.table.txt >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      # À partir d'ici, le scan est passé : l'image peut entrer dans la registry.
+      # Pas de push sur `schedule` (rien de nouveau à publier, cf. en-tête du job).
+      #
+      # Sur pull_request le push a bien lieu : test-e2e doit pouvoir pull l'image
+      # exacte qui vient d'être scannée. Le GITHUB_TOKEN d'une PR issue d'un fork
+      # est en lecture seule et ce step échouerait — le dépôt est privé et sans
+      # forks (même hypothèse que celle déjà assumée pour le runner self-hosted
+      # sur pull_request, cf. commentaire dans test-e2e).
+      - name: Log in to GHCR
+        if: github.event_name != 'schedule'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push ${{ matrix.name }} image
+        if: github.event_name != 'schedule'
+        run: |
+          set -e
+          docker push "${IMAGE}:${IMAGE_TAG}"
+
+          # Tag mouvant en plus du tag SHA, uniquement sur push de branche :
+          # confort pour identifier à l'oeil ce que porte dev/main dans l'UI des
+          # packages. Le pipeline, lui, ne s'appuie que sur le tag SHA.
+          if [ "${{ github.event_name }}" = "push" ]; then
+            docker tag "${IMAGE}:${IMAGE_TAG}" "${IMAGE}:${{ github.ref_name }}"
+            docker push "${IMAGE}:${{ github.ref_name }}"
+          fi
+
   test-e2e:
     name: E2E (stack éphémère)
-    needs: [trivy]
+    needs: [build]
     # Tourne aussi sur les PR (pas seulement sur push vers dev) : un e2e cassé ne
     # doit pas pouvoir être mergé sans avoir été vu. Concurrency dédiée ci-dessous
     # car compose.ci.yml utilise des noms de conteneurs/ports fixes (un seul
@@ -261,6 +332,10 @@ jobs:
     if: github.event_name == 'pull_request' || (github.ref == 'refs/heads/dev' && github.event_name != 'schedule')
     runs-on: self-hosted
     timeout-minutes: 20
+    permissions:
+      contents: read
+      # Lecture seule : ce job consomme les images, il n'en publie aucune.
+      packages: read
     concurrency:
       group: enervision-ci-e2e
       cancel-in-progress: false
@@ -298,11 +373,33 @@ jobs:
             echo "RCLONE_CRYPT_PASSWORD_RAW=$RCLONE_CRYPT_PASSWORD_RAW"
           } >> .env
 
+      - name: Compute image references
+        run: |
+          set -e
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          ns="${REGISTRY}/${owner}"
+          echo "API_IMAGE=${ns}/enervision-api:${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "ETL_IMAGE=${ns}/enervision-etl:${IMAGE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `pull` explicite puis `up --no-build` : les tests e2e tournent sur les
+      # images exactes que Trivy vient de valider, plus sur un rebuild local.
+      # API_IMAGE / ETL_IMAGE sont interpolées par compose dans compose.yaml
+      # (elles ont un défaut local pour le dev hors CI). front n'est pas démarré
+      # ici, donc FRONT_IMAGE n'est pas nécessaire (cf. compose.ci.yml).
       - name: Start ephemeral stack (compose.ci.yml)
         run: |
           set -e
           docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
-            up -d --build postgres minio minio-init api etl-collect etl-alerts etl-sites
+            pull postgres minio minio-init api etl-collect etl-alerts etl-sites
+          docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
+            up -d --no-build postgres minio minio-init api etl-collect etl-alerts etl-sites
 
       - name: Wait for API health
         run: |
@@ -347,9 +444,13 @@ jobs:
     # pour bypasser l'e2e même en dispatch.
     if: github.ref == 'refs/heads/dev' && github.event_name != 'schedule'
     runs-on: self-hosted
-    # 25 min : un up -d --build à froid (cache Docker vide) rebuild 3 images
-    # (api, etl, front) sous 3 profils — 15 min était trop juste dans ce cas.
-    timeout-minutes: 25
+    # Plus aucun build ici : le job ne fait qu'un pull + un up. Les 25 min
+    # d'avant couvraient un `up -d --build` à froid sur 3 images, ce qui n'a
+    # plus lieu d'être.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
 
     steps:
       - name: Checkout code
@@ -383,6 +484,26 @@ jobs:
             echo "RCLONE_CRYPT_PASSWORD_RAW=$RCLONE_CRYPT_PASSWORD_RAW"
           } >> .env
 
+      - name: Compute image references
+        run: |
+          set -e
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          ns="${REGISTRY}/${owner}"
+          echo "API_IMAGE=${ns}/enervision-api:${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "FRONT_IMAGE=${ns}/enervision-front:${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "ETL_IMAGE=${ns}/enervision-etl:${IMAGE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Le pull est séparé du up volontairement : s'il échoue (registry
+      # injoignable, image absente), la stack en cours n'est pas touchée et la
+      # prod continue de tourner sur la version précédente. Un `up` qui échoue à
+      # mi-chemin, lui, laisserait la stack à moitié recréée.
       - name: Deploy with docker compose
         run: |
           set -e
@@ -393,5 +514,7 @@ jobs:
             DOCKER_COMPOSE="docker-compose"
           fi
 
+          $DOCKER_COMPOSE --profile etl --profile audit --profile proxy --profile mlflow pull
+
           $DOCKER_COMPOSE --profile etl --profile audit --profile proxy --profile mlflow \
-            up -d --build --remove-orphans
+            up -d --no-build --remove-orphans
