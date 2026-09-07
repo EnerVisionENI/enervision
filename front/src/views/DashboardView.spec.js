@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { config, mount, flushPromises } from "@vue/test-utils";
+import { Interaction } from "chart.js/auto";
 import DashboardView from "./DashboardView.vue";
 import api from "../api/client";
 
@@ -31,7 +32,10 @@ vi.mock("chart.js/auto", () => {
       this.destroyed = true;
     }
   }
-  return { Chart: FakeChart };
+  // `Interaction.modes` est le registre des modes de survol de Chart.js : la vue y inscrit le
+  // sien au chargement du module, les tests le relisent par l'import ci-dessus pour l'appeler
+  // directement, sans canvas ni souris.
+  return { Chart: FakeChart, Interaction: { modes: {} } };
 });
 
 const SITES = [
@@ -600,14 +604,108 @@ describe("DashboardView", () => {
 
     expect(grand.options.interaction.mode).not.toBe("index");
     expect(grand.options.plugins.tooltip.mode).not.toBe("index");
-    expect(grand.options.interaction.mode).toBe("nearest");
-    expect(grand.options.interaction.axis).toBe("x");
+    // Mode maison, apparieur par horodatage : l'infobulle et le survol lisent le même.
+    expect(grand.options.plugins.tooltip.mode).toBe(grand.options.interaction.mode);
+    expect(Interaction.modes[grand.options.interaction.mode]).toBeTypeOf("function");
 
     // Le nombre de points diffère entre les séries : c'est précisément ce que le mode
     // "index" ne sait pas gérer, et ce qui doit rester vrai (on ne comble pas les minutes
     // sans prévision pour faire coïncider les longueurs).
     const [mesures, , prediction] = grand.data.datasets.map((d) => d.data);
     expect(mesures.length).not.toBe(prediction.length);
+  });
+
+  it("survole une série par le curseur sans avoir à viser le point, chacune à son pas", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+    const mode = Interaction.modes[graphiqueGrand().options.interaction.mode];
+
+    // Trois séries au même graphique, à trois pas différents : mesures tous les 10 px
+    // (la minute), prévision tous les 300 px (l'heure), seuil réduit aux deux bords de
+    // l'axe. Les abscisses sont des pixels, comme celles que Chart.js pose sur les points.
+    const chart = {
+      data: { datasets: [{}, { constante: true }, {}, { decoratif: true }] },
+      getSortedVisibleDatasetMetas: () => [
+        { index: 0, data: [{ x: 0 }, { x: 10 }, { x: 20 }, { x: 30 }, { x: 40 }] },
+        { index: 1, data: [{ x: 0 }, { x: 600 }] },
+        { index: 2, data: [{ x: 0 }, { x: 300 }, { x: 600 }] },
+        { index: 3, data: [{ x: 0 }, { x: 300 }, { x: 600 }] },
+      ],
+    };
+    const survol = (x) =>
+      mode(chart, { native: {}, x, y: 40 }).map(({ datasetIndex, index }) => [datasetIndex, index]);
+
+    // Curseur à 23 px, donc entre deux mesures et à 23 px de la première prévision : les
+    // deux séries répondent quand même, avec leur point le plus proche. C'est tout l'intérêt
+    // du mode — il n'y a plus à poser la souris sur le point.
+    expect(survol(23)).toEqual([
+      [0, 2],
+      [1, 0],
+      [2, 0],
+    ]);
+
+    // Passé la dernière mesure (40 px), la partie prédite n'a plus de mesure à montrer : la
+    // série des mesures se retire au lieu de reporter sa dernière valeur à une heure où elle
+    // n'existe pas. La prévision, elle, couvre l'axe par tranches de 150 px de part et
+    // d'autre de chaque point horaire.
+    expect(survol(200)).toEqual([
+      [1, 0],
+      [2, 0],
+    ]);
+    expect(survol(320)).toEqual([
+      [1, 1],
+      [2, 1],
+    ]);
+
+    // Le dataset 3 (borne de l'incertitude) n'apparaît dans aucun relevé : il ne sert qu'à
+    // remplir la bande, et l'activer ferait apparaître un point parasite sur sa lisière.
+    expect(survol(23).map(([datasetIndex]) => datasetIndex)).not.toContain(3);
+  });
+
+  it("lit la mesure, le seuil et la prévision dans une seule infobulle", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir({ n: 3 }) }),
+      },
+    });
+
+    await monterAvecPrevisionVisible();
+    const { filter, callbacks } = graphiqueGrand().options.plugins.tooltip;
+
+    const instantMesure = new Date("2026-09-07T09:23:00").getTime();
+    const instantPrevision = new Date("2026-09-07T09:00:00").getTime();
+    const items = [
+      { label: "07/09 09:23", parsed: { x: instantMesure, y: 182.4 }, dataset: { label: "Puissance appelée" } },
+      { label: "07/09 06:00", parsed: { x: instantMesure - 3 * 3600_000, y: 200 }, dataset: { label: "Puissance souscrite (kW)", constante: true } },
+      { label: "07/09 09:00", parsed: { x: instantPrevision, y: 178.2 }, dataset: { label: "Prévision" } },
+    ];
+
+    // Chart.js construit le titre avant le corps : l'ordre des appels ci-dessous est celui de
+    // l'infobulle réelle, dont les lignes se comparent à l'instant du titre.
+    expect(callbacks.title(items)).toBe("07/09 09:23");
+    expect(items.map(callbacks.label)).toEqual([
+      "Puissance appelée: 182 kW",
+      // Le seuil vaut autant à toute heure : l'horodatage de ses deux points, posés aux bords
+      // de l'axe, ne doit jamais s'afficher ni servir de titre.
+      "Puissance souscrite (kW): 200 kW",
+      // Le modèle est horaire : la ligne rappelle l'heure qu'elle prédit vraiment, plutôt que
+      // de se laisser lire comme une prévision à 09:23.
+      `Prévision (${new Date(instantPrevision).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}): 178 kW`,
+    ]);
+
+    expect(filter({ dataset: { decoratif: true } })).toBe(false);
+    expect(filter(items[2])).toBe(true);
   });
 
   it("place les points sur une échelle temporelle, pas catégorielle", async () => {
