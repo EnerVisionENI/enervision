@@ -551,9 +551,7 @@ def test_list_recommendations_signale_un_depassement_a_venir(client, db_session)
     make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
     headers = auth_headers(client, "viewer@enervision.fr", "password123")
     make_site(db_session, "SITE003", capacity_kw=800.0)
-    make_prediction(
-        db_session, "SITE003", datetime.now(UTC) + timedelta(hours=1), predicted_kwh=850.0, upper_90=900.0
-    )
+    make_prediction(db_session, "SITE003", datetime.now(UTC) + timedelta(hours=1), predicted_kwh=850.0, upper_90=900.0)
 
     reponse = client.get("/api/v1/sites/SITE003/recommendations", headers=headers)
 
@@ -571,9 +569,7 @@ def test_list_recommendations_ignore_les_heures_passees(client, db_session):
     make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
     headers = auth_headers(client, "viewer@enervision.fr", "password123")
     make_site(db_session, "SITE003", capacity_kw=800.0)
-    make_prediction(
-        db_session, "SITE003", datetime.now(UTC) - timedelta(hours=2), predicted_kwh=999.0, upper_90=999.0
-    )
+    make_prediction(db_session, "SITE003", datetime.now(UTC) - timedelta(hours=2), predicted_kwh=999.0, upper_90=999.0)
 
     assert client.get("/api/v1/sites/SITE003/recommendations", headers=headers).json() == []
 
@@ -605,8 +601,6 @@ def test_list_recommendations_rien_a_signaler_sous_le_seuil(client, db_session):
     make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
     headers = auth_headers(client, "viewer@enervision.fr", "password123")
     make_site(db_session, "SITE001", capacity_kw=200.0)
-    make_prediction(
-        db_session, "SITE001", datetime.now(UTC) + timedelta(hours=1), predicted_kwh=100.0, upper_90=150.0
-    )
+    make_prediction(db_session, "SITE001", datetime.now(UTC) + timedelta(hours=1), predicted_kwh=100.0, upper_90=150.0)
 
     assert client.get("/api/v1/sites/SITE001/recommendations", headers=headers).json() == []
