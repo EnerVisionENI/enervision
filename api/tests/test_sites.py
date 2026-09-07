@@ -345,9 +345,9 @@ def test_list_predictions_retourne_les_heures_a_venir(client, db_session):
     assert body[0]["model_version"] == "1"
 
 
-def test_list_predictions_exclut_les_heures_passees(client, db_session):
-    """La table conserve les heures passées pour comparer prévu et réalisé ; les servir ici
-    ferait rétropédaler la courbe du dashboard sur des prévisions périmées."""
+def test_list_predictions_exclut_les_heures_passees_par_defaut(client, db_session):
+    """Sans historique_heures, seul le futur est servi : un appelant qui ne demande pas le
+    passé ne doit pas le recevoir par surprise."""
     make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
     headers = auth_headers(client, "viewer@enervision.fr", "password123")
     make_prediction(db_session, "SITE001", datetime.now(UTC) - timedelta(hours=2), predicted_kwh=10.0)
@@ -429,3 +429,41 @@ def test_list_predictions_bornes_absentes_restent_nulles(client, db_session):
     assert body[0]["lower_90"] is None
     assert body[0]["upper_90"] is None
     assert body[0]["predicted_kwh"] == 50.0
+
+
+def test_list_predictions_historique_ramene_les_heures_passees(client, db_session):
+    """Les heures passées ne sont pas des prévisions périmées : chaque cycle réécrit le futur
+    et laisse le passé intact, donc une ligne passée reste la prévision réellement émise pour
+    cette heure-là. C'est ce qui permet de superposer prévu et réalisé sur le dashboard."""
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    make_prediction(db_session, "SITE001", datetime.now(UTC) - timedelta(hours=2), predicted_kwh=10.0)
+    make_prediction(db_session, "SITE001", datetime.now(UTC) + timedelta(hours=2), predicted_kwh=20.0)
+
+    response = client.get("/api/v1/sites/SITE001/predictions?historique_heures=6", headers=headers)
+
+    assert response.status_code == 200
+    assert [ligne["predicted_kwh"] for ligne in response.json()] == [10.0, 20.0]
+
+
+def test_list_predictions_historique_borne_la_profondeur(client, db_session):
+    """La borne est comptée depuis maintenant, pas depuis le plus ancien enregistrement :
+    demander 3 h ne doit pas ramener une prévision vieille de 10 h."""
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    make_prediction(db_session, "SITE001", datetime.now(UTC) - timedelta(hours=10), predicted_kwh=1.0)
+    make_prediction(db_session, "SITE001", datetime.now(UTC) - timedelta(hours=1), predicted_kwh=2.0)
+
+    response = client.get("/api/v1/sites/SITE001/predictions?historique_heures=3", headers=headers)
+
+    assert [ligne["predicted_kwh"] for ligne in response.json()] == [2.0]
+
+
+def test_list_predictions_historique_hors_bornes_rejete(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+
+    reponse = client.get("/api/v1/sites/SITE001/predictions?historique_heures=-1", headers=headers)
+    assert reponse.status_code == 422
+    reponse = client.get("/api/v1/sites/SITE001/predictions?historique_heures=999", headers=headers)
+    assert reponse.status_code == 422

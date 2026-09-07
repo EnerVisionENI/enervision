@@ -63,7 +63,7 @@
               </div>
               <div class="legende-graphe">
                 <div class="legende-item"><span class="legende-trait teal"></span>mesure réelle</div>
-                <template v-if="metriqueFocusInfo.avecPrediction && previsions.length > 0">
+                <template v-if="metriqueFocusInfo.avecPrediction && previsions.length > 0 && !previsionTropCourtePourFenetre">
                   <div class="legende-item">
                     <span class="legende-trait violet"></span>prévision ({{ infoPrevision.champion }} v{{
                       infoPrevision.model_version
@@ -89,6 +89,13 @@
               >
                 Aucune prévision pour ce site : son modèle exige une variable
                 (<code>solar_irradiance_wm2</code>) que la collecte ne fournit pas encore.
+              </p>
+              <p
+                v-else-if="metriqueFocusInfo.avecPrediction && previsionTropCourtePourFenetre"
+                class="note-prevision"
+              >
+                Prévision masquée sur cette fenêtre : le modèle est horaire. Choisissez 1 h ou
+                plus pour l'afficher.
               </p>
               <p
                 v-else-if="metriqueFocusInfo.avecPrediction && previsionSurDonneeSynthetique"
@@ -216,6 +223,9 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Chart } from "chart.js/auto";
+// Enregistre l'adaptateur de dates auprès de Chart.js (effet de bord, pas d'export) : sans lui
+// l'échelle de type "time" du grand graphique lève au premier rendu.
+import "chartjs-adapter-date-fns";
 import api from "../api/client";
 
 // etl-collect écrit measurements_silver environ une fois par minute — mais
@@ -354,13 +364,34 @@ const SEUIL_ALERTE_PARC = 0.9;
 const COULEUR_PREDICTION = "#a78bfa";
 const COULEUR_BANDE_PREDICTION = "rgba(167, 139, 250, 0.15)";
 
-// Horizon affiché, borné par la fenêtre d'historique : sur 6 h on prolonge de 6 h, sur 2 min
-// d'1 h (le plancher, puisqu'on ne sait pas prédire plus fin que l'heure). Reprend la règle
-// déjà appliquée à l'ancienne courbe simulée — la partie prédite n'écrase jamais l'historique.
+// La prévision vise un tiers de la largeur du graphique : sur une fenêtre W, prolonger de W/2
+// donne W/(W + W/2) = 2/3 d'historique pour 1/3 de prévision. Prolonger de W — ce que faisait
+// la version précédente — donnait moitié-moitié, où le futur pèse autant que le mesuré.
+//
+// Le plancher d'une heure reste : les modèles sont horaires, on ne sait pas prédire plus fin.
+// Il rend le tiers inatteignable sur la fenêtre 1 h (0,5 h arrondi à 1 h, soit la moitié) —
+// écart assumé, l'alternative étant de ne rien afficher sur cette fenêtre.
 const HEURES_PREVISION_MAX = 24;
+const PART_PREVISION = 0.5;
+
+// En deçà d'une heure d'historique, la prévision n'est pas tracée. Le pas des modèles est
+// l'heure : sur la fenêtre 2 min (celle par défaut), un seul point de prévision étendrait
+// l'axe temporel à 62 min et réduirait les mesures à 3 % de la largeur. Le problème est
+// symétrique de celui de l'échelle catégorielle — une durée y écrasait l'autre, ici c'est
+// l'inverse — et se règle en ne montrant la prévision qu'aux fenêtres où elle a une place.
+const FENETRE_MIN_PREVISION_MS = 60 * 60 * 1000;
 
 function heuresPrevisionPour(fenetreMs) {
-  return Math.min(HEURES_PREVISION_MAX, Math.max(1, Math.round(fenetreMs / (60 * 60 * 1000))));
+  const heures = (fenetreMs / (60 * 60 * 1000)) * PART_PREVISION;
+  return Math.min(HEURES_PREVISION_MAX, Math.max(1, Math.round(heures)));
+}
+
+// Profondeur de prévisions passées demandée à l'API : toute la fenêtre affichée, pour que la
+// courbe prédite couvre exactement la même période que les mesures et qu'on puisse lire l'écart
+// entre prévu et réalisé sur toute la largeur. Arrondi au-dessus, une fenêtre partiellement
+// couverte laissant un blanc au bord gauche.
+function heuresHistoriquePrevisionPour(fenetreMs) {
+  return Math.min(168, Math.max(1, Math.ceil(fenetreMs / (60 * 60 * 1000))));
 }
 
 function libelleRaison(raison) {
@@ -408,6 +439,7 @@ const raisonsQualite = computed(() => derniereRaisons.value.map(libelleRaison).j
 // CSV synthétique — sans ce rappel, ces courbes passeraient pour des prévisions validées.
 const infoPrevision = computed(() => previsions.value[0] ?? null);
 const previsionSurDonneeSynthetique = computed(() => infoPrevision.value?.data_source === "csv_synthetic");
+const previsionTropCourtePourFenetre = computed(() => fenetreMs.value < FENETRE_MIN_PREVISION_MS);
 
 const suffixeUnite = computed(() =>
   metriqueFocusInfo.value.unite ? `${metriqueFocusInfo.value.unite} · dernière mesure` : "dernière mesure"
@@ -561,7 +593,23 @@ function creerGraphiqueGrand() {
       // fin).
       interaction: { mode: "index", intersect: false },
       scales: {
-        x: { ticks: { color: "#6b7a99" }, grid: { color: "#1f2b42" } },
+        // Échelle temporelle et non catégorielle : les mesures arrivent à la minute, la
+        // prévision à l'heure. Sur une échelle catégorielle, chaque point occupe la même
+        // largeur quelle que soit la durée qu'il représente — 6 h de prévision (6 points)
+        // se tassaient sur 1,6 % de l'axe face à 6 h de mesures (360 points), donnant une
+        // courbe illisible et un pic qui paraissait instantané alors qu'il s'étale sur
+        // une heure. En "time", chaque point est placé à son horodatage réel.
+        x: {
+          type: "time",
+          time: {
+            // Pas d'unité imposée : Chart.js l'adapte à l'étendue affichée, de la fenêtre
+            // 2 min à la journée. Formats numériques, donc pas de locale à charger.
+            displayFormats: { minute: "HH:mm", hour: "HH:mm", day: "dd/MM" },
+            tooltipFormat: "dd/MM HH:mm",
+          },
+          ticks: { color: "#6b7a99", maxRotation: 0, autoSkip: true },
+          grid: { color: "#1f2b42" },
+        },
         y: {
           beginAtZero: m.debuteAZero,
           ticks: { color: "#6b7a99" },
@@ -600,7 +648,7 @@ function rafraichirGraphiqueGrand() {
   const valeurs = buffer.metriques[m.cle];
 
   if (!m.avecPrediction) {
-    chartGrand.data.labels = buffer.labels;
+    chartGrand.data.labels = buffer.instants;
     chartGrand.data.datasets[0].data = valeurs;
     if (m.avecSeuil) chartGrand.data.datasets[1].data = buffer.seuils;
     chartGrand.update();
@@ -608,18 +656,15 @@ function rafraichirGraphiqueGrand() {
   }
 
   const capacite = siteActuel.value?.capacity_kw ?? null;
-  // Une prévision antérieure au dernier point mesuré ne se dessine pas à droite de la courbe :
-  // l'API borne déjà à target_ts >= maintenant, mais l'historique peut contenir des points plus
-  // récents que le début de l'horizon (prévision calculée à H+20, mesures reçues depuis).
-  const dernierInstantReel = buffer.instants[buffer.instants.length - 1] ?? null;
-  const aVenir = previsions.value.filter(
-    (ligne) => !dernierInstantReel || new Date(ligne.target_ts) > dernierInstantReel
-  );
+  // Passé compris : l'API renvoie aussi les heures écoulées (historique_heures), qui ne sont
+  // pas des prévisions périmées mais celles réellement émises pour ces heures-là. Les tracer
+  // en regard des mesures est le seul moyen de voir, à l'œil, si le modèle tombe juste.
+  const lignes = previsionTropCourtePourFenetre.value ? [] : previsions.value;
 
-  if (aVenir.length === 0) {
+  if (lignes.length === 0) {
     // Site sans modèle inférable, ou API en échec : on n'invente rien, la courbe s'arrête
     // simplement au dernier point mesuré. Le message d'explication est dans le template.
-    chartGrand.data.labels = buffer.labels;
+    chartGrand.data.labels = buffer.instants;
     chartGrand.data.datasets[0].data = valeurs;
     chartGrand.data.datasets[1].data = buffer.seuils;
     chartGrand.data.datasets[2].data = [];
@@ -629,25 +674,35 @@ function rafraichirGraphiqueGrand() {
     return;
   }
 
-  // Copies : buffer.labels et buffer.seuils sont partagés avec les petites
-  // cartes, les prolonger en place corromprait leur affichage.
-  const labelsPrediction = aVenir.map((ligne) => new Date(ligne.target_ts).toLocaleTimeString("fr-FR"));
-  // Le dataset prédiction est vide sur toute la portion réelle sauf son dernier
-  // point, repris tel quel : le trait pointillé démarre exactement là où le
-  // trait plein s'arrête, sans trou entre les deux courbes.
-  const avantPrediction = new Array(Math.max(0, valeurs.length - 1)).fill(null);
-  const derniereValeurReelle = valeurs[valeurs.length - 1] ?? null;
-  const amorce = valeurs.length > 0 ? [...avantPrediction, derniereValeurReelle] : [];
-
+  // Points {x, y} et non tableaux alignés sur `labels` : les prévisions sont horaires, les
+  // mesures à la minute, et les deux séries ne partagent aucun horodatage. Les faire cohabiter
+  // dans un tableau indexé imposerait de combler chaque minute sans prévision — soit inventer
+  // une résolution que le modèle n'a pas. Sur une échelle temporelle, chaque série porte ses
+  // propres abscisses et Chart.js les place côte à côte.
+  //
   // lower_90/upper_90 sont NULL quand le run MLflow ne porte pas de marge conforme. On propage
   // le null plutôt que de replier la borne sur la valeur centrale, ce qui dessinerait une bande
   // d'épaisseur nulle — soit visuellement une prévision certaine.
-  chartGrand.data.labels = [...buffer.labels, ...labelsPrediction];
+  const enPoints = (champ) =>
+    lignes.map((ligne) => ({ x: new Date(ligne.target_ts), y: ligne[champ] ?? null }));
+
+  // Le seuil ne se dessine plus point par point : deux extrémités suffisent à tracer une
+  // horizontale, et elle doit couvrir la partie prédite, que `buffer.seuils` ne connaît pas.
+  const debutVisible = buffer.instants[0] ?? new Date(lignes[0].target_ts);
+  const finVisible = new Date(lignes[lignes.length - 1].target_ts);
+
+  chartGrand.data.labels = buffer.instants;
   chartGrand.data.datasets[0].data = valeurs;
-  chartGrand.data.datasets[1].data = [...buffer.seuils, ...labelsPrediction.map(() => capacite)];
-  chartGrand.data.datasets[2].data = [...amorce, ...aVenir.map((ligne) => ligne.predicted_kwh)];
-  chartGrand.data.datasets[3].data = [...amorce, ...aVenir.map((ligne) => ligne.upper_90 ?? null)];
-  chartGrand.data.datasets[4].data = [...amorce, ...aVenir.map((ligne) => ligne.lower_90 ?? null)];
+  chartGrand.data.datasets[1].data =
+    capacite === null
+      ? []
+      : [
+          { x: debutVisible, y: capacite },
+          { x: finVisible, y: capacite },
+        ];
+  chartGrand.data.datasets[2].data = enPoints("predicted_kwh");
+  chartGrand.data.datasets[3].data = enPoints("upper_90");
+  chartGrand.data.datasets[4].data = enPoints("lower_90");
   chartGrand.update();
 }
 
@@ -809,7 +864,10 @@ async function chargerPrevisions(siteId) {
   // afficherait la courbe d'un site sur les mesures d'un autre.
   try {
     const { data } = await api.get(`/sites/${siteId}/predictions`, {
-      params: { horizon_heures: heuresPrevisionPour(fenetreMs.value) },
+      params: {
+        horizon_heures: heuresPrevisionPour(fenetreMs.value),
+        historique_heures: heuresHistoriquePrevisionPour(fenetreMs.value),
+      },
     });
     if (siteId !== siteSelectionne.value) return;
     previsions.value = data;

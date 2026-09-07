@@ -88,11 +88,12 @@ def get_site_current_reading(
 def list_site_predictions(
     site_id: str,
     horizon_heures: int = Query(24, ge=1, le=168),
+    historique_heures: int = Query(0, ge=0, le=168),
     db: Session = Depends(get_db),
     _: User = Depends(get_active_user),
 ) -> list[PredictionForecast]:
-    """Prévision de consommation à venir (table predictions_forecast, réécrite à chaque cycle
-    de ml/predict.py) : une ligne par heure, encadrée par son intervalle à 90 %.
+    """Prévision de consommation (table predictions_forecast, réécrite à chaque cycle de
+    ml/predict.py) : une ligne par heure, encadrée par son intervalle à 90 %.
 
     Renvoie une liste vide plutôt qu'un 404 quand le site n'a pas de prévision. Trois des sept
     sites ont un champion LightGBM qui réclame `solar_irradiance_wm2`, absente du gold : ils ne
@@ -100,16 +101,24 @@ def list_site_predictions(
     C'est un état normal du système, pas une ressource manquante — et un site inconnu donne le
     même résultat qu'un site sans modèle, ce que le front traite pareillement (aucune courbe).
 
-    Borné à partir de maintenant : la table conserve aussi les heures passées, que chaque cycle
-    laisse intactes pour permettre de comparer prévu et réalisé. Les rendre ici ferait
-    rétropédaler la courbe du dashboard sur des prévisions périmées."""
+    `historique_heures` remonte dans le passé, et vaut 0 par défaut — l'appelant qui ne demande
+    rien continue de ne recevoir que le futur. Les heures passées ne sont pas des prévisions
+    périmées : chaque cycle réécrit uniquement le futur et laisse le passé intact, si bien
+    qu'une ligne passée reste la prévision réellement émise pour cette heure-là, avec la version
+    de modèle qui l'a produite. C'est ce qui permet de superposer prévu et réalisé sur le même
+    graphique (voir infra/postgres/init/06_predictions.sql).
+
+    Les deux bornes sont comptées depuis maintenant et non depuis les extrêmes de la table :
+    une fenêtre ancrée sur l'heure courante est la seule qui garde le même sens d'un appel au
+    suivant, quel que soit l'état d'avancement du dernier cycle d'inférence."""
     maintenant = datetime.now(UTC)
+    depuis = maintenant - timedelta(hours=historique_heures)
     jusqua = maintenant + timedelta(hours=horizon_heures)
     return (
         db.query(PredictionForecast)
         .filter(
             PredictionForecast.site_id == site_id,
-            PredictionForecast.target_ts >= maintenant,
+            PredictionForecast.target_ts >= depuis,
             PredictionForecast.target_ts < jusqua,
         )
         .order_by(asc(PredictionForecast.target_ts))
