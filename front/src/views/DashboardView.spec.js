@@ -1,7 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+import { config, mount, flushPromises } from "@vue/test-utils";
 import DashboardView from "./DashboardView.vue";
 import api from "../api/client";
+
+// Le panneau d'alertes contient un <router-link> vers /alertes, mais la vue est
+// montée seule, sans routeur. Le stub garde le lien inspectable (href, texte).
+config.global.stubs = {
+  RouterLink: {
+    props: ["to"],
+    template: '<a :href="to"><slot /></a>',
+  },
+};
 
 vi.mock("../api/client", () => ({
   default: { get: vi.fn() },
@@ -13,6 +22,7 @@ vi.mock("chart.js/auto", () => {
     constructor(_ctx, config) {
       this.data = config.data;
       this.options = config.options;
+      this.plugins = config.plugins || [];
       this.destroyed = false;
       chartInstances.push(this);
     }
@@ -75,10 +85,32 @@ function previsionsAVenir({ n = 3, base = 150, dansHeures = 1, ...reste } = {}) 
   return lignes;
 }
 
-function mockApi({ sites = SITES, lectures = {}, previsions = {} } = {}) {
+// Alertes telles que les sert GET /alerts : déjà triées du plus récent au plus
+// ancien, limitées côté API. Horodatages du jour pour que le panneau n'affiche
+// que l'heure (le jour n'apparaît qu'au-delà de la journée en cours).
+function alerteA(heure, reste = {}) {
+  const date = new Date();
+  date.setHours(heure, 0, 0, 0);
+  return {
+    alert_id: `A-${heure}`,
+    timestamp: date.toISOString(),
+    site_id: "SITE001",
+    severity: "medium",
+    type: "consumption_spike",
+    message: `pic de consommation à ${heure}h`,
+    value: 180,
+    threshold: 150,
+    ...reste,
+  };
+}
+
+function mockApi({ sites = SITES, lectures = {}, previsions = {}, alertes = null } = {}) {
   api.get.mockImplementation((url) => {
     if (url === "/sites") return Promise.resolve({ data: sites });
     if (lectures[url]) return lectures[url]();
+    // Défaut à liste vide : la plupart des tests ne portent pas sur le panneau
+    // d'alertes et n'ont pas à le basculer en erreur faute de mock.
+    if (url === "/alerts") return alertes ? alertes() : Promise.resolve({ data: [] });
     // Défaut à liste vide : la plupart des tests ne portent pas sur la prévision et ne
     // doivent pas basculer l'écran en « service injoignable » faute de mock.
     if (url.endsWith("/predictions")) {
@@ -87,6 +119,11 @@ function mockApi({ sites = SITES, lectures = {}, previsions = {} } = {}) {
     return Promise.reject(new Error(`URL non mockée: ${url}`));
   });
 }
+
+const MESURES_SIMPLES = {
+  "/sites/SITE001/measurements": () => Promise.resolve({ data: [] }),
+  "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+};
 
 describe("DashboardView", () => {
   beforeEach(() => {
@@ -149,7 +186,7 @@ describe("DashboardView", () => {
     const wrapper = mount(DashboardView);
     await flushPromises();
 
-    expect(wrapper.find(".graphique-grand-titre").text()).toBe("Puissance appelée");
+    expect(wrapper.find(".graphique-grand-titre").text()).toBe("Puissance appelée (kW)");
     expect(wrapper.find(".lecture-actuelle").text()).toContain("kW");
     // Les 7 petites cartes, ordre fixe, "Puissance appelée" toujours présente.
     const titresAvant = wrapper.findAll(".graphique-carte-titre").map((t) => t.text());
@@ -167,7 +204,7 @@ describe("DashboardView", () => {
     await carteTension.trigger("click");
     await flushPromises();
 
-    expect(wrapper.find(".graphique-grand-titre").text()).toBe("Tension");
+    expect(wrapper.find(".graphique-grand-titre").text()).toBe("Tension (V)");
     // 404.6 arrondi à l'entier (0 décimale pour la tension).
     expect(wrapper.find(".lecture-actuelle").text()).toContain("405");
     expect(wrapper.find(".lecture-actuelle").text()).toContain("V");
@@ -308,6 +345,49 @@ describe("DashboardView", () => {
     await wrapper.find(".select-fenetre").setValue(String(60 * 60 * 1000));
     await flushPromises();
     return wrapper;
+  }
+
+  // Les greffons dessinent au canvas : on leur passe un contexte qui note les
+  // ordres reçus plutôt que de peindre, seul moyen de vérifier OÙ ils tracent.
+  function ctxEspion() {
+    return {
+      appels: [],
+      save() {},
+      restore() {},
+      beginPath() {},
+      setLineDash() {},
+      lineTo() {},
+      measureText: () => ({ width: 60 }),
+      fillRect(...a) {
+        this.appels.push(["fillRect", ...a]);
+      },
+      moveTo(...a) {
+        this.appels.push(["moveTo", ...a]);
+      },
+      stroke() {
+        this.appels.push(["stroke"]);
+      },
+      fillText(...a) {
+        this.appels.push(["fillText", ...a]);
+      },
+    };
+  }
+
+  // Cadre de 100x50 px, la dernière mesure retombant sur l'abscisse demandée.
+  function chartFictif(ctx, x) {
+    return {
+      ctx,
+      chartArea: { left: 0, right: 100, top: 0, bottom: 50 },
+      scales: { x: { getPixelForValue: () => x } },
+    };
+  }
+
+  function greffon(id) {
+    return graphiqueGrand().plugins.find((g) => g.id === id);
+  }
+
+  function petitsGraphiques() {
+    return chartInstances.filter((c) => !c.destroyed && c.options.scales.x.display === false);
   }
 
   function mesuresSurUneHeure({ n = 20, base = 100 } = {}) {
@@ -1019,5 +1099,473 @@ describe("DashboardView", () => {
 
     expect(api.get).toHaveBeenCalledWith("/sites/SITE002/daily-summary");
     expect(puissanceMoyenneAffichee()).toContain("900");
+  });
+
+  it("affiche les dernières alertes du parc telles que l'API les sert", async () => {
+    mockApi({
+      lectures: MESURES_SIMPLES,
+      alertes: () =>
+        Promise.resolve({
+          data: [
+            alerteA(14, { site_id: "SITE002", message: "tension hors plage" }),
+            alerteA(9),
+            alerteA(8),
+          ],
+        }),
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    // La limite est demandée à l'API, pas appliquée après coup : le panneau ne
+    // doit pas rapatrier les 100 alertes par défaut pour n'en montrer que 5.
+    expect(api.get).toHaveBeenCalledWith("/alerts", { params: { limit: 5 } });
+    expect(wrapper.text()).toContain("alertes — 5 dernières");
+
+    const items = wrapper.findAll(".alerte-item");
+    expect(items).toHaveLength(3);
+    // Ordre de l'API conservé (plus récente en tête), aucun retri côté front.
+    expect(items[0].find(".alerte-heure").text()).toBe("14:00");
+    expect(items[0].find(".alerte-site").text()).toBe("SITE002");
+    expect(items[0].find(".alerte-texte").text()).toContain("tension hors plage");
+    expect(items[2].find(".alerte-heure").text()).toBe("08:00");
+  });
+
+  it("n'affiche jamais plus d'alertes que ce que l'API en renvoie", async () => {
+    mockApi({
+      lectures: MESURES_SIMPLES,
+      alertes: () => Promise.resolve({ data: [alerteA(10), alerteA(9)] }),
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(wrapper.findAll(".alerte-item")).toHaveLength(2);
+    expect(wrapper.find(".alertes-etat").exists()).toBe(false);
+  });
+
+  it("distingue les sévérités et ne met en rouge que celles qui appellent une action", async () => {
+    mockApi({
+      lectures: MESURES_SIMPLES,
+      alertes: () =>
+        Promise.resolve({
+          data: [
+            alerteA(12, { alert_id: "A-crit", severity: "critical" }),
+            alerteA(11, { alert_id: "A-high", severity: "high" }),
+            alerteA(10, { alert_id: "A-med", severity: "medium" }),
+            alerteA(9, { alert_id: "A-low", severity: "low" }),
+            alerteA(8, { alert_id: "A-nulle", severity: null }),
+          ],
+        }),
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    const items = wrapper.findAll(".alerte-item");
+    expect(items.map((i) => i.classes().includes("critique"))).toEqual([true, true, false, false, false]);
+    expect(items[0].classes()).toContain("severite-critical");
+    expect(items[3].classes()).toContain("severite-low");
+    // Une sévérité absente ne doit pas produire de classe "severite-null" muette.
+    expect(items[4].classes()).toContain("severite-inconnue");
+    expect(items[0].find(".alerte-point").attributes("title")).toBe("sévérité critique");
+    expect(items[4].find(".alerte-point").attributes("title")).toBe("sévérité inconnue");
+  });
+
+  it("ajoute le jour aux alertes qui ne sont pas de la journée en cours", async () => {
+    const avantHier = new Date();
+    avantHier.setDate(avantHier.getDate() - 2);
+    avantHier.setHours(8, 12, 0, 0);
+
+    mockApi({
+      lectures: MESURES_SIMPLES,
+      alertes: () =>
+        Promise.resolve({
+          data: [alerteA(14), { ...alerteA(8), alert_id: "A-ancienne", timestamp: avantHier.toISOString() }],
+        }),
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    const heures = wrapper.findAll(".alerte-heure").map((h) => h.text());
+    const jourMois = avantHier.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
+    // Sans le jour, une alerte d'avant-hier passerait pour une alerte de ce matin.
+    expect(heures[0]).toBe("14:00");
+    expect(heures[1]).toBe(`${jourMois} 08:12`);
+  });
+
+  it("affiche le texte d'une alerte sans message plutôt qu'une ligne vide", async () => {
+    mockApi({
+      lectures: MESURES_SIMPLES,
+      alertes: () =>
+        Promise.resolve({
+          data: [alerteA(10, { message: null, type: "sensor_failure", site_id: null })],
+        }),
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    const item = wrapper.find(".alerte-item");
+    expect(item.find(".alerte-texte").text()).toContain("sensor_failure");
+    // Une alerte sans site porte sur le parc, ce n'est pas une donnée manquante.
+    expect(item.find(".alerte-site").text()).toBe("parc");
+  });
+
+  it("dit qu'il n'y a aucune alerte plutôt que d'afficher un panneau vide", async () => {
+    mockApi({ lectures: MESURES_SIMPLES, alertes: () => Promise.resolve({ data: [] }) });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(wrapper.findAll(".alerte-item")).toHaveLength(0);
+    expect(wrapper.find(".alertes-etat").text()).toBe("Aucune alerte sur le parc.");
+    expect(wrapper.find(".alertes-erreur").exists()).toBe(false);
+  });
+
+  it("signale un échec de chargement des alertes sans faire échouer le reste de l'écran", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      alertes: () => Promise.reject(new Error("boom")),
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(wrapper.find(".alertes-erreur").text()).toBe(
+      "Alertes non actualisées, nouvelle tentative au prochain cycle."
+    );
+    // Le reste de l'écran est intact : les alertes sont un panneau, pas la page.
+    expect(wrapper.find(".lecture-actuelle").text()).toContain("180");
+  });
+
+  it("garde les alertes affichées quand un cycle de sondage échoue", async () => {
+    let cycle = 0;
+    mockApi({
+      lectures: MESURES_SIMPLES,
+      alertes: () => {
+        cycle += 1;
+        return cycle === 1 ? Promise.resolve({ data: [alerteA(9)] }) : Promise.reject(new Error("boom"));
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+    expect(wrapper.findAll(".alerte-item")).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    // Vider le panneau sur un échec ponctuel perdrait une information valide :
+    // la liste reste, l'échec est signalé à côté.
+    expect(wrapper.findAll(".alerte-item")).toHaveLength(1);
+    expect(wrapper.find(".alertes-erreur").exists()).toBe(true);
+  });
+
+  it("recharge les alertes à chaque cycle de sondage", async () => {
+    let cycle = 0;
+    mockApi({
+      lectures: MESURES_SIMPLES,
+      alertes: () => {
+        cycle += 1;
+        return Promise.resolve({ data: cycle === 1 ? [alerteA(9)] : [alerteA(10), alerteA(9)] });
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+    expect(wrapper.findAll(".alerte-item")).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(wrapper.findAll(".alerte-item")).toHaveLength(2);
+    expect(wrapper.find(".alertes-erreur").exists()).toBe(false);
+  });
+
+  it("ne redemande pas les alertes au changement de fenêtre, elles n'en dépendent pas", async () => {
+    mockApi({ lectures: MESURES_SIMPLES, alertes: () => Promise.resolve({ data: [alerteA(9)] }) });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(api.get.mock.calls.filter(([url]) => url === "/alerts")).toHaveLength(1);
+
+    await wrapper.find(".select-fenetre").setValue(String(60 * 60 * 1000));
+    await flushPromises();
+
+    expect(api.get.mock.calls.filter(([url]) => url === "/alerts")).toHaveLength(1);
+  });
+
+  it("renvoie vers la liste complète des alertes", async () => {
+    mockApi({ lectures: MESURES_SIMPLES, alertes: () => Promise.resolve({ data: [alerteA(9)] }) });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    const lien = wrapper.find(".lien-alertes");
+    expect(lien.text()).toBe("tout voir");
+    expect(lien.attributes("href")).toBe("/alertes");
+  });
+
+  it("relie les points par des segments droits, sans lissage qui inventerait un sommet", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir({ n: 3 }) }),
+      },
+    });
+
+    await monterAvecPrevisionVisible();
+
+    // Une tension non nulle dessine des Béziers qui dépassent les valeurs mesurées :
+    // le sommet tracé passerait au-dessus de la mesure la plus haute, sur un écran
+    // dont la question est justement « le pic a-t-il dépassé la puissance souscrite ? ».
+    expect(graphiqueGrand().data.datasets.some((d) => d.tension)).toBe(false);
+    expect(petitsGraphiques().some((c) => c.data.datasets.some((d) => d.tension))).toBe(false);
+  });
+
+  it("ne pose un marqueur que sur les points qu'aucun segment ne relie", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+
+    const rayon = graphiqueGrand().data.datasets[0].pointRadius;
+    // Un rayon fixe donnait un chapelet de 1440 marqueurs sur la fenêtre "1 jour".
+    expect(typeof rayon).toBe("function");
+
+    const data = [10, null, 20, null, null, 30, 40];
+    const r = (dataIndex) => rayon({ dataset: { data }, dataIndex });
+    // Seuls les points qu'aucun voisin ne prolonge : sans marqueur ils ne dessinent
+    // aucun segment et disparaîtraient complètement du graphique.
+    expect(r(0)).toBeGreaterThan(0);
+    expect(r(2)).toBeGreaterThan(0);
+    // Trous : rien à marquer.
+    expect(r(1)).toBe(0);
+    // Points reliés à un voisin : le trait suffit à les montrer.
+    expect(r(5)).toBe(0);
+    expect(r(6)).toBe(0);
+  });
+
+  it("donne à chaque métrique sa propre couleur", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir({ n: 3 }) }),
+      },
+    });
+
+    await monterAvecPrevisionVisible();
+
+    const [mesure, seuil, prevision] = graphiqueGrand().data.datasets;
+    expect(mesure.borderColor).toBe("#2dd4bf");
+    expect(seuil.borderColor).toBe("#f59e0b");
+    expect(prevision.borderColor).toBe("#a78bfa");
+
+    // Sept teintes distinctes, une par carte.
+    const couleurs = petitsGraphiques().map((c) => c.data.datasets[0].borderColor);
+    expect(couleurs).toHaveLength(7);
+    expect(new Set(couleurs).size).toBe(7);
+  });
+
+  it("fait suivre le trait de la légende à la couleur de la métrique affichée", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    // Le trait était teal en dur : sur "Tension" la courbe est bleue et la légende
+    // annonçait pourtant du teal pour "mesure réelle".
+    const trait = () => wrapper.find(".legende-item .legende-trait");
+    expect(trait().attributes("style")).toContain("rgb(45, 212, 191)");
+
+    const carteTension = wrapper.findAll(".graphique-carte").find((c) => c.text().includes("Tension"));
+    await carteTension.trigger("click");
+    await flushPromises();
+
+    expect(trait().attributes("style")).toContain("rgb(96, 165, 250)");
+  });
+
+  it("marque sur l'axe la frontière entre ce qui est mesuré et ce qui est prédit", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir({ n: 3 }) }),
+      },
+    });
+
+    await monterAvecPrevisionVisible();
+
+    const ctx = ctxEspion();
+    greffon("separateurPrevision").beforeDatasetsDraw(chartFictif(ctx, 60));
+
+    // Teinte à droite du trait seulement : à gauche tout est mesuré, et sans repère
+    // la seule marque du passage au prédit était le pointillé de la courbe.
+    expect(ctx.appels).toContainEqual(["fillRect", 60, 0, 40, 50]);
+    expect(ctx.appels).toContainEqual(["moveTo", 60, 0]);
+    expect(ctx.appels.some(([nom, texte]) => nom === "fillText" && texte === "maintenant")).toBe(true);
+  });
+
+  it("ne trace aucune frontière quand il n'y a pas de prévision à séparer", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    await monterAvecPrevisionVisible();
+
+    const ctx = ctxEspion();
+    greffon("separateurPrevision").beforeDatasetsDraw(chartFictif(ctx, 60));
+
+    // Site sans modèle : la courbe s'arrête au dernier point mesuré, il n'y a pas
+    // de futur à distinguer et un trait "maintenant" au bord droit n'apprendrait rien.
+    expect(ctx.appels).toEqual([]);
+  });
+
+  it("ne trace pas la frontière hors du cadre quand la dernière mesure précède la fenêtre", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir({ n: 3 }) }),
+      },
+    });
+
+    await monterAvecPrevisionVisible();
+
+    const avant = ctxEspion();
+    greffon("separateurPrevision").beforeDatasetsDraw(chartFictif(avant, -20));
+    expect(avant.appels).toEqual([]);
+
+    const apres = ctxEspion();
+    greffon("separateurPrevision").beforeDatasetsDraw(chartFictif(apres, 140));
+    expect(apres.appels).toEqual([]);
+  });
+
+  it("trace un croisillon vertical sur le point survolé, et rien sans survol", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+
+    const cadre = { chartArea: { left: 0, right: 100, top: 0, bottom: 50 } };
+
+    const survole = ctxEspion();
+    greffon("croisillon").afterDatasetsDraw({
+      ...cadre,
+      ctx: survole,
+      tooltip: { getActiveElements: () => [{ element: { x: 42 } }] },
+    });
+    expect(survole.appels).toContainEqual(["moveTo", 42, 0]);
+
+    const repos = ctxEspion();
+    greffon("croisillon").afterDatasetsDraw({
+      ...cadre,
+      ctx: repos,
+      tooltip: { getActiveElements: () => [] },
+    });
+    expect(repos.appels).toEqual([]);
+  });
+
+  it("garde les graduations discrètes : des horizontales pour lire, pas de quadrillage", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+
+    const scales = graphiqueGrand().options.scales;
+    // Les verticales n'aident à lire aucune valeur sur une série à la minute.
+    expect(scales.x.grid.display).toBe(false);
+    // Les horizontales, si : elles reportent un point sur l'axe des ordonnées.
+    expect(scales.y.grid.display).not.toBe(false);
+  });
+
+  it("porte l'unité dans le titre, sauf quand ce n'est pas une unité", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(wrapper.find(".graphique-grand-titre").text()).toBe("Puissance appelée (kW)");
+
+    const carteQualite = wrapper.findAll(".graphique-carte").find((c) => c.text().includes("Score qualité"));
+    await carteQualite.trigger("click");
+    await flushPromises();
+
+    // "/100" est une échelle, pas une unité : « Score qualité (/100) » se lirait mal.
+    expect(wrapper.find(".graphique-grand-titre").text()).toBe("Score qualité");
+  });
+
+  it("affiche la dernière valeur de chaque métrique sur sa carte, sans avoir à cliquer", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    const valeurs = wrapper.findAll(".graphique-carte-valeur").map((v) => v.text());
+    expect(valeurs).toEqual(["180 kW", "405 V", "270 A", "0.93", "9.5 °C", "41 %", "100 /100"]);
+  });
+
+  it("écrit un tiret sur la carte d'une métrique sans valeur, pas un zéro", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () =>
+          Promise.resolve({ data: [{ ...MESURE_OK, humidity_percent: null }] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    const carte = wrapper.findAll(".graphique-carte").find((c) => c.text().includes("Humidité"));
+    // Un capteur en panne n'est pas une humidité de 0 %.
+    expect(carte.find(".graphique-carte-valeur").text()).toBe("—");
   });
 });

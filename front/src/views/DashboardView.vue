@@ -57,12 +57,15 @@
             <p v-else class="pas-de-donnee">Pas de mesure récente</p>
 
             <div class="graphique-grand">
-              <p class="graphique-grand-titre">{{ metriqueFocusInfo.label }}</p>
+              <p class="graphique-grand-titre">{{ titreMetriqueFocus }}</p>
               <div class="chart-wrapper-grand">
                 <canvas ref="canvasGrandRef"></canvas>
               </div>
               <div class="legende-graphe">
-                <div class="legende-item"><span class="legende-trait teal"></span>mesure réelle</div>
+                <div class="legende-item">
+                  <span class="legende-trait" :style="{ borderColor: metriqueFocusInfo.couleur }"></span>
+                  mesure réelle
+                </div>
                 <template v-if="metriqueFocusInfo.avecPrediction && previsions.length > 0 && !previsionTropCourtePourFenetre">
                   <div class="legende-item">
                     <span class="legende-trait violet"></span>prévision ({{ infoPrevision.champion }} v{{
@@ -117,7 +120,10 @@
                 :class="{ actif: m.cle === metriqueFocus }"
                 @click="metriqueFocus = m.cle"
               >
-                <p class="graphique-carte-titre">{{ m.label }}</p>
+                <div class="graphique-carte-entete">
+                  <p class="graphique-carte-titre">{{ m.label }}</p>
+                  <span class="graphique-carte-valeur">{{ valeurCarte(m) }}</span>
+                </div>
                 <div class="chart-wrapper-carte">
                   <canvas :ref="(el) => (canvasEls[m.cle] = el)"></canvas>
                 </div>
@@ -207,13 +213,31 @@
         </div>
 
         <div class="panneau">
-          <p class="panneau-titre">alertes — 24h</p>
-          <ul class="alertes-liste">
-            <li v-for="(a, i) in ALERTES_MOCK" :key="i" class="alerte-item" :class="{ critique: a.critique }">
-              <span class="alerte-heure">{{ a.heure }}</span>
-              <span class="alerte-texte">{{ a.texte }}</span>
-            </li>
-          </ul>
+          <div class="panneau-entete">
+            <p class="panneau-titre">alertes — {{ NB_ALERTES_DASHBOARD }} dernières</p>
+            <router-link to="/alertes" class="lien-alertes">tout voir</router-link>
+          </div>
+
+          <p v-if="chargementAlertes" class="alertes-etat">Chargement des alertes...</p>
+          <template v-else>
+            <ul v-if="alertesRecentes.length > 0" class="alertes-liste">
+              <li
+                v-for="a in alertesRecentes"
+                :key="a.alert_id"
+                class="alerte-item"
+                :class="[`severite-${a.severity || 'inconnue'}`, { critique: estCritique(a) }]"
+              >
+                <span class="alerte-point" :title="libelleSeverite(a.severity)"></span>
+                <span class="alerte-heure">{{ formatHeureAlerte(a.timestamp) }}</span>
+                <span class="alerte-texte">
+                  <span class="alerte-site">{{ a.site_id || "parc" }}</span>
+                  {{ texteAlerte(a) }}
+                </span>
+              </li>
+            </ul>
+            <p v-else class="alertes-etat">Aucune alerte sur le parc.</p>
+            <p v-if="erreurAlertes" class="alertes-etat alertes-erreur">{{ erreurAlertes }}</p>
+          </template>
         </div>
       </div>
     </template>
@@ -254,67 +278,67 @@ const OPTIONS_FENETRE = [
 const METRIQUES = [
   {
     cle: "consumption_kw",
+    couleur: "#2dd4bf",
+    fond: "rgba(45, 212, 191, 0.08)",
     label: "Puissance appelée",
     unite: "kW",
     decimales: 0,
-    couleur: "#2dd4bf",
-    fond: "rgba(45, 212, 191, 0.08)",
     debuteAZero: true,
     avecSeuil: true,
     avecPrediction: true,
   },
   {
     cle: "voltage_v",
+    couleur: "#60a5fa",
+    fond: "rgba(96, 165, 250, 0.08)",
     label: "Tension",
     unite: "V",
     decimales: 0,
-    couleur: "#60a5fa",
-    fond: "rgba(96, 165, 250, 0.08)",
     debuteAZero: false,
   },
   {
     cle: "current_a",
+    couleur: "#f472b6",
+    fond: "rgba(244, 114, 182, 0.08)",
     label: "Courant",
     unite: "A",
     decimales: 0,
-    couleur: "#f472b6",
-    fond: "rgba(244, 114, 182, 0.08)",
     debuteAZero: true,
   },
   {
     cle: "power_factor",
+    couleur: "#facc15",
+    fond: "rgba(250, 204, 21, 0.08)",
     label: "Facteur de puissance",
     unite: "",
     decimales: 2,
-    couleur: "#facc15",
-    fond: "rgba(250, 204, 21, 0.08)",
     debuteAZero: false,
   },
   {
     cle: "temperature_celsius",
+    couleur: "#fb923c",
+    fond: "rgba(251, 146, 60, 0.08)",
     label: "Température",
     unite: "°C",
     decimales: 1,
-    couleur: "#fb923c",
-    fond: "rgba(251, 146, 60, 0.08)",
     debuteAZero: false,
   },
   {
     cle: "humidity_percent",
+    couleur: "#38bdf8",
+    fond: "rgba(56, 189, 248, 0.08)",
     label: "Humidité",
     unite: "%",
     decimales: 0,
-    couleur: "#38bdf8",
-    fond: "rgba(56, 189, 248, 0.08)",
     debuteAZero: true,
   },
   {
     cle: "quality_score",
+    couleur: "#a78bfa",
+    fond: "rgba(167, 139, 250, 0.08)",
     label: "Score qualité",
     unite: "/100",
     decimales: 0,
-    couleur: "#a78bfa",
-    fond: "rgba(167, 139, 250, 0.08)",
     debuteAZero: true,
   },
 ];
@@ -325,22 +349,33 @@ const LIBELLES_RAISON = {
   voltage_sensor_failure: "capteur tension en panne",
 };
 
-// Contenu de démonstration : aucun moteur de recommandation, de scoring de
-// site ni de suivi de modèle n'existe côté backend. Seuls le sélecteur de
-// site (dont la pastille d'alerte), l'en-tête, les graphiques de mesures, la
-// grille "parc" et les KPI du jour sont réellement alimentés par l'API
-// (GET /sites, GET /sites/{id}/measurements, GET /sites/{id}/daily-summary).
+// Contenu de démonstration : aucun moteur de recommandation ni de suivi de
+// modèle n'existe côté backend. Tout le reste de l'écran est alimenté par
+// l'API : sélecteur de site (dont la pastille d'alerte), en-tête, graphiques
+// de mesures, grille "parc", KPI du jour, prévisions et panneau d'alertes
+// (GET /sites, GET /sites/{id}/measurements, GET /sites/{id}/daily-summary,
+// GET /sites/{id}/predictions, GET /alerts).
 const SANTE_MOCK = [
   { label: "fiabilité", valeur: "0,71", ok: true },
   { label: "couverture — cible 96 %", valeur: "91,2 %", ok: false },
   { label: "fusible", valeur: "actif", ok: true },
 ];
 
-const ALERTES_MOCK = [
-  { heure: "08:12", texte: "réenrôlement lumière — challenger non promu", critique: false },
-  { heure: "09:30", texte: "SITE004 — qualité ratio inférieur à 20 % pendant 15 min", critique: true },
-  { heure: "14:05", texte: "journal d'intégrité du 26/08 scellé", critique: false },
-];
+// Aperçu du parc entier, pas du site affiché : une alerte critique ailleurs
+// doit rester visible sans changer de site. La liste complète, avec ses
+// filtres, est sur /alertes — ce panneau n'en montre que la tête.
+const NB_ALERTES_DASHBOARD = 5;
+
+const LIBELLES_SEVERITE = {
+  low: "faible",
+  medium: "moyenne",
+  high: "élevée",
+  critical: "critique",
+};
+
+// Ces deux niveaux passent le texte en rouge : ils appellent une action, là
+// où "faible" et "moyenne" ne sont qu'à lire.
+const SEVERITES_CRITIQUES = ["high", "critical"];
 
 const RECOMMANDATION_MOCK = {
   texte: "Décaler 80 kW de 14h à 15h pour éviter le pic. Suggestion envoyée à un humain, aucune commande automatique.",
@@ -350,6 +385,10 @@ const RECOMMANDATION_MOCK = {
 // Site proche de sa limite contractuelle : signal réel (dernière puissance
 // mesurée / puissance souscrite), pas une couleur mise au hasard.
 const SEUIL_ALERTE_PARC = 0.9;
+
+// Chaque métrique porte sa couleur (déclarée dans METRIQUES) ; l'ambre reste
+// réservé à la puissance souscrite et le violet à la prévision.
+const COULEUR_SEUIL = "#f59e0b";
 
 // Prévision de consommation servie par GET /sites/{id}/predictions (table
 // predictions_forecast, réécrite à chaque cycle de ml/predict.py). Plus aucun mock ici : ce
@@ -426,6 +465,12 @@ const resumeJour = ref(null); // aggregates_gold_daily du jour pour le site affi
 const previsions = ref([]); // predictions_forecast à venir pour le site affiché ([] si aucun modèle)
 const previsionIndisponible = ref(false); // l'appel a échoué, à distinguer d'un site sans modèle
 const resumeParSite = ref({}); // { [site_id]: { valeur, alerte, segments } } pour la grille "parc" et le sélecteur
+const alertesRecentes = ref([]); // les NB_ALERTES_DASHBOARD dernières lignes de la table alerts, tous sites confondus
+// Vrai dès la déclaration, faux définitivement à la première réponse : le
+// relever à chaque cycle de sondage remplacerait la liste par "Chargement..."
+// toutes les 30 secondes.
+const chargementAlertes = ref(true);
+const erreurAlertes = ref("");
 const maintenant = ref(new Date());
 
 const siteActuel = computed(() => sites.value.find((s) => s.site_id === siteSelectionne.value) || null);
@@ -441,9 +486,28 @@ const infoPrevision = computed(() => previsions.value[0] ?? null);
 const previsionSurDonneeSynthetique = computed(() => infoPrevision.value?.data_source === "csv_synthetic");
 const previsionTropCourtePourFenetre = computed(() => fenetreMs.value < FENETRE_MIN_PREVISION_MS);
 
+// L'unité va dans le titre plutôt que sur chaque graduation : l'axe reste une
+// colonne de nombres nus, et l'information n'est écrite qu'une fois.
+const titreMetriqueFocus = computed(() => {
+  const m = metriqueFocusInfo.value;
+  // "/100" est une échelle, pas une unité : "Score qualité (/100)" se lirait mal,
+  // et l'axe 0-100 la donne déjà.
+  return m.unite && !m.unite.startsWith("/") ? `${m.label} (${m.unite})` : m.label;
+});
+
 const suffixeUnite = computed(() =>
   metriqueFocusInfo.value.unite ? `${metriqueFocusInfo.value.unite} · dernière mesure` : "dernière mesure"
 );
+
+// Les 7 cartes n'affichaient qu'un titre et une sparkline : lire une valeur
+// imposait de cliquer, une métrique à la fois. La dernière mesure de chacune rend
+// la grille lisible d'un coup d'œil, sans rien changer à la sélection.
+function valeurCarte(m) {
+  const valeur = derniereMesure.value?.[m.cle] ?? null;
+  if (valeur === null) return "—";
+  const texte = formatValeur(valeur, m.decimales);
+  return m.unite ? `${texte} ${m.unite}` : texte;
+}
 
 function formatValeurAvecUnite(valeur) {
   const texte = formatValeur(valeur, metriqueFocusInfo.value.decimales);
@@ -472,6 +536,30 @@ const ecouleDepuisDerniereLecture = computed(() => {
   return `${Math.floor(secondes / 60)}min ${secondes % 60}s`;
 });
 
+function libelleSeverite(severite) {
+  return `sévérité ${LIBELLES_SEVERITE[severite] || "inconnue"}`;
+}
+
+function estCritique(alerte) {
+  return SEVERITES_CRITIQUES.includes(alerte.severity);
+}
+
+function texteAlerte(alerte) {
+  return alerte.message || alerte.type || "alerte sans description";
+}
+
+function formatHeureAlerte(timestamp) {
+  const date = timestamp ? new Date(timestamp) : null;
+  if (!date || Number.isNaN(date.getTime())) return "—";
+
+  const heure = date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  // Le jour n'est ajouté que hors de la journée en cours : la colonne est
+  // étroite, mais "08:12" seul ferait passer une alerte d'avant-hier pour une
+  // alerte de ce matin. maintenant.value rend la bascule de minuit réactive.
+  if (date.toDateString() === maintenant.value.toDateString()) return heure;
+  return `${date.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })} ${heure}`;
+}
+
 const canvasGrandRef = ref(null);
 let chartGrand = null;
 const canvasEls = {};
@@ -484,6 +572,20 @@ const dernieresLectures = {};
 let intervalSondage = null;
 let intervalHorloge = null;
 
+// Un marqueur sur chaque point donnerait un chapelet illisible : la fenêtre
+// "1 jour" contient jusqu'à 1440 mesures pour ~900 px de large. Mais un point
+// isolé — une valeur seule entre deux trous, cas courant avec ~30-50 % de lectures
+// sans valeur — ne dessine aucun segment et disparaîtrait purement et simplement
+// sans marqueur. On n'en affiche donc que là où il porte l'information : sur les
+// points que la ligne ne relie à rien.
+function rayonPointIsole(ctx) {
+  const data = ctx.dataset.data;
+  const i = ctx.dataIndex;
+  const present = (j) => data[j] !== null && data[j] !== undefined;
+  if (!present(i)) return 0;
+  return present(i - 1) || present(i + 1) ? 0 : 2.5;
+}
+
 function construireDatasets(m, { avecPrediction = false } = {}) {
   const datasets = [
     {
@@ -492,11 +594,13 @@ function construireDatasets(m, { avecPrediction = false } = {}) {
       borderColor: m.couleur,
       backgroundColor: m.fond,
       fill: true,
-      tension: 0.3,
-      // Un point visible par lecture valide : avec ~30-50 % de lectures sans
-      // valeur (capteur peu fiable côté mock), un segment isolé d'un ou deux
-      // points resterait quasi invisible avec pointRadius: 0.
-      pointRadius: 2,
+      borderWidth: 2,
+      // Segments droits, sans lissage : `tension` dessine des Béziers qui dépassent
+      // les valeurs mesurées, donc un sommet plus haut que la mesure la plus haute.
+      // Sur un écran dont la question est « le pic a-t-il dépassé la puissance
+      // souscrite ? », ce dépassement est une réponse inventée.
+      tension: 0,
+      pointRadius: rayonPointIsole,
       pointHoverRadius: 4,
     },
   ];
@@ -504,8 +608,9 @@ function construireDatasets(m, { avecPrediction = false } = {}) {
     datasets.push({
       label: "Puissance souscrite (kW)",
       data: [],
-      borderColor: "#f59e0b",
+      borderColor: COULEUR_SEUIL,
       borderDash: [4, 3],
+      borderWidth: 1.5,
       pointRadius: 0,
       pointHoverRadius: 3,
       fill: false,
@@ -520,7 +625,10 @@ function construireDatasets(m, { avecPrediction = false } = {}) {
         data: [],
         borderColor: COULEUR_PREDICTION,
         borderDash: [5, 4],
-        tension: 0.3,
+        borderWidth: 2,
+        // Même raison que pour les mesures : le modèle donne une valeur par heure,
+        // courber entre deux heures inventerait un relief qu'il ne prédit pas.
+        tension: 0,
         // Marqueurs visibles, contrairement aux bornes : un point par heure prédite rend le
         // pas du modèle lisible à l'œil. Sans eux, la ligne se confond avec la courbe des
         // mesures à la minute et laisse croire à une prévision beaucoup plus fine.
@@ -536,7 +644,7 @@ function construireDatasets(m, { avecPrediction = false } = {}) {
         borderColor: "transparent",
         backgroundColor: COULEUR_BANDE_PREDICTION,
         fill: "+1",
-        tension: 0.3,
+        tension: 0,
         pointRadius: 0,
       },
       {
@@ -544,7 +652,7 @@ function construireDatasets(m, { avecPrediction = false } = {}) {
         data: [],
         borderColor: "transparent",
         fill: false,
-        tension: 0.3,
+        tension: 0,
         pointRadius: 0,
       }
     );
@@ -578,6 +686,76 @@ function creerGraphiques() {
   }
 }
 
+const POLICE_GRAPHE = '10px Consolas, "Liberation Mono", monospace';
+const TRAIT_REPERE = "#3b4a68";
+const ETIQUETTE_MAINTENANT = "maintenant";
+
+// L'axe du grand graphique porte du mesuré ET du prédit, bout à bout. Rien ne
+// disait où l'un s'arrête : la seule marque était le pointillé de la courbe, qu'on
+// ne remarque pas au premier coup d'œil — et sur une métrique sans prévision la
+// question ne se pose pas. Le séparateur matérialise l'instant de la dernière
+// mesure et teinte tout ce qui est à sa droite : au-delà, aucune valeur n'est mesurée.
+const separateurPrevision = {
+  id: "separateurPrevision",
+  beforeDatasetsDraw(chart) {
+    if (!derniereLecture.value) return;
+    if (previsions.value.length === 0 || previsionTropCourtePourFenetre.value) return;
+
+    const { ctx, chartArea, scales } = chart;
+    const x = scales.x.getPixelForValue(derniereLecture.value.getTime());
+    // Hors du cadre : la dernière mesure est plus vieille que la fenêtre affichée,
+    // il n'y a alors pas de frontière à tracer dedans.
+    if (!Number.isFinite(x) || x < chartArea.left || x >= chartArea.right) return;
+
+    ctx.save();
+    ctx.fillStyle = "rgba(167, 139, 250, 0.05)";
+    ctx.fillRect(x, chartArea.top, chartArea.right - x, chartArea.bottom - chartArea.top);
+
+    ctx.strokeStyle = TRAIT_REPERE;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x, chartArea.top);
+    ctx.lineTo(x, chartArea.bottom);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = "#6b7a99";
+    ctx.font = POLICE_GRAPHE;
+    ctx.textBaseline = "top";
+    // Étiquette basculée à gauche du trait quand la place manque à droite, plutôt
+    // que tronquée au bord du cadre.
+    const aDroite = x + 6 + ctx.measureText(ETIQUETTE_MAINTENANT).width <= chartArea.right;
+    ctx.textAlign = aDroite ? "left" : "right";
+    ctx.fillText(ETIQUETTE_MAINTENANT, aDroite ? x + 6 : x - 6, chartArea.top + 4);
+    ctx.restore();
+  },
+};
+
+// Un graphique à l'écran est interactif : le croisillon donne le repère vertical
+// que l'infobulle seule ne donne pas, celui qui permet de reporter un point sur
+// l'axe des temps sans le perdre de vue.
+const croisillon = {
+  id: "croisillon",
+  afterDatasetsDraw(chart) {
+    const actifs = chart.tooltip?.getActiveElements?.() ?? [];
+    if (actifs.length === 0) return;
+
+    const { ctx, chartArea } = chart;
+    const x = actifs[0].element?.x;
+    if (!Number.isFinite(x)) return;
+
+    ctx.save();
+    ctx.strokeStyle = TRAIT_REPERE;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, chartArea.top);
+    ctx.lineTo(x, chartArea.bottom);
+    ctx.stroke();
+    ctx.restore();
+  },
+};
+
 function creerGraphiqueGrand() {
   if (!canvasGrandRef.value) return;
   const m = metriqueFocusInfo.value;
@@ -586,6 +764,7 @@ function creerGraphiqueGrand() {
   chartGrand = new Chart(canvasGrandRef.value, {
     type: "line",
     data: { labels: [], datasets: construireDatasets(m, { avecPrediction: true }) },
+    plugins: [separateurPrevision, croisillon],
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -615,13 +794,19 @@ function creerGraphiqueGrand() {
             displayFormats: { minute: "HH:mm", hour: "HH:mm", day: "dd/MM" },
             tooltipFormat: "dd/MM HH:mm",
           },
-          ticks: { color: "#6b7a99", maxRotation: 0, autoSkip: true },
-          grid: { color: "#1f2b42" },
+          ticks: { color: "#6b7a99", maxRotation: 0, autoSkip: true, font: { size: 10 } },
+          // Pas de verticales : sur une série à la minute elles n'aident à lire aucune
+          // valeur et posent autant de traits que de graduations. L'axe suffit.
+          grid: { display: false },
+          border: { color: "#1f2b42" },
         },
         y: {
           beginAtZero: m.debuteAZero,
-          ticks: { color: "#6b7a99" },
-          grid: { color: "#1f2b42" },
+          ticks: { color: "#6b7a99", font: { size: 10 } },
+          // Horizontales seules, et plus discrètes que le filet des panneaux : elles
+          // servent à reporter une valeur sur l'axe, pas à quadriller l'image.
+          grid: { color: "rgba(31, 43, 66, 0.55)", drawTicks: false },
+          border: { display: false },
         },
       },
       plugins: {
@@ -900,6 +1085,22 @@ async function chargerResumeJour(siteId) {
   }
 }
 
+async function chargerAlertes() {
+  try {
+    const { data } = await api.get("/alerts", { params: { limit: NB_ALERTES_DASHBOARD } });
+    // L'API trie déjà par timestamp décroissant et applique la limite : la plus
+    // récente est en tête, rien à retrier ici.
+    alertesRecentes.value = data;
+    erreurAlertes.value = "";
+  } catch {
+    // Liste conservée telle quelle : un échec de cycle ne doit pas vider un
+    // panneau qui affichait des alertes valides, seulement le signaler.
+    erreurAlertes.value = "Alertes non actualisées, nouvelle tentative au prochain cycle.";
+  } finally {
+    chargementAlertes.value = false;
+  }
+}
+
 async function actualiserToutesLesMesures() {
   const [resultats] = await Promise.all([
     Promise.all(sites.value.map(async (site) => ({ siteId: site.site_id, ok: await chargerHistorique(site) }))),
@@ -926,7 +1127,14 @@ function demarrerSondage() {
   // Pas d'appel immédiat ici : chargerSites() a déjà fait le premier
   // chargement avant d'appeler demarrerSondage(), l'intervalle ne fait que
   // prendre le relais pour les cycles suivants.
-  intervalSondage = setInterval(actualiserToutesLesMesures, POLL_INTERVAL_MS);
+  //
+  // Les alertes sont rechargées dans le même cycle mais hors
+  // actualiserToutesLesMesures() : elles ne dépendent ni du site affiché ni de
+  // la fenêtre de temps, un changement de fenêtre n'a pas à les redemander.
+  intervalSondage = setInterval(() => {
+    actualiserToutesLesMesures();
+    chargerAlertes();
+  }, POLL_INTERVAL_MS);
 }
 
 function selectionnerSite(siteId) {
@@ -980,6 +1188,7 @@ async function chargerSites() {
 
 onMounted(() => {
   chargerSites();
+  chargerAlertes();
   intervalHorloge = setInterval(() => {
     maintenant.value = new Date();
   }, 1000);
@@ -1230,16 +1439,35 @@ onBeforeUnmount(() => {
   border-color: var(--text-muted);
 }
 
+/* La teinte ne distingue plus les cartes (une couleur = un sens) : la sélection
+   doit donc se voir au cadre et au fond, pas à la couleur de la courbe. */
 .graphique-carte.actif {
   border-color: var(--text);
+  background: var(--panel);
+}
+
+.graphique-carte-entete {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .graphique-carte-titre {
   font-size: 0.7em;
   color: var(--text-muted);
-  margin: 0 0 8px 0;
+  margin: 0;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+.graphique-carte-valeur {
+  font-family: var(--mono);
+  font-size: 0.78em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  white-space: nowrap;
 }
 
 .chart-wrapper-carte {
@@ -1285,10 +1513,6 @@ onBeforeUnmount(() => {
   width: 16px;
   height: 0;
   border-top: 2px solid;
-}
-
-.legende-trait.teal {
-  border-color: #2dd4bf;
 }
 
 .legende-trait.orange {
@@ -1484,8 +1708,35 @@ onBeforeUnmount(() => {
   color: var(--ok);
 }
 
+.lien-alertes {
+  font-family: var(--mono);
+  font-size: 0.72em;
+  color: var(--text-muted);
+  text-decoration: none;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.lien-alertes:hover {
+  color: var(--ok);
+  border-bottom-color: var(--ok);
+}
+
+.alertes-etat {
+  margin: 0;
+  padding: 8px 0;
+  font-size: 0.82em;
+  color: var(--text-muted);
+}
+
+.alertes-erreur {
+  border-top: 1px solid var(--border);
+  color: var(--alerte);
+}
+
 .alerte-item {
   display: flex;
+  align-items: flex-start;
   gap: 10px;
   padding: 9px 0;
   border-top: 1px solid var(--border);
@@ -1496,14 +1747,48 @@ onBeforeUnmount(() => {
   border-top: none;
 }
 
+/* Même échelle de couleurs que les badges de la vue Alertes : une sévérité
+   ne doit pas changer de teinte d'un écran à l'autre. */
+.severite-low {
+  --severite: var(--ok);
+}
+
+.severite-medium {
+  --severite: var(--alerte);
+}
+
+.severite-high {
+  --severite: #fb923c;
+}
+
+.severite-critical {
+  --severite: var(--danger);
+}
+
+.alerte-point {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  /* Aligne la pastille sur la première ligne de texte, pas sur le haut du
+     bloc : le message peut passer sur deux lignes. */
+  margin-top: 0.45em;
+  border-radius: 50%;
+  background: var(--severite, var(--text-muted));
+}
+
 .alerte-heure {
   font-family: var(--mono);
   color: var(--text-muted);
   flex-shrink: 0;
 }
 
+.alerte-site {
+  font-family: var(--mono);
+  color: var(--text-muted);
+}
+
 .alerte-item.critique .alerte-texte {
-  color: var(--danger);
+  color: var(--severite, var(--danger));
 }
 
 @media (max-width: 800px) {
