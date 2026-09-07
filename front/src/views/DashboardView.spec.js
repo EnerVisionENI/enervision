@@ -347,6 +347,36 @@ describe("DashboardView", () => {
     expect(wrapper.text()).not.toContain("Prévision masquée sur cette fenêtre");
   });
 
+  it("n'apparie jamais les séries par index, seulement par position temporelle", async () => {
+    // Régression vécue : en mode "index", Chart.js lit le MÊME numéro d'index dans toutes les
+    // séries. Les mesures en portent ~360 (à la minute) et les prévisions ~9 (à l'heure), si
+    // bien que survoler la mesure d'index 5 affichait la prévision d'index 5 — une tout autre
+    // heure. L'infobulle inventait des prévisions à la minute que la base ne contient pas.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir({ n: 3 }) }),
+      },
+    });
+
+    await monterAvecPrevisionVisible();
+    const grand = graphiqueGrand();
+
+    expect(grand.options.interaction.mode).not.toBe("index");
+    expect(grand.options.plugins.tooltip.mode).not.toBe("index");
+    expect(grand.options.interaction.mode).toBe("nearest");
+    expect(grand.options.interaction.axis).toBe("x");
+
+    // Le nombre de points diffère entre les séries : c'est précisément ce que le mode
+    // "index" ne sait pas gérer, et ce qui doit rester vrai (on ne comble pas les minutes
+    // sans prévision pour faire coïncider les longueurs).
+    const [mesures, , prediction] = grand.data.datasets.map((d) => d.data);
+    expect(mesures.length).not.toBe(prediction.length);
+  });
+
   it("place les points sur une échelle temporelle, pas catégorielle", async () => {
     // Les mesures arrivent à la minute, la prévision à l'heure. Sur une échelle catégorielle
     // chaque point occupe la même largeur : 6 h de prévision (6 points) se tassaient sur 1,6 %
