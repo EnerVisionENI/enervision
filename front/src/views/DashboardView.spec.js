@@ -296,6 +296,12 @@ describe("DashboardView", () => {
   // La prévision est volontairement masquée sous une heure d'historique (modèles horaires),
   // et la fenêtre par défaut est de 2 min : tout test qui porte sur la courbe doit d'abord
   // se placer sur une fenêtre où elle s'affiche.
+  // Les jeux de prévision portent des points {x, y} (horodatages horaires propres, distincts
+  // de ceux des mesures) : les assertions ne lisent que les ordonnées.
+  function ordonnees(dataset) {
+    return dataset.map((point) => point.y);
+  }
+
   async function monterAvecPrevisionVisible() {
     const wrapper = mount(DashboardView);
     await flushPromises();
@@ -388,18 +394,66 @@ describe("DashboardView", () => {
     const grand = graphiqueGrand();
     const [reel, , prediction, bornesHautes, bornesBasses] = grand.data.datasets.map((d) => d.data);
 
-    // 20 points réels + 3 heures prédites sur l'axe des abscisses.
-    expect(grand.data.labels).toHaveLength(23);
+    // Les libellés ne couvrent plus que les mesures : la prévision porte ses propres
+    // abscisses et n'a plus besoin d'un emplacement dans ce tableau.
+    expect(grand.data.labels).toHaveLength(20);
     expect(reel).toHaveLength(20);
-    // Vide sur la portion réelle sauf le dernier point, repris tel quel pour que
-    // le pointillé démarre exactement là où le trait plein s'arrête.
-    expect(prediction.slice(0, 19).every((v) => v === null)).toBe(true);
-    expect(prediction[19]).toBe(reelles[reelles.length - 1].consumption_kw);
+    // Un point par heure prédite, horodaté, sans remplissage de la portion mesurée.
+    expect(prediction).toHaveLength(3);
+    expect(prediction.every((p) => p.x instanceof Date)).toBe(true);
     // Les valeurs tracées sont celles de l'API, pas une simulation.
-    expect(prediction.slice(20)).toEqual([150, 160, 170]);
-    expect(bornesBasses.slice(20)).toEqual([130, 140, 150]);
-    expect(bornesHautes.slice(20)).toEqual([170, 180, 190]);
+    expect(ordonnees(prediction)).toEqual([150, 160, 170]);
+    expect(ordonnees(bornesBasses)).toEqual([130, 140, 150]);
+    expect(ordonnees(bornesHautes)).toEqual([170, 180, 190]);
     await wrapper.unmount();
+  });
+
+  it("superpose les prévisions passées aux mesures, pour rendre l'écart lisible", async () => {
+    // Une ligne passée n'est pas une prévision périmée : chaque cycle réécrit le futur et
+    // laisse le passé intact, donc elle reste ce qui avait été prédit pour cette heure-là.
+    // La tracer en regard de la mesure est tout l'intérêt — sans ça, rien ne dit à l'écran
+    // si le modèle tombe juste.
+    const passees = previsionsAVenir({ n: 2, base: 700, dansHeures: -3 }); // -3 h et -2 h
+    const futures = previsionsAVenir({ n: 2, base: 900, dansHeures: 1 });
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: [...passees, ...futures] }),
+      },
+    });
+
+    await monterAvecPrevisionVisible();
+
+    const prediction = graphiqueGrand().data.datasets[2].data;
+    // Les quatre points sont tracés, passé compris.
+    expect(ordonnees(prediction)).toEqual([700, 710, 900, 910]);
+    const maintenant = Date.now();
+    expect(prediction.filter((p) => p.x.getTime() < maintenant)).toHaveLength(2);
+    expect(prediction.filter((p) => p.x.getTime() > maintenant)).toHaveLength(2);
+  });
+
+  it("étend la puissance souscrite jusqu'au bout de la prévision", async () => {
+    // Le seuil est tracé par ses deux extrémités : s'il s'arrêtait à la dernière mesure, la
+    // partie prédite — justement celle où un dépassement se lit — n'aurait plus de référence.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir({ n: 3 }) }),
+      },
+    });
+
+    await monterAvecPrevisionVisible();
+
+    const seuil = graphiqueGrand().data.datasets[1].data;
+    const prediction = graphiqueGrand().data.datasets[2].data;
+    expect(ordonnees(seuil)).toEqual([200, 200]); // capacity_kw de SITE001
+    expect(seuil[seuil.length - 1].x.getTime()).toBe(prediction[prediction.length - 1].x.getTime());
   });
 
   it("trace la prévision telle quelle, sans la borner à la puissance souscrite", async () => {
@@ -418,7 +472,7 @@ describe("DashboardView", () => {
 
     await monterAvecPrevisionVisible();
 
-    expect(graphiqueGrand().data.datasets[2].data.slice(-2)).toEqual([400, 410]);
+    expect(ordonnees(graphiqueGrand().data.datasets[2].data)).toEqual([400, 410]);
   });
 
   it("propage des bornes absentes en null, sans les replier sur la valeur prédite", async () => {
@@ -438,9 +492,9 @@ describe("DashboardView", () => {
     await monterAvecPrevisionVisible();
 
     const [, , prediction, hautes, basses] = graphiqueGrand().data.datasets.map((d) => d.data);
-    expect(prediction.slice(-2)).toEqual([150, 160]);
-    expect(hautes.slice(-2)).toEqual([null, null]);
-    expect(basses.slice(-2)).toEqual([null, null]);
+    expect(ordonnees(prediction)).toEqual([150, 160]);
+    expect(ordonnees(hautes)).toEqual([null, null]);
+    expect(ordonnees(basses)).toEqual([null, null]);
   });
 
   it("affiche le champion et la version du modèle dans la légende", async () => {
@@ -533,10 +587,10 @@ describe("DashboardView", () => {
 
     await monterAvecPrevisionVisible();
 
-    expect(graphiqueGrand().data.datasets[2].data.slice(-2)).toEqual([150, 160]);
+    expect(ordonnees(graphiqueGrand().data.datasets[2].data)).toEqual([150, 160]);
   });
 
-  it("demande un horizon de prévision aligné sur la fenêtre d'historique affichée", async () => {
+  it("demande un horizon d'un tiers du graphe, et le passé de toute la fenêtre", async () => {
     mockApi({
       lectures: {
         "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
@@ -549,14 +603,22 @@ describe("DashboardView", () => {
     await wrapper.find(".select-fenetre").setValue(String(6 * 60 * 60 * 1000)); // 6 h
     await flushPromises();
 
-    const appels = api.get.mock.calls.filter(([url]) => url === "/sites/SITE001/predictions");
-    expect(appels[appels.length - 1][1].params.horizon_heures).toBe(6);
-    // Plancher à 1 h : les modèles sont horaires, une fenêtre de 2 min ne peut pas
+    const derniersParams = () => {
+      const appels = api.get.mock.calls.filter(([url]) => url === "/sites/SITE001/predictions");
+      return appels[appels.length - 1][1].params;
+    };
+
+    // 6 h affichées + 3 h prédites = la prévision occupe un tiers de la largeur.
+    expect(derniersParams().horizon_heures).toBe(3);
+    // Le passé demandé couvre toute la fenêtre, pour que la courbe prédite s'étende sur la
+    // même période que les mesures et rende l'écart lisible sur toute la largeur.
+    expect(derniersParams().historique_heures).toBe(6);
+
+    // Plancher à 1 h : les modèles sont horaires, une fenêtre plus courte ne peut pas
     // demander un horizon plus fin.
     await wrapper.find(".select-fenetre").setValue(String(2 * 60 * 1000));
     await flushPromises();
-    const apres = api.get.mock.calls.filter(([url]) => url === "/sites/SITE001/predictions");
-    expect(apres[apres.length - 1][1].params.horizon_heures).toBe(1);
+    expect(derniersParams().horizon_heures).toBe(1);
   });
 
   it("recharge la prévision du nouveau site au changement de site", async () => {
@@ -578,7 +640,7 @@ describe("DashboardView", () => {
     await flushPromises();
 
     expect(api.get).toHaveBeenCalledWith("/sites/SITE002/predictions", expect.anything());
-    expect(graphiqueGrand().data.datasets[2].data.slice(-3)).toEqual([900, 910, 920]);
+    expect(ordonnees(graphiqueGrand().data.datasets[2].data)).toEqual([900, 910, 920]);
   });
 
   it("ne prédit que la puissance appelée, jamais les autres métriques", async () => {
