@@ -145,3 +145,37 @@ class DailySummaryOut(BaseModel):
     max_consumption_kw: float | None = None
     total_consumption_kwh: float | None = None
     avg_quality_score: float | None = None
+
+
+class PredictionOut(BaseModel):
+    """Une heure prédite pour un site. `predicted_kwh` est encadré par [lower_90, upper_90],
+    intervalle conforme à 90 % calibré sur un jeu jamais vu à l'entraînement — les bornes sont
+    NULL quand le run MLflow ne porte pas la métrique, jamais égales à la valeur centrale (ce
+    qui se lirait comme un intervalle de largeur nulle).
+
+    `data_source` remonte jusqu'au front à dessein : les modèles V1 sont entraînés sur CSV
+    synthétique ('csv_synthetic') et l'écran doit le dire, sans quoi ces courbes passent pour
+    des prévisions validées sur donnée réelle."""
+
+    # protected_namespaces=() : Pydantic v2 réserve le préfixe `model_` et avertit sur
+    # model_version / model_stage. Ces deux noms sont ceux des colonnes SQL et du vocabulaire
+    # MLflow — les renommer côté API pour contourner un avertissement ferait diverger le
+    # contrat du schéma qu'il expose.
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+    target_ts: datetime
+    step_minutes: int
+    predicted_kwh: float
+    lower_90: float | None = None
+    upper_90: float | None = None
+    temperature_celsius: float | None = None
+    model_version: str
+    model_stage: str | None = None
+    champion: str | None = None
+    data_source: str | None = None
+    predicted_at: datetime
+
+    @field_validator("target_ts", "predicted_at")
+    @classmethod
+    def _valider_horodatages(cls, valeur: datetime) -> datetime:
+        return _en_utc(valeur)

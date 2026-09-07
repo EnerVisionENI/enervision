@@ -5,11 +5,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import asc
 from sqlalchemy.orm import Session
 
-from api.auth import get_current_user
+from api.auth import get_active_user, get_current_user
 from api.config import get_settings
 from api.database import get_db
-from api.models import AggregateGoldDaily, MeasurementSilver, Site, User
-from api.schemas import DailySummaryOut, MeasurementOut, SiteCurrentReading, SiteOut
+from api.models import AggregateGoldDaily, MeasurementSilver, PredictionForecast, Site, User
+from api.schemas import (
+    DailySummaryOut,
+    MeasurementOut,
+    PredictionOut,
+    SiteCurrentReading,
+    SiteOut,
+)
 
 settings = get_settings()
 
@@ -76,3 +82,36 @@ def get_site_current_reading(
         ) from exc
 
     return SiteCurrentReading(**reponse.json())
+
+
+@router.get("/{site_id}/predictions", response_model=list[PredictionOut])
+def list_site_predictions(
+    site_id: str,
+    horizon_heures: int = Query(24, ge=1, le=168),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_active_user),
+) -> list[PredictionForecast]:
+    """Prévision de consommation à venir (table predictions_forecast, réécrite à chaque cycle
+    de ml/predict.py) : une ligne par heure, encadrée par son intervalle à 90 %.
+
+    Renvoie une liste vide plutôt qu'un 404 quand le site n'a pas de prévision. Trois des sept
+    sites ont un champion LightGBM qui réclame `solar_irradiance_wm2`, absente du gold : ils ne
+    sont pas inférables aujourd'hui et le resteront tant que cette variable n'est pas collectée.
+    C'est un état normal du système, pas une ressource manquante — et un site inconnu donne le
+    même résultat qu'un site sans modèle, ce que le front traite pareillement (aucune courbe).
+
+    Borné à partir de maintenant : la table conserve aussi les heures passées, que chaque cycle
+    laisse intactes pour permettre de comparer prévu et réalisé. Les rendre ici ferait
+    rétropédaler la courbe du dashboard sur des prévisions périmées."""
+    maintenant = datetime.now(UTC)
+    jusqua = maintenant + timedelta(hours=horizon_heures)
+    return (
+        db.query(PredictionForecast)
+        .filter(
+            PredictionForecast.site_id == site_id,
+            PredictionForecast.target_ts >= maintenant,
+            PredictionForecast.target_ts < jusqua,
+        )
+        .order_by(asc(PredictionForecast.target_ts))
+        .all()
+    )
