@@ -307,6 +307,60 @@ services:
         max-file: "3"
 
   # --------------------------------------------------------------------------
+  # Réentraînement des modèles de prévision à la demande
+  #
+  # Pas de restart: unless-stopped : ce conteneur tourne à la demande
+  # (`docker compose --profile mlflow run --rm ml`)
+  # un seul passage puis le conteneur se
+  # termine (pas de --schedule contrairement à ml-predict).
+  # justification : pour le moment nous n'avons pas assez de données pour automatiser
+  #
+  # Une fois assez de données, planifier via un scheduler Docker-natif déclaré ici même
+  # (pas de crontab système à installer à la main sur le serveur — `docker compose up`
+  # suffirait à tout activer). Exemple avec ofelia (https://github.com/mcuadros/ofelia) :
+  #
+  # scheduler:
+  #   image: mcuadros/ofelia:latest
+  #   container_name: enervision-scheduler
+  #   profiles: ["mlflow"]
+  #   command: daemon --docker
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   labels:
+  #     # Le 1er de chaque mois à 4h UTC (décalé du backup de 3h et du recalcul gold
+  #     # quotidien de 00h15, pour ne pas cumuler la charge sur le serveur).
+  #     ofelia.job-run.ml-retrain.schedule: "0 4 1 * *"
+  #     ofelia.job-run.ml-retrain.container: "enervision-ml"
+  #   restart: unless-stopped
+  # --------------------------------------------------------------------------
+  ml:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    image: ${ML_IMAGE:-enervision-ml:local}
+    container_name: enervision-ml
+    profiles: ["mlflow"]
+    env_file:
+      - .env
+    environment:
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+      MLFLOW_HTTP_REQUEST_MAX_RETRIES: "2"
+      MLFLOW_HTTP_REQUEST_TIMEOUT: "20"
+      # Même paire ML_MINIO_* que ml-predict, pas MINIO_* : le gold d'entraînement
+      # peut venir d'un MinIO distant (cf. conversation), sans jamais faire
+      # basculer le MinIO local que lisent les services etl.
+      MINIO_ENDPOINT: ${ML_MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: ${ML_MINIO_ACCESS_KEY:-ev_admin}
+      MINIO_SECRET_KEY: ${ML_MINIO_SECRET_KEY:-change_me_avant_le_deploiement}
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      mlflow:
+        condition: service_started
+    restart: "no"
+    networks:
+      - enervision-network
+
+  # --------------------------------------------------------------------------
   # Prévision de consommation — profile "mlflow"
   #
   # Recalcule l'horizon de prévision de chaque site à chaque déclenchement de PREDICT_CRON et
