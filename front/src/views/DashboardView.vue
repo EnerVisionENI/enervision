@@ -521,7 +521,10 @@ function construireDatasets(m, { avecPrediction = false } = {}) {
         borderColor: COULEUR_PREDICTION,
         borderDash: [5, 4],
         tension: 0.3,
-        pointRadius: 0,
+        // Marqueurs visibles, contrairement aux bornes : un point par heure prédite rend le
+        // pas du modèle lisible à l'œil. Sans eux, la ligne se confond avec la courbe des
+        // mesures à la minute et laisse croire à une prévision beaucoup plus fine.
+        pointRadius: 2,
         pointHoverRadius: 4,
         fill: false,
       },
@@ -587,11 +590,16 @@ function creerGraphiqueGrand() {
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
-      // mode "index" + intersect:false : survoler n'importe quel point de
-      // l'axe X déclenche le tooltip, pas besoin de viser un point au pixel
-      // près (les lignes n'ont pas de marqueur visible, pointRadius: 2 mais
-      // fin).
-      interaction: { mode: "index", intersect: false },
+      // mode "nearest" sur l'axe X, et surtout PAS "index" : ce dernier apparie les séries
+      // par numéro d'index, pas par horodatage. Il convenait tant que toutes partageaient le
+      // tableau de libellés, mais les prévisions portent désormais leurs propres abscisses —
+      // ~360 mesures à la minute face à ~9 prévisions à l'heure. L'index 5 des mesures (09:05)
+      // affichait alors la prévision d'index 5, une tout autre heure : l'infobulle inventait
+      // des prévisions à la minute alors que la base n'en contient qu'à l'heure.
+      //
+      // "nearest" ne renvoie qu'un point réel, jamais une correspondance fabriquée. La
+      // comparaison prévu/réalisé se lit sur les deux courbes superposées, pas dans l'infobulle.
+      interaction: { mode: "nearest", axis: "x", intersect: false },
       scales: {
         // Échelle temporelle et non catégorielle : les mesures arrivent à la minute, la
         // prévision à l'heure. Sur une échelle catégorielle, chaque point occupe la même
@@ -619,7 +627,8 @@ function creerGraphiqueGrand() {
       plugins: {
         legend: { display: false },
         tooltip: {
-          mode: "index",
+          mode: "nearest",
+          axis: "x",
           intersect: false,
           backgroundColor: "#0e1728",
           borderColor: "#1f2b42",
