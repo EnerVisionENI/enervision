@@ -657,7 +657,7 @@ describe("DashboardView", () => {
     // d'autre de chaque point horaire.
     expect(survol(200)).toEqual([
       [1, 0],
-      [2, 0],
+      [2, 1],
     ]);
     expect(survol(320)).toEqual([
       [1, 1],
