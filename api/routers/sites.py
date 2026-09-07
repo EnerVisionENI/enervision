@@ -9,10 +9,12 @@ from api.auth import get_active_user, get_current_user
 from api.config import get_settings
 from api.database import get_db
 from api.models import AggregateGoldDaily, MeasurementSilver, PredictionForecast, Site, User
+from api.recommendations import analyser_depassements
 from api.schemas import (
     DailySummaryOut,
     MeasurementOut,
     PredictionOut,
+    RecommandationOut,
     SiteCurrentReading,
     SiteOut,
 )
@@ -124,3 +126,43 @@ def list_site_predictions(
         .order_by(asc(PredictionForecast.target_ts))
         .all()
     )
+
+
+@router.get("/{site_id}/recommendations", response_model=list[RecommandationOut])
+def list_site_recommendations(
+    site_id: str,
+    horizon_heures: int = Query(24, ge=1, le=168),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_active_user),
+) -> list:
+    """Ajustements suggérés quand la prévision franchit la puissance souscrite du site.
+
+    Recalculé à chaque appel plutôt que stocké : une recommandation est entièrement déterminée
+    par predictions_forecast et sites.capacity_kw, et le futur est réécrit à chaque cycle
+    d'inférence. La persister imposerait de la réécrire aussi, avec le risque qu'elle survive
+    à la prévision qui l'a produite.
+
+    Seul le futur est examiné : recommander un ajustement sur une heure écoulée n'aurait aucun
+    effet. La comparaison du prévu au réalisé, elle, se lit sur le graphique (voir
+    l'endpoint predictions et son paramètre historique_heures).
+
+    Liste vide quand il n'y a rien à dire — site sans modèle inférable, sans puissance
+    souscrite renseignée, ou dont la prévision tient sous le seuil. C'est un résultat, pas une
+    absence de donnée, et le front l'affiche comme tel.
+
+    Ces recommandations héritent des limites du modèle qui les produit : les modèles V1 sont
+    entraînés sur CSV synthétique. `data_source` reste porté par l'endpoint predictions, que
+    le dashboard affiche déjà — d'où l'avertissement à l'écran."""
+    maintenant = datetime.now(UTC)
+    site = db.get(Site, site_id)
+    lignes = (
+        db.query(PredictionForecast)
+        .filter(
+            PredictionForecast.site_id == site_id,
+            PredictionForecast.target_ts >= maintenant,
+            PredictionForecast.target_ts < maintenant + timedelta(hours=horizon_heures),
+        )
+        .order_by(asc(PredictionForecast.target_ts))
+        .all()
+    )
+    return analyser_depassements(lignes, None if site is None else site.capacity_kw)

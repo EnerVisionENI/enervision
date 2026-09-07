@@ -467,3 +467,79 @@ def test_list_predictions_historique_hors_bornes_rejete(client, db_session):
     assert reponse.status_code == 422
     reponse = client.get("/api/v1/sites/SITE001/predictions?historique_heures=999", headers=headers)
     assert reponse.status_code == 422
+
+
+def test_list_recommendations_requires_token(client):
+    assert client.get("/api/v1/sites/SITE001/recommendations").status_code == 401
+
+
+def test_list_recommendations_refuse_mot_de_passe_temporaire(client, db_session):
+    make_user(db_session, "neuf@enervision.fr", "password123", "viewer", must_change_password=True)
+    headers = auth_headers(client, "neuf@enervision.fr", "password123")
+
+    assert client.get("/api/v1/sites/SITE001/recommendations", headers=headers).status_code == 403
+
+
+def test_list_recommendations_signale_un_depassement_a_venir(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    make_site(db_session, "SITE003", capacity_kw=800.0)
+    make_prediction(
+        db_session, "SITE003", datetime.now(UTC) + timedelta(hours=1), predicted_kwh=850.0, upper_90=900.0
+    )
+
+    reponse = client.get("/api/v1/sites/SITE003/recommendations", headers=headers)
+
+    assert reponse.status_code == 200
+    body = reponse.json()
+    assert len(body) == 1
+    assert body[0]["niveau"] == "depassement_prevu"
+    assert body[0]["depassement_max_kw"] == 50.0
+    assert body[0]["capacity_kw"] == 800.0
+    assert "Décaler ou lisser" in body[0]["message"]
+
+
+def test_list_recommendations_ignore_les_heures_passees(client, db_session):
+    """Recommander un ajustement sur une heure écoulée n'aurait aucun effet."""
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    make_site(db_session, "SITE003", capacity_kw=800.0)
+    make_prediction(
+        db_session, "SITE003", datetime.now(UTC) - timedelta(hours=2), predicted_kwh=999.0, upper_90=999.0
+    )
+
+    assert client.get("/api/v1/sites/SITE003/recommendations", headers=headers).json() == []
+
+
+def test_list_recommendations_site_sans_capacite_renvoie_vide(client, db_session):
+    """capacity_kw est nullable : sans seuil contractuel, il n'y a rien à dépasser."""
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    make_site(db_session, "SITE009", capacity_kw=None)
+    make_prediction(db_session, "SITE009", datetime.now(UTC) + timedelta(hours=1), predicted_kwh=9999.0)
+
+    reponse = client.get("/api/v1/sites/SITE009/recommendations", headers=headers)
+
+    assert reponse.status_code == 200
+    assert reponse.json() == []
+
+
+def test_list_recommendations_site_inconnu_renvoie_vide(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+
+    reponse = client.get("/api/v1/sites/INCONNU/recommendations", headers=headers)
+
+    assert reponse.status_code == 200
+    assert reponse.json() == []
+
+
+def test_list_recommendations_rien_a_signaler_sous_le_seuil(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    make_site(db_session, "SITE001", capacity_kw=200.0)
+    make_prediction(
+        db_session, "SITE001", datetime.now(UTC) + timedelta(hours=1), predicted_kwh=100.0, upper_90=150.0
+    )
+
+    assert client.get("/api/v1/sites/SITE001/recommendations", headers=headers).json() == []

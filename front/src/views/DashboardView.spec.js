@@ -75,14 +75,33 @@ function previsionsAVenir({ n = 3, base = 150, dansHeures = 1, ...reste } = {}) 
   return lignes;
 }
 
-function mockApi({ sites = SITES, lectures = {}, previsions = {} } = {}) {
+function recommandation({ niveau = "depassement_prevu", heures = 2, ...reste } = {}) {
+  const debut = new Date(Date.now() + 3_600_000);
+  return {
+    niveau,
+    debut: debut.toISOString(),
+    fin: new Date(debut.getTime() + heures * 3_600_000).toISOString(),
+    heures_concernees: heures,
+    capacity_kw: 800,
+    pic_kwh: 847,
+    depassement_max_kw: 47,
+    message: "Dépassement prévu pendant 2 h : jusqu'à 47 kW au-dessus des 800 kW souscrits.",
+    ...reste,
+  };
+}
+
+function mockApi({ sites = SITES, lectures = {}, previsions = {}, recommandations = {} } = {}) {
   api.get.mockImplementation((url) => {
     if (url === "/sites") return Promise.resolve({ data: sites });
     if (lectures[url]) return lectures[url]();
-    // Défaut à liste vide : la plupart des tests ne portent pas sur la prévision et ne
-    // doivent pas basculer l'écran en « service injoignable » faute de mock.
+    // Défaut à liste vide : la plupart des tests ne portent ni sur la prévision ni sur les
+    // recommandations, et ne doivent pas basculer l'écran en « service injoignable » faute
+    // de mock.
     if (url.endsWith("/predictions")) {
       return previsions[url] ? previsions[url]() : Promise.resolve({ data: [] });
+    }
+    if (url.endsWith("/recommendations")) {
+      return recommandations[url] ? recommandations[url]() : Promise.resolve({ data: [] });
     }
     return Promise.reject(new Error(`URL non mockée: ${url}`));
   });
@@ -736,6 +755,131 @@ describe("DashboardView", () => {
       "Puissance appelée",
       "Puissance souscrite (kW)",
     ]);
+  });
+
+  it("affiche la recommandation de dépassement servie par l'API", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      recommandations: {
+        "/sites/SITE001/recommendations": () => Promise.resolve({ data: [recommandation()] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Dépassement prévu pendant 2 h");
+    expect(wrapper.text()).toContain("+47 kW");
+    // Le principe posé par la maquette d'origine, à ne pas perdre : on suggère, on ne pilote pas.
+    expect(wrapper.text()).toContain("aucune commande automatique");
+    expect(wrapper.find(".recommandation").classes()).toContain("critique");
+  });
+
+  it("distingue un risque d'un dépassement prévu, y compris à la couleur", async () => {
+    // Les deux n'appellent pas la même réaction : agir dans un cas, surveiller dans l'autre.
+    // Les présenter pareil décrédibiliserait les vraies alertes.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      recommandations: {
+        "/sites/SITE001/recommendations": () =>
+          Promise.resolve({ data: [recommandation({ niveau: "risque_depassement" })] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    const panneau = wrapper.find(".recommandation");
+    expect(panneau.classes()).toContain("avertissement");
+    expect(panneau.classes()).not.toContain("critique");
+  });
+
+  it("annonce explicitement l'absence de dépassement prévu", async () => {
+    // Un panneau vide se lit comme une panne. « Rien à signaler » est une information.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir() }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Aucun dépassement prévu");
+    expect(wrapper.find(".recommandation").classes()).not.toContain("critique");
+  });
+
+  it("ne présente pas une absence de prévision comme un feu vert", async () => {
+    // SITE002/004/007 n'ont aucun modèle inférable : ne rien pouvoir dire n'est pas la même
+    // chose que n'avoir rien à signaler.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Aucun modèle de prévision pour ce site");
+    expect(wrapper.text()).not.toContain("Aucun dépassement prévu");
+  });
+
+  it("distingue un service de recommandation en panne d'une absence de dépassement", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir() }),
+      },
+      recommandations: {
+        "/sites/SITE001/recommendations": () => Promise.reject(new Error("503")),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Recommandations indisponibles");
+    expect(wrapper.text()).not.toContain("Aucun dépassement prévu");
+  });
+
+  it("recharge les recommandations du nouveau site au changement de site", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+      },
+      recommandations: {
+        "/sites/SITE001/recommendations": () => Promise.resolve({ data: [] }),
+        "/sites/SITE002/recommendations": () => Promise.resolve({ data: [recommandation()] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+    const carte = wrapper.findAll(".parc-carte").find((c) => c.text().includes("SITE002"));
+    await carte.trigger("click");
+    await flushPromises();
+
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE002/recommendations", expect.anything());
+    expect(wrapper.text()).toContain("Dépassement prévu pendant 2 h");
   });
 
   it("affiche un message d'erreur si le chargement des sites échoue", async () => {

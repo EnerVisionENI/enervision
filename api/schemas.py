@@ -179,3 +179,24 @@ class PredictionOut(BaseModel):
     @classmethod
     def _valider_horodatages(cls, valeur: datetime) -> datetime:
         return _en_utc(valeur)
+
+
+class RecommandationOut(BaseModel):
+    """Fenêtre de dépassement déduite de la prévision et de la puissance souscrite du site.
+    Rien n'est persisté : voir api/recommendations.py pour le raisonnement.
+
+    `debut` et `fin` sont livrés bruts et le message n'en porte aucune trace : c'est le front
+    qui les rend, dans le fuseau de l'utilisateur. Les inscrire dans la phrase les figerait en
+    UTC et ferait diverger la recommandation du graphique affiché au-dessus.
+
+    `fin` est une borne exclusive — la fin du dernier créneau concerné, pas son début — pour
+    qu'une fenêtre d'une heure ait bien une durée d'une heure."""
+
+    niveau: str
+    debut: datetime
+    fin: datetime
+    heures_concernees: int
+    capacity_kw: float
+    pic_kwh: float
+    depassement_max_kw: float
+    message: str
