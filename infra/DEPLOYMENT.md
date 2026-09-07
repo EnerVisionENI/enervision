@@ -243,6 +243,40 @@ l'environnement du script (équivalent de `source` avec export) — c'est l'équ
 > repasser le job `deploy` sur `ubuntu-latest` avec une connexion SSH classique (secrets `DEPLOY_HOST`,
 > `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PORT`, `DEPLOY_PATH`).
 
+### Réentraînement mensuel des modèles de prévision (profile `mlflow`, service `ml`)
+
+`ml/train.py` **est** un service `compose.yaml` (profile `mlflow`, comme `mlflow` et `ml-predict`) — il a
+besoin de l'image `enervision-ml:local` (dépendances lourdes : LightGBM, statsmodels, pandas) et du réseau
+Docker interne pour joindre `minio:9000` et `mlflow:5000`. Il n'est jamais démarré avec `up -d` :
+`ml/Dockerfile` lance `python train.py` une fois puis le conteneur se termine (`restart: "no"`).
+
+Sans `--site`, `train.py` détecte et réentraîne **tous** les sites présents dans le gold (pas de liste codée
+en dur, voir `ml/core/data.py::list_available_sites`). Les fenêtres train/calib/test glissent automatiquement
+par rapport à la date du run (90/7/7 jours par défaut, réglable via `TRAIN_WINDOW_DAYS`/`CALIB_WINDOW_DAYS`/
+`TEST_WINDOW_DAYS` dans `.env`) — sans ça, un réentraînement mensuel répéterait indéfiniment sur la même
+fenêtre figée. Chaque site dont le MASE passe sous le seuil (`MASE_PROMOTION_THRESHOLD`) obtient une nouvelle
+version dans le Model Registry MLflow (stage `Staging`, jamais `Production` automatiquement).
+
+**Déclenchement manuel** (ce qui existe aujourd'hui) :
+```bash
+docker compose --profile mlflow run --rm ml
+```
+`docker compose run --rm` reconstruit l'image si le code de `ml/` a changé depuis le dernier run, exécute
+`train.py`, puis supprime le conteneur (`--rm`) — rien ne traîne entre deux réentraînements.
+
+**Pas encore automatisé** — volontairement, tant que le gold n'a pas assez de volume (TOWT est calendaire,
+`C(time_of_week)` sur 168 créneaux : `train` seul a besoin d'au moins 7 jours pleins pour les couvrir, voir
+`ml/README.md`). Une fois le volume suffisant, la planification se fera par un **scheduler Docker-natif
+déclaré dans `compose.yaml`** (ex. `ofelia`, cf. le commentaire au-dessus du service `ml`) plutôt qu'une
+crontab système à installer à la main sur le serveur — `docker compose up` suffira alors à tout activer, sans
+étape manuelle oubliable.
+
+> Avec peu d'historique réel (premiers mois de collecte), le jeu `calib` ou `test` peut être vide pour
+> certains sites — `train.py` le journalise site par site (`⚠️ <site> : échec du réentraînement — ...`) sans
+> bloquer les autres, exit code global 0 tant qu'au moins un site est détecté dans le gold (échec silencieux
+> site par site, pas au niveau du script). Seule l'absence totale de site détecté fait sortir en erreur. Un
+> site en échec récurrent n'a simplement pas encore assez de gold, ce n'est pas une panne du script.
+
 ### Observabilité — métriques serveur (profile `observability`)
 
 Quatre services, tous optionnels et sans impact sur l'application :

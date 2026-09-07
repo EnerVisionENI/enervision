@@ -56,6 +56,32 @@ def _daterange(start: str, end: str):
         d += timedelta(days=1)
 
 
+def list_available_sites(reference_date: str, lookback_days: int = 7) -> list[str]:
+    """Liste les site_id présents dans le gold sur les `lookback_days` jours
+    précédant (et incluant) `reference_date`, en listant directement les
+    partitions MinIO (Delimiter="/") — pas d'appel à l'API, cohérent avec le
+    reste de ce module qui ne parle qu'au stockage.
+
+    Sert à découvrir automatiquement quels sites réentraîner (cron mensuel),
+    sans liste codée en dur qui se périmerait à chaque site ajouté/retiré.
+    Plusieurs jours de recul : un site peut manquer un jour précis (panne de
+    collecte) sans pour autant devoir être exclu du réentraînement.
+    """
+    client = _s3_client()
+    ref = datetime.fromisoformat(reference_date[:10])
+    site_ids = set()
+    for offset in range(lookback_days):
+        day = (ref - timedelta(days=offset)).strftime("%Y-%m-%d")
+        prefix = f"{MINIO_GOLD_HOURLY_PREFIX}/record_date={day}/"
+        resp = client.list_objects_v2(Bucket=MINIO_BUCKET_GOLD, Prefix=prefix, Delimiter="/")
+        for common_prefix in resp.get("CommonPrefixes", []):
+            # ex. "hourly/record_date=2026-09-04/site_id=SITE001/" -> "SITE001"
+            segment = common_prefix["Prefix"].rstrip("/").rsplit("/", 1)[-1]
+            if segment.startswith("site_id="):
+                site_ids.add(segment.removeprefix("site_id="))
+    return sorted(site_ids)
+
+
 def load_gold_hourly(site_id: str, start: str, end: str) -> pd.DataFrame:
     """
     Charge le gold horaire d'un site sur une période, depuis le

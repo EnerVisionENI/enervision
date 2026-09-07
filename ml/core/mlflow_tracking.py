@@ -13,6 +13,7 @@ import mlflow
 import mlflow.lightgbm
 import mlflow.statsmodels
 from dotenv import load_dotenv
+from mlflow.tracking import MlflowClient
 
 load_dotenv()
 
@@ -66,10 +67,44 @@ def log_run(
             promoted = "naive_fallback"
 
         mlflow.set_tag("promoted", promoted)
+        mlflow.set_tag("data_source", "gold_real")
         mlflow.set_tag("fuse_triggered", str(mase_towt >= MASE_PROMOTION_THRESHOLD))
 
         print(f"[MLflow] run_id={run.info.run_id} — modèle promu : {promoted}")
-        if promoted == "naive_fallback":
-            print(f"⚠️  FUSIBLE DÉCLENCHÉ : MASE TOWT = {mase_towt:.3f} >= {MASE_PROMOTION_THRESHOLD}")
+
+        # Sous le seuil : le champion réel (towt) est enregistré comme nouvelle
+        # version dans le Model Registry — même convention de nom que
+        # scripts/train_v1_csv.py (enervision-forecast-<site>), donc un
+        # réentraînement sur gold réel vient s'empiler sur les versions CSV
+        # existantes plutôt que de créer un modèle séparé. Toujours en Staging :
+        # jamais promu Production automatiquement, un humain décide.
+        # Au-dessus du seuil (fusible déclenché) : rien à enregistrer, le naïf
+        # n'est pas un objet modèle logué (cf. plus haut, seuls towt_model et
+        # lightgbm_model sont loggés).
+        if promoted == "towt":
+            client = MlflowClient()
+            registered_name = f"enervision-forecast-{site_id.lower()}"
+            model_uri = f"runs:/{run.info.run_id}/towt_model"
+            mv = mlflow.register_model(model_uri, registered_name)
+            client.transition_model_version_stage(
+                name=registered_name,
+                version=mv.version,
+                stage="Staging",
+                archive_existing_versions=True,
+            )
+            client.update_model_version(
+                name=registered_name,
+                version=mv.version,
+                description=(
+                    f"Réentraîné sur gold réel ({train_start} -> {train_end}). "
+                    f"MASE TOWT={mase_towt:.3f}, marge conforme 90%={conformal_margin_90:.1f}, "
+                    f"couverture empirique={coverage:.1%}. "
+                    "Attention : température constante (pas encore dans le gold) et heures "
+                    "manquantes comblées par ffill/bfill — voir FIXME de core/data.py."
+                ),
+            )
+            print(f"[MLflow] -> {registered_name} v{mv.version} (Staging)")
+        else:
+            print(f"⚠️  FUSIBLE DÉCLENCHÉ : MASE TOWT = {mase_towt:.3f} >= {MASE_PROMOTION_THRESHOLD} — pas de nouvelle version enregistrée")
 
         return promoted

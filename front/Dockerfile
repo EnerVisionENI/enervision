@@ -42,8 +42,12 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 EXPOSE 80
 
 # Health check
+# 127.0.0.1 explicite, pas "localhost" : nginx n'écoute qu'en IPv4 (0.0.0.0:80),
+# mais le résolveur du conteneur essaie "localhost" -> ::1 (IPv6) en premier,
+# où rien n'écoute -> "Connection refused" et échec systématique du healthcheck,
+# alors que nginx répond très bien (cf. incident du 4/9).
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1/health || exit 1
 
 # Start nginx
 CMD ["nginx", "-g", "daemon off;"]
