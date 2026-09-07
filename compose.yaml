@@ -336,7 +336,14 @@ services:
     environment:
       # Les valeurs de `environment` priment sur celles de env_file : elles remplacent les
       # localhost du .env par les noms de services du réseau interne.
-      MLFLOW_TRACKING_URI: http://mlflow:5000
+      #
+      # Surchargeable : tant que le registry local est vide, un poste de dev pointe sur le
+      # serveur de déploiement (MLFLOW_TRACKING_URI=http://10.105.200.44:5000 dans le .env).
+      # Le registry et les artefacts vont de pair — le client MLflow télécharge les modèles
+      # directement depuis le bucket, sans relai par le serveur — donc pointer le tracking
+      # ailleurs impose de pointer ML_MINIO_* sur le MinIO du même hôte, sans quoi le download
+      # d'artefact cherche dans un bucket local vide.
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       # Par défaut le client MLflow retente 7 fois avec un backoff x2 et un timeout de 120 s :
       # un serveur injoignable rend le cycle muet pendant un quart d'heure avant de le dire.
       # Un cycle qui échoue en quelques secondes et le logge vaut mieux, le cron reprend ensuite.
@@ -354,9 +361,14 @@ services:
       PYTHONUNBUFFERED: "1"
       # Avec le schéma, contrairement aux services etl : ml/core/data.py passe MINIO_ENDPOINT
       # tel quel à boto3 comme endpoint_url.
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      # ML_MINIO_* et non MINIO_* : ces trois valeurs suivent MLFLOW_TRACKING_URI (artefacts des
+      # modèles), pas le MinIO du pipeline bronze/silver/gold que les services etl continuent
+      # de lire en local. Les confondre ferait basculer tout l'ETL sur le MinIO distant.
+      MINIO_ENDPOINT: ${ML_MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: ${ML_MINIO_ACCESS_KEY:-ev_admin}
+      MINIO_SECRET_KEY: ${ML_MINIO_SECRET_KEY:-change_me_avant_le_deploiement}
+      # Les prévisions sont écrites en local quel que soit le registry lu : on lit des modèles
+      # distants, on n'écrit jamais dans la base du serveur de déploiement.
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
     depends_on:
