@@ -30,25 +30,27 @@ const routes = [
     path: "/alertes",
     name: "alerts",
     component: AlertsView,
-    meta: { requiresAuth: true, nav: "Alertes" },
+    meta: { requiresAuth: true, nav: "Alertes", pleinePage: true },
   },
   {
     path: "/capteurs",
     name: "sensors",
     component: SensorView,
-    meta: { requiresAuth: true, nav: "Capteurs" },
+    meta: { requiresAuth: true, nav: "Capteurs", pleinePage: true },
   },
   {
     path: "/utilisateurs",
     name: "users",
     component: UsersView,
-    meta: { requiresAuth: true, nav: "Utilisateurs", role: "admin" },
+    meta: { requiresAuth: true, nav: "Utilisateurs", role: "admin", pleinePage: true },
   },
   {
     path: "/mot-de-passe",
     name: "change-password",
     component: ChangePasswordView,
-    meta: { requiresAuth: true, layout: "bare", nav: "Mot de passe" },
+    // Pas de meta.nav : l'accès passe par le menu utilisateur de l'en-tête, pas
+    // par la barre de navigation principale.
+    meta: { requiresAuth: true, layout: "bare" },
   },
   {
     path: "/:pathMatch(.*)*",

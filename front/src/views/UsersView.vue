@@ -364,6 +364,27 @@ onMounted(chargerUtilisateurs);
 </script>
 
 <style scoped>
+/* Même langage « console » que le Dashboard et les Capteurs. Les classes
+   utilitaires globales (.btn, .field, .alert) sont réhabillées ici, sous la
+   portée .users, sans toucher au thème clair du reste des utilitaires. */
+.users {
+  --bg: #0b1220;
+  --panel: #121a2b;
+  --panel-2: #0e1728;
+  --border: #1f2b42;
+  --text: #e5e9f0;
+  --text-muted: #6b7a99;
+  --ok: #2dd4bf;
+  --alerte: #f59e0b;
+  --danger: #ef4444;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+
+  background: var(--bg);
+  color: var(--text);
+  padding: 24px;
+  min-height: calc(100vh - 120px);
+}
+
 .users-header {
   display: flex;
   align-items: center;
@@ -371,6 +392,8 @@ onMounted(chargerUtilisateurs);
   flex-wrap: wrap;
   gap: 16px;
   margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
 }
 
 .heading {
@@ -380,27 +403,121 @@ onMounted(chargerUtilisateurs);
 }
 
 .heading h2 {
-  color: #333;
-  font-size: 1.8em;
+  color: var(--text);
+  font-size: 1.4em;
+  font-weight: 600;
+  margin: 0;
 }
 
 .count {
-  color: #888;
-  font-size: 0.9em;
+  font-family: var(--mono);
+  font-size: 0.78em;
+  color: var(--text-muted);
+}
+
+/* Boutons : filet + tint, jamais d'aplat plein ni de translation au survol. */
+.users .btn {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: none;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.78em;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+}
+
+.users .btn:not(:disabled):hover {
+  transform: none;
+}
+
+.users .btn:disabled {
+  opacity: 0.4;
+}
+
+.users .btn-primary {
+  border-color: var(--ok);
+  background: rgba(45, 212, 191, 0.1);
+  color: var(--ok);
+}
+
+.users .btn-primary:not(:disabled):hover {
+  background: rgba(45, 212, 191, 0.2);
+}
+
+.users .btn-secondary {
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.users .btn-secondary:not(:disabled):hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.users .btn-danger {
+  border-color: var(--danger);
+  background: rgba(239, 68, 68, 0.08);
+  color: #fca5a5;
+}
+
+.users .btn-danger:not(:disabled):hover {
+  background: rgba(239, 68, 68, 0.16);
+}
+
+.users .btn-small {
+  padding: 5px 10px;
+  font-size: 0.72em;
 }
 
 .creation {
-  padding: 24px;
+  padding: 20px;
   margin-bottom: 24px;
-  border: 1px solid #e6e6f0;
-  border-radius: 12px;
-  background: #fafafe;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel);
 }
 
 .creation-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 18px;
+}
+
+.users .field label {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.72em;
+  letter-spacing: 0.04em;
+  font-weight: 500;
+}
+
+.users .field input,
+.users .field select {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+
+.users .field input:focus,
+.users .field select:focus {
+  border-color: var(--ok);
+  box-shadow: none;
+}
+
+.users .field input::placeholder {
+  color: #3b4a68;
+}
+
+.users .field .hint {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.72em;
+  line-height: 1.6;
 }
 
 .avec-bouton {
@@ -424,40 +541,68 @@ onMounted(chargerUtilisateurs);
   margin-bottom: 20px;
 }
 
+.users .alert {
+  border-radius: 3px;
+  border-left: 2px solid;
+  background: var(--panel-2);
+  font-family: var(--mono);
+  font-size: 0.78em;
+  line-height: 1.55;
+}
+
+.users .alert-error {
+  border-color: var(--danger);
+  color: #fca5a5;
+}
+
+.users .alert-success {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.users .alert-info {
+  border-color: var(--text-muted);
+  color: var(--text-muted);
+}
+
 .table-wrapper {
   overflow-x: auto;
-  border-radius: 12px;
-  border: 1px solid #eee;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+  border-radius: 3px;
+  border: 1px solid var(--border);
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.95em;
+  font-size: 0.85em;
 }
 
 thead th {
-  background: #f6f7fd;
-  color: #667eea;
-  font-size: 0.78em;
+  background: var(--panel);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.72em;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   text-align: left;
-  padding: 14px 16px;
-  border-bottom: 2px solid #eee;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 
 td {
-  padding: 12px 16px;
-  border-bottom: 1px solid #f0f0f0;
-  color: #333;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
   vertical-align: middle;
 }
 
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
 tbody tr:hover {
-  background: #f7f8fd;
+  background: var(--panel);
 }
 
 td.email {
@@ -466,52 +611,55 @@ td.email {
 
 .moi {
   margin-left: 8px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: #eef0fd;
-  color: #4c5fd5;
-  font-size: 0.72em;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: rgba(45, 212, 191, 0.12);
+  color: var(--ok);
+  font-family: var(--mono);
+  font-size: 0.66em;
   font-weight: 600;
   text-transform: uppercase;
 }
 
 .role-select {
-  padding: 7px 10px;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  background: white;
-  color: #333;
-  font-family: inherit;
-  font-size: 0.9em;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.8em;
   cursor: pointer;
 }
 
 .role-select:disabled {
-  background: #f5f5f8;
-  color: #999;
+  opacity: 0.4;
+  background: var(--panel);
   cursor: not-allowed;
 }
 
 .badge {
   display: inline-block;
-  padding: 5px 12px;
-  border-radius: 999px;
-  font-size: 0.78em;
-  font-weight: 600;
+  padding: 3px 10px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 0.72em;
+  font-weight: 500;
 }
 
 .badge-actif {
-  background: #e8f5e9;
-  color: #2e7d32;
+  color: var(--ok);
 }
 
 .badge-attente {
-  background: #fff4e5;
-  color: #b26a00;
+  color: var(--alerte);
 }
 
 td.date {
-  color: #666;
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
@@ -527,19 +675,18 @@ td.date {
 .loading,
 .error,
 .empty {
-  padding: 40px 20px;
-  text-align: center;
-  border-radius: 12px;
-  background: #fafafa;
+  padding: 32px 16px;
+  border-radius: 3px;
+  background: var(--panel);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.85em;
 }
 
 .error {
-  color: #c62828;
-  background: #fdecea;
-}
-
-.empty {
-  color: #888;
+  color: #fca5a5;
+  background: var(--panel-2);
+  border-left: 2px solid var(--danger);
 }
 
 .overlay {
@@ -549,32 +696,43 @@ td.date {
   align-items: center;
   justify-content: center;
   padding: 20px;
-  background: rgba(30, 30, 50, 0.45);
+  background: rgba(3, 7, 18, 0.72);
   z-index: 10;
 }
 
 .modale {
   width: 100%;
   max-width: 440px;
-  padding: 28px;
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  padding: 24px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  color: var(--text);
 }
 
 .modale h3 {
-  color: #333;
+  color: var(--text);
+  font-size: 1.05em;
   margin-bottom: 10px;
 }
 
 .modale-texte {
-  color: #666;
-  font-size: 0.92em;
-  line-height: 1.5;
+  color: var(--text-muted);
+  font-size: 0.9em;
+  line-height: 1.55;
   margin-bottom: 20px;
 }
 
-@media (max-width: 700px) {
+.modale-texte strong {
+  color: var(--text);
+}
+
+@media (max-width: 768px) {
+  .users {
+    padding: 14px;
+  }
+
   .users-header {
     align-items: stretch;
   }

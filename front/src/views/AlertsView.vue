@@ -183,6 +183,26 @@ onMounted(chargerAlertes);
 </script>
 
 <style scoped>
+/* Même langage « console » que le Dashboard et les Capteurs : fond sombre,
+   filets, monospace pour les libellés techniques, angles à 3px, accent teal. */
+.alerts {
+  --bg: #0b1220;
+  --panel: #121a2b;
+  --panel-2: #0e1728;
+  --border: #1f2b42;
+  --text: #e5e9f0;
+  --text-muted: #6b7a99;
+  --ok: #2dd4bf;
+  --alerte: #f59e0b;
+  --danger: #ef4444;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+
+  background: var(--bg);
+  color: var(--text);
+  padding: 24px;
+  min-height: calc(100vh - 120px);
+}
+
 .alerts-header {
   display: flex;
   align-items: center;
@@ -190,6 +210,8 @@ onMounted(chargerAlertes);
   flex-wrap: wrap;
   gap: 16px;
   margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
 }
 
 .heading {
@@ -199,19 +221,22 @@ onMounted(chargerAlertes);
 }
 
 .heading h2 {
-  color: #333;
-  font-size: 1.8em;
+  color: var(--text);
+  font-size: 1.4em;
+  font-weight: 600;
+  margin: 0;
 }
 
 .count {
-  color: #888;
-  font-size: 0.9em;
+  font-family: var(--mono);
+  font-size: 0.78em;
+  color: var(--text-muted);
 }
 
 .filtres {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
   flex-wrap: wrap;
 }
 
@@ -222,53 +247,55 @@ onMounted(chargerAlertes);
 }
 
 .champ label {
-  color: #666;
-  font-size: 0.9em;
-  font-weight: 500;
+  font-family: var(--mono);
+  font-size: 0.72em;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
 select {
-  padding: 8px 14px;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  font-size: 0.95em;
-  background: white;
-  color: #333;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 0.78em;
+  background: var(--panel-2);
+  color: var(--text);
   cursor: pointer;
-  transition: border-color 0.2s ease;
+  transition: border-color 0.15s ease;
 }
 
 select:hover,
 select:focus {
-  border-color: #667eea;
+  border-color: var(--text-muted);
   outline: none;
 }
 
 .table-wrapper {
   overflow-x: auto;
-  border-radius: 12px;
-  border: 1px solid #eee;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+  border-radius: 3px;
+  border: 1px solid var(--border);
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.95em;
+  font-size: 0.85em;
 }
 
 thead th {
   position: sticky;
   top: 0;
-  background: #f6f7fd;
-  color: #667eea;
-  font-size: 0.78em;
+  background: var(--panel);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.72em;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   text-align: left;
-  padding: 14px 16px;
-  border-bottom: 2px solid #eee;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 
@@ -278,33 +305,40 @@ th.sortable {
 }
 
 th.sortable:hover {
-  color: #4c5fd5;
+  color: var(--text);
 }
 
 .fleche {
   display: inline-block;
   width: 10px;
   font-size: 0.9em;
+  color: var(--ok);
 }
 
 td {
-  padding: 14px 16px;
-  border-bottom: 1px solid #f0f0f0;
-  color: #333;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
   vertical-align: top;
 }
 
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
 tbody tr:nth-child(even) {
-  background: #fafafe;
+  background: rgba(255, 255, 255, 0.02);
 }
 
 tbody tr:hover {
-  background: #f0f1fb;
+  background: var(--panel);
 }
 
 td.date {
   white-space: nowrap;
-  color: #666;
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--text-muted);
 }
 
 td.message {
@@ -317,20 +351,23 @@ th.numerique {
 }
 
 td.numerique {
+  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
+/* Filet + tint plutôt qu'aplat plein — convention d'accent du reste de l'app. */
 .badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 12px;
-  border-radius: 999px;
-  font-size: 0.82em;
-  font-weight: 600;
-  color: white;
-  background: #999;
+  padding: 3px 10px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 0.72em;
+  font-weight: 500;
+  color: var(--text-muted);
 }
 
 .badge::before {
@@ -338,44 +375,47 @@ td.numerique {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.85);
+  background: currentColor;
 }
 
 .badge-low {
-  background: #4caf50;
+  color: var(--ok);
 }
 
 .badge-medium {
-  background: #ff9800;
+  color: var(--alerte);
 }
 
 .badge-high {
-  background: #f4511e;
+  color: #fb923c;
 }
 
 .badge-critical {
-  background: #c62828;
+  color: var(--danger);
 }
 
 .loading,
 .error,
 .empty {
-  padding: 40px 20px;
-  text-align: center;
-  border-radius: 12px;
-  background: #fafafa;
+  padding: 32px 16px;
+  border-radius: 3px;
+  background: var(--panel);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.85em;
 }
 
 .error {
-  color: #c62828;
-  background: #fdecea;
+  color: #fca5a5;
+  background: var(--panel-2);
+  border-left: 2px solid var(--danger);
 }
 
-.empty {
-  color: #888;
-}
+@media (max-width: 768px) {
+  .alerts {
+    padding: 14px;
+  }
 
-@media (max-width: 600px) {
   .alerts-header {
     flex-direction: column;
     align-items: stretch;
