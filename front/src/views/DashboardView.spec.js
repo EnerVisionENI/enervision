@@ -51,10 +51,39 @@ const MESURE_DEGRADEE = {
   null_reasons: ["humidity_sensor_failure"],
 };
 
-function mockApi({ sites = SITES, lectures = {} } = {}) {
+// Une heure prédite telle que la sert GET /sites/{id}/predictions. Horodatages dynamiques :
+// l'API ne renvoie que du futur, et le composant écarte tout point antérieur au dernier
+// instant mesuré — des dates fixes seraient rejetées.
+function previsionsAVenir({ n = 3, base = 150, dansHeures = 1, ...reste } = {}) {
+  const lignes = [];
+  for (let i = 0; i < n; i++) {
+    lignes.push({
+      target_ts: new Date(Date.now() + (dansHeures + i) * 3_600_000).toISOString(),
+      step_minutes: 60,
+      predicted_kwh: base + i * 10,
+      lower_90: base + i * 10 - 20,
+      upper_90: base + i * 10 + 20,
+      temperature_celsius: 10.6,
+      model_version: "1",
+      model_stage: "Production",
+      champion: "tow_temp",
+      data_source: "csv_synthetic",
+      predicted_at: new Date().toISOString(),
+      ...reste,
+    });
+  }
+  return lignes;
+}
+
+function mockApi({ sites = SITES, lectures = {}, previsions = {} } = {}) {
   api.get.mockImplementation((url) => {
     if (url === "/sites") return Promise.resolve({ data: sites });
     if (lectures[url]) return lectures[url]();
+    // Défaut à liste vide : la plupart des tests ne portent pas sur la prévision et ne
+    // doivent pas basculer l'écran en « service injoignable » faute de mock.
+    if (url.endsWith("/predictions")) {
+      return previsions[url] ? previsions[url]() : Promise.resolve({ data: [] });
+    }
     return Promise.reject(new Error(`URL non mockée: ${url}`));
   });
 }
@@ -255,6 +284,308 @@ describe("DashboardView", () => {
 
     expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", { params: { depuis_minutes: 2 } });
     expect(api.get).toHaveBeenCalledWith("/sites/SITE002/measurements", { params: { depuis_minutes: 2 } });
+  });
+
+  // Le grand graphique de la puissance appelée est prolongé par une prédiction
+  // mockée (aucun modèle ML côté backend) : trait pointillé + bande
+  // d'incertitude, à la suite des mesures réelles.
+  function graphiqueGrand() {
+    return chartInstances.filter((c) => !c.destroyed).find((c) => c.options.scales.x.display !== false);
+  }
+
+  function mesuresSurUneHeure({ n = 20, base = 100 } = {}) {
+    const mesures = [];
+    for (let i = n; i > 0; i--) {
+      mesures.push({ ...MESURE_OK, timestamp: new Date(Date.now() - i * 60_000).toISOString(), consumption_kw: base + (i % 3) });
+    }
+    return mesures;
+  }
+
+  it("prolonge la puissance appelée par la prévision servie par l'API", async () => {
+    const reelles = mesuresSurUneHeure({ n: 20, base: 100 });
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: reelles }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir({ n: 3, base: 150 }) }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+    // Fenêtre 1 h : sur la fenêtre par défaut (2 min), la purge par âge ne laisserait que
+    // deux des vingt mesures et l'assertion ne porterait plus sur le raccord des courbes.
+    await wrapper.find(".select-fenetre").setValue(String(60 * 60 * 1000));
+    await flushPromises();
+
+    const grand = graphiqueGrand();
+    const [reel, , prediction, bornesHautes, bornesBasses] = grand.data.datasets.map((d) => d.data);
+
+    // 20 points réels + 3 heures prédites sur l'axe des abscisses.
+    expect(grand.data.labels).toHaveLength(23);
+    expect(reel).toHaveLength(20);
+    // Vide sur la portion réelle sauf le dernier point, repris tel quel pour que
+    // le pointillé démarre exactement là où le trait plein s'arrête.
+    expect(prediction.slice(0, 19).every((v) => v === null)).toBe(true);
+    expect(prediction[19]).toBe(reelles[reelles.length - 1].consumption_kw);
+    // Les valeurs tracées sont celles de l'API, pas une simulation.
+    expect(prediction.slice(20)).toEqual([150, 160, 170]);
+    expect(bornesBasses.slice(20)).toEqual([130, 140, 150]);
+    expect(bornesHautes.slice(20)).toEqual([170, 180, 190]);
+    await wrapper.unmount();
+  });
+
+  it("trace la prévision telle quelle, sans la borner à la puissance souscrite", async () => {
+    // SITE001 est souscrit à 200 kW et le modèle prédit 400 : les modèles V1 sont entraînés sur
+    // CSV synthétique et débordent réellement (SITE003 dépasse sa capacité en production).
+    // Écrêter à l'affichage ferait passer un modèle mal calibré pour un modèle prudent.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure({ base: 198 }) }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir({ n: 2, base: 400 }) }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+
+    expect(graphiqueGrand().data.datasets[2].data.slice(-2)).toEqual([400, 410]);
+  });
+
+  it("propage des bornes absentes en null, sans les replier sur la valeur prédite", async () => {
+    // Un run MLflow sans marge conforme donne lower_90/upper_90 à NULL. Les remplacer par la
+    // valeur centrale dessinerait une bande d'épaisseur nulle, soit une certitude parfaite.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () =>
+          Promise.resolve({ data: previsionsAVenir({ n: 2, base: 150, lower_90: null, upper_90: null }) }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+
+    const [, , prediction, hautes, basses] = graphiqueGrand().data.datasets.map((d) => d.data);
+    expect(prediction.slice(-2)).toEqual([150, 160]);
+    expect(hautes.slice(-2)).toEqual([null, null]);
+    expect(basses.slice(-2)).toEqual([null, null]);
+  });
+
+  it("affiche le champion et la version du modèle dans la légende", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir() }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("tow_temp");
+    expect(wrapper.text()).toContain("v1");
+    expect(wrapper.text()).toContain("intervalle 90 %");
+  });
+
+  it("signale qu'un modèle entraîné sur données synthétiques n'est pas validé", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir() }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("données synthétiques");
+  });
+
+  it("n'invente aucune courbe pour un site sans modèle inférable, et l'explique", async () => {
+    // SITE002/004/007 : champion LightGBM réclamant solar_irradiance_wm2, absente du gold.
+    // L'API répond 200 avec une liste vide — c'est un état normal, pas une panne.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(graphiqueGrand().data.datasets[2].data).toEqual([]);
+    expect(wrapper.text()).toContain("Aucune prévision pour ce site");
+    expect(wrapper.text()).toContain("solar_irradiance_wm2");
+  });
+
+  it("distingue un service de prédiction en panne d'un site sans modèle", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.reject(new Error("503")),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(graphiqueGrand().data.datasets[2].data).toEqual([]);
+    expect(wrapper.text()).toContain("service de prédiction injoignable");
+    expect(wrapper.text()).not.toContain("Aucune prévision pour ce site");
+  });
+
+  it("affiche la prévision même sans mesure exploitable, le modèle n'en dépendant pas", async () => {
+    // Les modèles sont calendaires (heure de la semaine + météo) : aucun retard de consommation
+    // n'entre en entrée. Un capteur muet n'empêche donc pas de prévoir.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () =>
+          Promise.resolve({ data: [{ ...MESURE_OK, consumption_kw: null, data_quality: "critical" }] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir({ n: 2, base: 150 }) }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+
+    expect(graphiqueGrand().data.datasets[2].data.slice(-2)).toEqual([150, 160]);
+  });
+
+  it("demande un horizon de prévision aligné sur la fenêtre d'historique affichée", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+    await wrapper.find(".select-fenetre").setValue(String(6 * 60 * 60 * 1000)); // 6 h
+    await flushPromises();
+
+    const appels = api.get.mock.calls.filter(([url]) => url === "/sites/SITE001/predictions");
+    expect(appels[appels.length - 1][1].params.horizon_heures).toBe(6);
+    // Plancher à 1 h : les modèles sont horaires, une fenêtre de 2 min ne peut pas
+    // demander un horizon plus fin.
+    await wrapper.find(".select-fenetre").setValue(String(2 * 60 * 1000));
+    await flushPromises();
+    const apres = api.get.mock.calls.filter(([url]) => url === "/sites/SITE001/predictions");
+    expect(apres[apres.length - 1][1].params.horizon_heures).toBe(1);
+  });
+
+  it("recharge la prévision du nouveau site au changement de site", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir({ base: 150 }) }),
+        "/sites/SITE002/predictions": () => Promise.resolve({ data: previsionsAVenir({ base: 900 }) }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    const carteSite002 = wrapper.findAll(".parc-carte").find((c) => c.text().includes("SITE002"));
+    await carteSite002.trigger("click");
+    await flushPromises();
+
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE002/predictions", expect.anything());
+    expect(graphiqueGrand().data.datasets[2].data.slice(-3)).toEqual([900, 910, 920]);
+  });
+
+  it("ne prédit que la puissance appelée, jamais les autres métriques", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir() }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+    expect(graphiqueGrand().data.datasets.some((d) => d.label === "Prévision")).toBe(true);
+
+    const carteTension = wrapper.findAll(".graphique-carte").find((c) => c.text().includes("Tension"));
+    await carteTension.trigger("click");
+    await flushPromises();
+
+    // La tension n'a ni prévision ni seuil : un seul dataset, celui des mesures.
+    expect(graphiqueGrand().data.datasets.some((d) => d.label === "Prévision")).toBe(false);
+    expect(wrapper.text()).not.toContain("intervalle 90 %");
+  });
+
+  it("ne montre aucun avertissement de prévision sur une métrique qui n'en affiche pas", async () => {
+    // L'avertissement « données synthétiques » qualifie la courbe de prévision. Sur la tension,
+    // qui n'en porte aucune, il désignerait une courbe absente de l'écran.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir() }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+    expect(wrapper.text()).toContain("données synthétiques");
+
+    const carteTension = wrapper.findAll(".graphique-carte").find((c) => c.text().includes("Tension"));
+    await carteTension.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).not.toContain("données synthétiques");
+  });
+
+  it("laisse les petites cartes en sparkline, sans prévision", async () => {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+
+    // chartInstances[0] = petite carte "Puissance appelée" : mesure + seuil, rien d'autre.
+    expect(chartInstances[0].data.datasets.map((d) => d.label)).toEqual([
+      "Puissance appelée",
+      "Puissance souscrite (kW)",
+    ]);
   });
 
   it("affiche un message d'erreur si le chargement des sites échoue", async () => {

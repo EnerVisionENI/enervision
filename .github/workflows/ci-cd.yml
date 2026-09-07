@@ -267,6 +267,15 @@ jobs:
       # que dans le cache GHA : pas de plafond de 10 Go partagé avec le reste du
       # dépôt, pas d'éviction au bout de 7 jours d'inactivité, et l'export est
       # plus rapide que le mode=max de type=gha.
+      # Date du jour injectée comme build-arg : elle invalide la seule couche de patch OS
+      # des Dockerfiles (ARG OS_PATCH_DATE), sans toucher au cache des couches coûteuses
+      # (npm ci, pip install). Sans elle, cache-from resservait un patch figé au jour du
+      # premier build et Trivy échouait sur des CVE déjà corrigées en dépôt amont.
+      - name: Compute OS patch date
+        if: steps.published.outputs.found != 'true'
+        id: patchdate
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
       - name: Build ${{ matrix.name }} image
         if: steps.published.outputs.found != 'true'
         uses: docker/build-push-action@v6
@@ -276,6 +285,8 @@ jobs:
           push: false
           load: true
           tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+          build-args: |
+            OS_PATCH_DATE=${{ steps.patchdate.outputs.date }}
           cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
           cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
 

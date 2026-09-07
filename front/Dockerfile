@@ -21,8 +21,16 @@ RUN npm run build
 # Production stage - Nginx
 FROM nginx:alpine
 
-# Patch OS packages regardless of when the base image tag was last rebuilt
-RUN apk update && apk upgrade --no-cache
+# OS_PATCH_DATE est référencé dans le RUN ci-dessous, et non seulement déclaré : BuildKit
+# n'invalide le cache qu'à la PREMIÈRE UTILISATION d'un ARG, pas à sa définition. La CI y
+# injecte la date du jour, ce qui force le patch à rejouer une fois par jour.
+#
+# Sans ce garde-fou, `cache-from` resservait indéfiniment la couche de patch d'un build
+# antérieur : l'image repartait avec les paquets figés à cette date-là, alors que le correctif
+# était disponible en dépôt, et Trivy échouait sur des CVE que ce RUN corrige pourtant.
+ARG OS_PATCH_DATE=unknown
+RUN echo "patch OS : $OS_PATCH_DATE" \
+    && apk update && apk upgrade --no-cache
 
 # Copy nginx config
 COPY infra/nginx.conf /etc/nginx/conf.d/default.conf

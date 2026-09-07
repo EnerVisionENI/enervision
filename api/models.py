@@ -87,3 +87,31 @@ class AggregateGoldDaily(Base):
     max_consumption_kw: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     total_consumption_kwh: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     avg_quality_score: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+
+
+class PredictionForecast(Base):
+    __tablename__ = "predictions_forecast"
+
+    # Lecture seule, alimenté par ml/predict.py via ml/core/postgres_store.py
+    # (infra/postgres/init/06_predictions.sql) — même principe que Site/MeasurementSilver.
+    # La clé composite inclut step_minutes : tous les modèles V1 sont horaires, mais un futur
+    # modèle au quart d'heure cohabiterait dans la même table (voir le SQL d'init).
+    #
+    # Les colonnes de provenance (model_version, data_source, champion) sont mappées et non
+    # écartées comme "détail interne" : ces modèles sont entraînés sur CSV synthétique et le
+    # front doit pouvoir le signaler à l'écran plutôt que de présenter ces valeurs comme des
+    # prévisions validées sur donnée réelle.
+    site_id: Mapped[str] = mapped_column(String(20), primary_key=True)
+    target_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    step_minutes: Mapped[int] = mapped_column(primary_key=True, default=60)
+    predicted_kwh: Mapped[float] = mapped_column(Numeric, nullable=False)
+    lower_90: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    upper_90: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(10), nullable=False)
+    model_stage: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    champion: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    data_source: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    temperature_celsius: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    temperature_source: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    predicted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

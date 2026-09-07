@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import requests
 
-from api.models import AggregateGoldDaily, MeasurementSilver, Site
+from api.models import AggregateGoldDaily, MeasurementSilver, PredictionForecast, Site
 from api.tests.conftest import auth_headers, make_user
 
 
@@ -284,3 +284,148 @@ def test_get_site_daily_summary_returns_null_when_not_yet_computed(client, db_se
 
     assert response.status_code == 200
     assert response.json() is None
+
+
+def make_prediction(db_session, site_id: str, target_ts: datetime, **kwargs) -> PredictionForecast:
+    defaults = {
+        "step_minutes": 60,
+        "predicted_kwh": 100.0,
+        "lower_90": 80.0,
+        "upper_90": 120.0,
+        "model_name": f"enervision-forecast-{site_id.lower()}",
+        "model_version": "1",
+        "model_stage": "Production",
+        "champion": "tow_temp",
+        "data_source": "csv_synthetic",
+        "temperature_celsius": 20.0,
+        "temperature_source": "climatology_fallback",
+        "predicted_at": datetime.now(UTC),
+    }
+    prediction = PredictionForecast(site_id=site_id, target_ts=target_ts, **{**defaults, **kwargs})
+    db_session.add(prediction)
+    db_session.commit()
+    return prediction
+
+
+def test_list_predictions_requires_token(client):
+    response = client.get("/api/v1/sites/SITE001/predictions")
+
+    assert response.status_code == 401
+
+
+def test_list_predictions_refuse_mot_de_passe_temporaire(client, db_session):
+    """Un compte encore sur son mot de passe d'amorçage n'accède pas aux prévisions :
+    la garde est portée par l'API, pas seulement par la redirection du front."""
+    make_user(db_session, "neuf@enervision.fr", "password123", "viewer", must_change_password=True)
+    headers = auth_headers(client, "neuf@enervision.fr", "password123")
+
+    response = client.get("/api/v1/sites/SITE001/predictions", headers=headers)
+
+    assert response.status_code == 403
+
+
+def test_list_predictions_retourne_les_heures_a_venir(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    prochaine_heure = datetime.now(UTC) + timedelta(hours=1)
+    make_prediction(db_session, "SITE001", prochaine_heure, predicted_kwh=42.5)
+
+    response = client.get("/api/v1/sites/SITE001/predictions", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["predicted_kwh"] == 42.5
+    assert body[0]["lower_90"] == 80.0
+    assert body[0]["upper_90"] == 120.0
+    assert body[0]["step_minutes"] == 60
+    # Provenance exposée : le front doit pouvoir signaler que ces modèles sont
+    # entraînés sur CSV synthétique et non validés sur donnée réelle.
+    assert body[0]["data_source"] == "csv_synthetic"
+    assert body[0]["model_version"] == "1"
+
+
+def test_list_predictions_exclut_les_heures_passees(client, db_session):
+    """La table conserve les heures passées pour comparer prévu et réalisé ; les servir ici
+    ferait rétropédaler la courbe du dashboard sur des prévisions périmées."""
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    make_prediction(db_session, "SITE001", datetime.now(UTC) - timedelta(hours=2), predicted_kwh=10.0)
+    make_prediction(db_session, "SITE001", datetime.now(UTC) + timedelta(hours=2), predicted_kwh=20.0)
+
+    response = client.get("/api/v1/sites/SITE001/predictions", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [ligne["predicted_kwh"] for ligne in body] == [20.0]
+
+
+def test_list_predictions_respecte_horizon_heures(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    make_prediction(db_session, "SITE001", datetime.now(UTC) + timedelta(hours=1), predicted_kwh=1.0)
+    make_prediction(db_session, "SITE001", datetime.now(UTC) + timedelta(hours=30), predicted_kwh=2.0)
+
+    response = client.get("/api/v1/sites/SITE001/predictions?horizon_heures=6", headers=headers)
+
+    assert response.status_code == 200
+    assert [ligne["predicted_kwh"] for ligne in response.json()] == [1.0]
+
+
+def test_list_predictions_triees_par_horodatage(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    make_prediction(db_session, "SITE001", datetime.now(UTC) + timedelta(hours=3), predicted_kwh=3.0)
+    make_prediction(db_session, "SITE001", datetime.now(UTC) + timedelta(hours=1), predicted_kwh=1.0)
+    make_prediction(db_session, "SITE001", datetime.now(UTC) + timedelta(hours=2), predicted_kwh=2.0)
+
+    response = client.get("/api/v1/sites/SITE001/predictions", headers=headers)
+
+    assert [ligne["predicted_kwh"] for ligne in response.json()] == [1.0, 2.0, 3.0]
+
+
+def test_list_predictions_isole_les_sites(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    make_prediction(db_session, "SITE001", datetime.now(UTC) + timedelta(hours=1), predicted_kwh=1.0)
+    make_prediction(db_session, "SITE003", datetime.now(UTC) + timedelta(hours=1), predicted_kwh=3.0)
+
+    response = client.get("/api/v1/sites/SITE003/predictions", headers=headers)
+
+    assert [ligne["predicted_kwh"] for ligne in response.json()] == [3.0]
+
+
+def test_list_predictions_site_sans_modele_renvoie_liste_vide(client, db_session):
+    """SITE002/004/007 ont un champion LightGBM non inférable (solar_irradiance_wm2 absente
+    du gold) : absence de prévision est un état normal, pas un 404."""
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+
+    response = client.get("/api/v1/sites/SITE002/predictions", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_predictions_horizon_hors_bornes_rejete(client, db_session):
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+
+    assert client.get("/api/v1/sites/SITE001/predictions?horizon_heures=0", headers=headers).status_code == 422
+    assert client.get("/api/v1/sites/SITE001/predictions?horizon_heures=999", headers=headers).status_code == 422
+
+
+def test_list_predictions_bornes_absentes_restent_nulles(client, db_session):
+    """Un run MLflow sans métrique de marge conforme donne des bornes NULL — elles ne doivent
+    pas être repliées sur la valeur centrale, ce qui se lirait comme une certitude parfaite."""
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    make_prediction(
+        db_session, "SITE001", datetime.now(UTC) + timedelta(hours=1), predicted_kwh=50.0, lower_90=None, upper_90=None
+    )
+
+    body = client.get("/api/v1/sites/SITE001/predictions", headers=headers).json()
+
+    assert body[0]["lower_90"] is None
+    assert body[0]["upper_90"] is None
+    assert body[0]["predicted_kwh"] == 50.0
