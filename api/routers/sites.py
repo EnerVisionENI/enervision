@@ -33,20 +33,58 @@ def list_sites(
 @router.get("/{site_id}/measurements", response_model=list[MeasurementOut])
 def list_site_measurements(
     site_id: str,
-    depuis_minutes: int = Query(10, ge=1, le=1440),
+    depuis_minutes: int = Query(10, ge=1, le=10080),
+    pas_minutes: int = Query(1, ge=1, le=1440),
     db: Session = Depends(get_db),
     _: User = Depends(get_active_user),
 ) -> list[MeasurementSilver]:
-    """Historique réel récent (table measurements_silver, alimentée par etl/quality.py
-    toutes les ~60s) : sert à préremplir le graphique de puissance sans repartir de zéro
-    à chaque chargement. Résolution ~1 point/minute, pas aussi dense que le direct."""
+    """Historique réel (table measurements_silver, alimentée par etl/quality.py toutes les
+    ~60s) : sert à tenir le graphique de puissance à jour sans repartir de zéro à chaque
+    chargement. Résolution ~1 point/minute, pas aussi dense que le direct.
+
+    `depuis_minutes` remonte jusqu'à 7 jours, la même profondeur que `historique_heures` sur
+    /predictions : les deux courbes doivent pouvoir couvrir la même période, sinon comparer
+    prévu et réalisé s'arrête au bord du plus court des deux.
+
+    `pas_minutes` éclaircit la réponse à une lecture par tranche : 7 jours à la minute font
+    ~10 000 lignes par site, que le front demande pour les sept sites à chaque cycle de
+    sondage. À 1 (le défaut), rien n'est éclairci et la réponse est celle d'avant."""
     depuis = datetime.now(UTC) - timedelta(minutes=depuis_minutes)
-    return (
+    lignes = (
         db.query(MeasurementSilver)
         .filter(MeasurementSilver.site_id == site_id, MeasurementSilver.timestamp >= depuis)
         .order_by(asc(MeasurementSilver.timestamp))
         .all()
     )
+    return eclaircir(lignes, pas_minutes)
+
+
+def eclaircir(lignes: list[MeasurementSilver], pas_minutes: int) -> list[MeasurementSilver]:
+    """Ne garde qu'une lecture par tranche de `pas_minutes`, en partant de la plus récente.
+
+    Éclaircir par sélection et non par moyenne : chaque point renvoyé reste une lecture
+    réellement écrite par la collecte, avec son horodatage, son score de qualité et ses
+    raisons de NULL. Une moyenne par tranche inventerait des valeurs que la base ne contient
+    pas, et lisserait justement les pointes que le graphique sert à repérer.
+
+    Le parcours part de la fin pour que la dernière lecture soit toujours renvoyée : c'est
+    celle que le front affiche comme lecture courante et l'ancre de son « il y a Xs ». En
+    partant du début, elle serait écartée dès qu'elle tombe dans la tranche de la précédente
+    — jusqu'à 7 minutes de retard affichées sur une fenêtre de 7 jours.
+
+    Les horodatages ne sont comparés qu'entre eux (jamais à `datetime.now`) : la fonction ne
+    dépend donc pas de la présence d'un fuseau sur la colonne, qui diffère entre Postgres et
+    le SQLite des tests."""
+    if pas_minutes <= 1:
+        return lignes
+
+    pas = timedelta(minutes=pas_minutes)
+    retenues: list[MeasurementSilver] = []
+    for ligne in reversed(lignes):
+        if not retenues or (retenues[-1].timestamp - ligne.timestamp) >= pas:
+            retenues.append(ligne)
+    retenues.reverse()
+    return retenues
 
 
 @router.get("/{site_id}/daily-summary", response_model=DailySummaryOut | None)

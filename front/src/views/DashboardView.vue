@@ -43,11 +43,78 @@
                   {{ tauxDisponibilite }}% de lectures disponibles
                 </span>
               </div>
-              <select class="select-fenetre" :value="fenetreMs" @change="changerFenetre($event.target.value)">
-                <option v-for="option in OPTIONS_FENETRE" :key="option.label" :value="option.ms">
+            </div>
+
+            <!-- Barre de période : les cinq durées les plus demandées en un clic, et un
+                 formulaire pour toutes les autres. Le résumé dit toujours ce qui est
+                 réellement tracé — c'est la seule ligne qui reste juste quand la période
+                 ne correspond à aucun préréglage. -->
+            <div class="barre-periode">
+              <div class="pilules-periode" role="group" aria-label="période affichée">
+                <button
+                  v-for="option in OPTIONS_FENETRE"
+                  :key="option.label"
+                  type="button"
+                  class="pilule-periode"
+                  :class="{ actif: option.ms === fenetreMs }"
+                  :aria-pressed="option.ms === fenetreMs"
+                  @click="choisirPrereglage(option.ms)"
+                >
                   {{ option.label }}
-                </option>
-              </select>
+                </button>
+                <button
+                  type="button"
+                  class="pilule-periode"
+                  :class="{ actif: !prereglageActif }"
+                  aria-controls="saisie-periode"
+                  :aria-expanded="saisieOuverte"
+                  @click="basculerSaisie"
+                >
+                  personnalisée…
+                </button>
+              </div>
+
+              <p class="resume-periode">{{ resumePeriode }}</p>
+
+              <form
+                v-if="saisieOuverte"
+                id="saisie-periode"
+                class="saisie-periode"
+                @submit.prevent="appliquerSaisie"
+              >
+                <label class="saisie-periode-libelle" for="periode-duree">durée affichée</label>
+                <input
+                  id="periode-duree"
+                  ref="champDureeRef"
+                  v-model="dureeBrouillon"
+                  class="saisie-periode-duree"
+                  type="number"
+                  inputmode="numeric"
+                  min="1"
+                  :max="maxBrouillon"
+                  step="1"
+                  :aria-invalid="saisieInvalide"
+                  aria-describedby="periode-bornes"
+                />
+                <select v-model="uniteBrouillon" class="saisie-periode-unite" aria-label="unité de la durée">
+                  <option v-for="u in UNITES_FENETRE" :key="u.cle" :value="u.cle">{{ u.label }}</option>
+                </select>
+                <button type="submit" class="bouton-periode">appliquer</button>
+                <span id="periode-bornes" class="saisie-periode-bornes">
+                  de {{ libelleDuree(FENETRE_MIN_MS) }} à {{ libelleDuree(FENETRE_MAX_MS) }}
+                </span>
+              </form>
+
+              <!-- role="status" : la correction est annoncée aux lecteurs d'écran, qui ne
+                   verraient rien du champ réaligné sur la période retenue. -->
+              <p
+                v-if="messagePeriode"
+                class="message-periode"
+                :class="{ invalide: saisieInvalide }"
+                role="status"
+              >
+                {{ messagePeriode }}
+              </p>
             </div>
 
             <div v-if="derniereValeurFocus !== null" class="lecture-actuelle">
@@ -228,7 +295,7 @@
                 :class="[`severite-${a.severity || 'inconnue'}`, { critique: estCritique(a) }]"
               >
                 <span class="alerte-point" :title="libelleSeverite(a.severity)"></span>
-                <span class="alerte-heure">{{ formatHeureAlerte(a.timestamp) }}</span>
+                <span class="alerte-heure">{{ formatInstant(a.timestamp) }}</span>
                 <span class="alerte-texte">
                   <span class="alerte-site">{{ a.site_id || "parc" }}</span>
                   {{ texteAlerte(a) }}
@@ -268,8 +335,49 @@ const OPTIONS_FENETRE = [
   { label: "15 min", ms: 15 * 60 * 1000 },
   { label: "1 h", ms: 60 * 60 * 1000 },
   { label: "6 h", ms: 6 * 60 * 60 * 1000 },
-  { label: "1 jour", ms: 24 * 60 * 60 * 1000 }, // borne max de GET /sites/{id}/measurements (1440 min)
+  { label: "1 j", ms: 24 * 60 * 60 * 1000 },
+  { label: "7 j", ms: 7 * 24 * 60 * 60 * 1000 }, // borne max de GET /sites/{id}/measurements
 ];
+
+// Unités de la saisie libre, de la plus petite à la plus grande — l'ordre sert à choisir
+// celle qui tombe juste pour afficher une période (« 7 j » plutôt que « 168 h »).
+const UNITES_FENETRE = [
+  { cle: "min", label: "min", ms: 60 * 1000 },
+  { cle: "h", label: "h", ms: 60 * 60 * 1000 },
+  { cle: "j", label: "j", ms: 24 * 60 * 60 * 1000 },
+];
+
+// Bornes de `depuis_minutes` sur GET /sites/{id}/measurements (api/routers/sites.py : ge=1,
+// le=10080). Une saisie hors bornes ferait répondre 422 à l'API, donc un écran vide sur les
+// sept métriques à la fois : elle est ramenée dans les bornes, et l'écran dit laquelle a été
+// retenue plutôt que de laisser croire à une panne.
+const FENETRE_MIN_MS = 60 * 1000;
+const FENETRE_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Plafond de points demandés à l'API, quelle que soit la période : c'est ce que la fenêtre
+// « 1 jour » traçait déjà à la minute sans que le rendu ne bronche. Au-delà, la réponse est
+// éclaircie côté API (une lecture par tranche) — sans quoi 7 jours feraient ~10 000 lectures
+// par site, pour les sept sites, à chaque cycle de sondage.
+const POINTS_MAX = 1440;
+
+function pasMinutesPour(fenetreMs) {
+  return Math.max(1, Math.ceil(fenetreMs / 60000 / POINTS_MAX));
+}
+
+function msUnite(cle) {
+  return UNITES_FENETRE.find((u) => u.cle === cle).ms;
+}
+
+// La plus grande unité qui tombe juste : « 7 j » plutôt que « 168 h », mais « 90 min » plutôt
+// qu'une heure et demie arrondie — une période affichée arrondie serait une période fausse.
+function uniteJuste(ms) {
+  return [...UNITES_FENETRE].reverse().find((u) => ms % u.ms === 0) ?? UNITES_FENETRE[0];
+}
+
+function libelleDuree(ms) {
+  const unite = uniteJuste(ms);
+  return `${Math.round(ms / unite.ms)} ${unite.label}`;
+}
 
 // Une carte par métrique, dans measurements_silver. On expose volontairement
 // pas consumption_kwh (toujours identique à consumption_kw dans ce mock),
@@ -453,6 +561,17 @@ const sites = ref([]);
 const siteSelectionne = ref("");
 const metriqueFocus = ref(METRIQUES[0].cle);
 const fenetreMs = ref(OPTIONS_FENETRE[0].ms);
+// Brouillon du formulaire de période : ce que l'utilisateur a tapé, pas encore appliqué.
+// `fenetreMs` reste la seule période tracée, et le résumé à l'écran ne parle que d'elle —
+// un champ en cours de saisie ne doit jamais laisser croire que le graphique a suivi.
+const saisieOuverte = ref(false);
+// Vides jusqu'à l'ouverture du formulaire : synchroniserBrouillon() les remplit alors avec la
+// période affichée, et le champ n'existe pas avant (v-if).
+const dureeBrouillon = ref("");
+const uniteBrouillon = ref("min");
+const messagePeriode = ref("");
+const saisieInvalide = ref(false);
+const champDureeRef = ref(null);
 const chargementSites = ref(false);
 const erreurSites = ref("");
 const erreurLecture = ref("");
@@ -485,6 +604,23 @@ const raisonsQualite = computed(() => derniereRaisons.value.map(libelleRaison).j
 const infoPrevision = computed(() => previsions.value[0] ?? null);
 const previsionSurDonneeSynthetique = computed(() => infoPrevision.value?.data_source === "csv_synthetic");
 const previsionTropCourtePourFenetre = computed(() => fenetreMs.value < FENETRE_MIN_PREVISION_MS);
+
+const maxBrouillon = computed(() => FENETRE_MAX_MS / msUnite(uniteBrouillon.value));
+// Aucune pilule ne peut rester allumée sur une période saisie à la main : c'est alors
+// « personnalisée… » qui l'est, sans quoi deux périodes différentes seraient lisibles à
+// l'écran pour la seule courbe tracée.
+const prereglageActif = computed(() => OPTIONS_FENETRE.some((o) => o.ms === fenetreMs.value));
+
+// Ce que le graphique montre, en une ligne : la durée, et l'instant où elle commence. La
+// fenêtre glisse avec le temps, donc le début est recalculé à chaque battement d'horloge.
+const resumePeriode = computed(() => {
+  const debut = new Date(maintenant.value.getTime() - fenetreMs.value);
+  // Le pas est écrit dès qu'il dépasse la minute : passé 24 h, la courbe ne porte plus une
+  // lecture par minute, et rien d'autre à l'écran ne le dirait.
+  const pas = pasMinutesPour(fenetreMs.value);
+  const echantillon = pas > 1 ? ` · 1 point / ${pas} min` : "";
+  return `${libelleDuree(fenetreMs.value)} depuis ${formatInstant(debut)}${echantillon}`;
+});
 
 // L'unité va dans le titre plutôt que sur chaque graduation : l'axe reste une
 // colonne de nombres nus, et l'information n'est écrite qu'une fois.
@@ -548,14 +684,15 @@ function texteAlerte(alerte) {
   return alerte.message || alerte.type || "alerte sans description";
 }
 
-function formatHeureAlerte(timestamp) {
+function formatInstant(timestamp) {
   const date = timestamp ? new Date(timestamp) : null;
   if (!date || Number.isNaN(date.getTime())) return "—";
 
   const heure = date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-  // Le jour n'est ajouté que hors de la journée en cours : la colonne est
-  // étroite, mais "08:12" seul ferait passer une alerte d'avant-hier pour une
-  // alerte de ce matin. maintenant.value rend la bascule de minuit réactive.
+  // Le jour n'est ajouté que hors de la journée en cours : la colonne des alertes est
+  // étroite, mais "08:12" seul ferait passer une alerte d'avant-hier pour une alerte de ce
+  // matin — et une période de 24 h pour une période commencée ce matin. maintenant.value
+  // rend la bascule de minuit réactive.
   if (date.toDateString() === maintenant.value.toDateString()) return heure;
   return `${date.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })} ${heure}`;
 }
@@ -1009,7 +1146,7 @@ async function chargerHistorique(site) {
   try {
     const depuisMinutes = Math.ceil(fenetreMs.value / 60000);
     const { data } = await api.get(`/sites/${site.site_id}/measurements`, {
-      params: { depuis_minutes: depuisMinutes },
+      params: { depuis_minutes: depuisMinutes, pas_minutes: pasMinutesPour(fenetreMs.value) },
     });
 
     const buffer = bufferPour(site.site_id);
@@ -1157,6 +1294,63 @@ async function changerFenetre(ms) {
   // chargerHistorique() reconstruit chaque buffer à neuf : pas besoin de les
   // vider explicitement avant de relancer le chargement avec la nouvelle fenêtre.
   await actualiserToutesLesMesures();
+}
+
+// Le brouillon du formulaire suit le préréglage choisi : ouvrir la saisie juste après part
+// de la période affichée, et non d'un chiffre resté d'une saisie précédente.
+async function choisirPrereglage(ms) {
+  synchroniserBrouillon(ms);
+  messagePeriode.value = "";
+  saisieInvalide.value = false;
+  saisieOuverte.value = false;
+  if (ms !== fenetreMs.value) await changerFenetre(ms);
+}
+
+function synchroniserBrouillon(ms) {
+  const unite = uniteJuste(ms);
+  uniteBrouillon.value = unite.cle;
+  dureeBrouillon.value = String(Math.round(ms / unite.ms));
+}
+
+async function basculerSaisie() {
+  // Le message est remis à zéro dans les deux sens : refermer le formulaire ne doit pas
+  // laisser sous la barre une correction qui parle d'un champ désormais absent.
+  messagePeriode.value = "";
+  saisieInvalide.value = false;
+  saisieOuverte.value = !saisieOuverte.value;
+  if (!saisieOuverte.value) return;
+
+  synchroniserBrouillon(fenetreMs.value);
+  // Le champ prend le focus à l'ouverture : le clic sur « personnalisée… » n'a qu'une suite
+  // possible, taper une durée, et le clavier n'a pas à retraverser la barre pour y arriver.
+  await nextTick();
+  champDureeRef.value?.focus();
+}
+
+// Rien n'est appliqué à la frappe : la période change à la validation du formulaire (Entrée
+// ou « appliquer »). Recharger à chaque touche ferait passer « 45 » par une fenêtre de
+// 4 minutes, soit sept graphiques rechargés pour rien sur tous les sites.
+async function appliquerSaisie() {
+  const nombre = Number(dureeBrouillon.value);
+  if (!Number.isInteger(nombre) || nombre <= 0) {
+    saisieInvalide.value = true;
+    messagePeriode.value = "Durée attendue : un nombre entier, dans l'unité choisie.";
+    return;
+  }
+  saisieInvalide.value = false;
+
+  const demande = nombre * msUnite(uniteBrouillon.value);
+  const retenue = Math.min(FENETRE_MAX_MS, Math.max(FENETRE_MIN_MS, demande));
+  if (retenue === demande) {
+    messagePeriode.value = "";
+  } else {
+    // Ramenée dans les bornes plutôt qu'envoyée telle quelle : hors bornes, l'API répond 422
+    // et les sept graphiques se videraient d'un coup, sans que rien à l'écran l'explique.
+    synchroniserBrouillon(retenue);
+    messagePeriode.value = `Période ramenée à ${libelleDuree(retenue)} : l'API expose de ${libelleDuree(FENETRE_MIN_MS)} à ${libelleDuree(FENETRE_MAX_MS)} d'historique.`;
+  }
+
+  if (retenue !== fenetreMs.value) await changerFenetre(retenue);
 }
 
 async function chargerSites() {
@@ -1358,21 +1552,139 @@ onBeforeUnmount(() => {
   color: var(--text-muted);
 }
 
-.select-fenetre {
+.barre-periode {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-bottom: 16px;
+}
+
+.pilules-periode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Même vocabulaire visuel que le sélecteur de sites en haut de page : deux sélections
+   exclusives, qui se manipulent donc de la même façon. */
+.pilule-periode {
+  padding: 6px 11px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-family: var(--mono);
+  font-size: 0.76em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pilule-periode:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+.pilule-periode.actif {
   background: var(--panel-2);
+  border-color: var(--text);
+  color: var(--text);
+}
+
+.resume-periode {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.74em;
+  color: var(--text-muted);
+}
+
+/* Le formulaire prend toute la ligne suivante : encadré, il se lit comme un panneau ouvert
+   par la pilule « personnalisée… » plutôt que comme un sixième préréglage. */
+.saisie-periode {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-basis: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel-2);
+}
+
+.saisie-periode-libelle {
+  font-family: var(--mono);
+  font-size: 0.74em;
+  color: var(--text-muted);
+}
+
+.saisie-periode-duree,
+.saisie-periode-unite {
+  background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 3px;
   font-family: var(--mono);
-  font-size: 0.76em;
-  padding: 4px 8px;
+  font-size: 0.78em;
+  padding: 5px 8px;
+}
+
+.saisie-periode-unite {
   cursor: pointer;
 }
 
-.select-fenetre:hover,
-.select-fenetre:focus {
-  border-color: var(--text-muted);
-  outline: none;
+.saisie-periode-duree {
+  /* De quoi lire 1440, la plus longue saisie que les bornes de l'API acceptent. */
+  width: 74px;
+  text-align: right;
+}
+
+.saisie-periode-duree[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.bouton-periode {
+  padding: 5px 12px;
+  border-radius: 3px;
+  border: 1px solid var(--ok);
+  background: transparent;
+  color: var(--ok);
+  font-family: var(--mono);
+  font-size: 0.78em;
+  cursor: pointer;
+}
+
+.bouton-periode:hover {
+  background: rgba(45, 212, 191, 0.12);
+}
+
+.saisie-periode-bornes {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.72em;
+  color: var(--text-muted);
+}
+
+.message-periode {
+  flex-basis: 100%;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.74em;
+  color: var(--alerte);
+}
+
+.message-periode.invalide {
+  color: var(--danger);
+}
+
+/* La barre se parcourt entièrement au clavier : un contour visible, sinon la pilule ou le
+   bouton qui a le focus ne se distingue pas des autres. */
+.pilule-periode:focus-visible,
+.bouton-periode:focus-visible,
+.saisie-periode-duree:focus-visible,
+.saisie-periode-unite:focus-visible {
+  outline: 1px solid var(--text);
+  outline-offset: 1px;
 }
 
 .lecture-actuelle {

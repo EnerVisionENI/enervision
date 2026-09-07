@@ -231,6 +231,73 @@ def test_list_site_measurements_excludes_rows_outside_the_window(client, db_sess
     assert body[0]["consumption_kw"] == 60.0
 
 
+def test_list_site_measurements_accepte_une_fenetre_de_sept_jours(client, db_session):
+    """Le tableau de bord laisse saisir la période affichée : au-delà de 24 h, c'est cette
+    borne qui décide, et elle doit couvrir la même profondeur que /predictions (168 h)."""
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    maintenant = datetime.now(UTC)
+    make_measurement(
+        db_session,
+        "IL_Y_A_5_JOURS",
+        timestamp=maintenant - timedelta(days=5),
+        site_id="SITE001",
+        consumption_kw=120.0,
+    )
+
+    dans_la_fenetre = client.get(
+        "/api/v1/sites/SITE001/measurements",
+        headers=headers,
+        params={"depuis_minutes": 7 * 24 * 60},
+    )
+    hors_bornes = client.get(
+        "/api/v1/sites/SITE001/measurements",
+        headers=headers,
+        params={"depuis_minutes": 7 * 24 * 60 + 1},
+    )
+
+    assert dans_la_fenetre.status_code == 200
+    assert [ligne["consumption_kw"] for ligne in dans_la_fenetre.json()] == [120.0]
+    assert hors_bornes.status_code == 422
+
+
+def test_list_site_measurements_eclaircit_par_pas_sans_perdre_la_derniere(client, db_session):
+    """7 jours à la minute font ~10 000 lignes par site : le pas ramène la réponse à ce que le
+    graphique peut tracer, en ne renvoyant que des lectures réellement collectées."""
+    make_user(db_session, "viewer@enervision.fr", "password123", "viewer")
+    headers = auth_headers(client, "viewer@enervision.fr", "password123")
+    maintenant = datetime.now(UTC)
+    # Dix lectures à la minute : 9 min d'écart entre la première et la dernière.
+    for minutes in range(10):
+        make_measurement(
+            db_session,
+            f"M{minutes}",
+            timestamp=maintenant - timedelta(minutes=minutes),
+            site_id="SITE001",
+            consumption_kw=float(minutes),
+        )
+
+    response = client.get(
+        "/api/v1/sites/SITE001/measurements",
+        headers=headers,
+        params={"depuis_minutes": 60, "pas_minutes": 3},
+    )
+
+    assert response.status_code == 200
+    valeurs = [ligne["consumption_kw"] for ligne in response.json()]
+    # Une lecture toutes les 3 minutes, comptées depuis la plus récente (0) : la dernière
+    # lecture est toujours renvoyée, c'est elle que le front affiche comme lecture courante.
+    assert valeurs == [9.0, 6.0, 3.0, 0.0]
+
+    # Sans pas, la réponse reste celle d'avant : rien n'est éclairci par défaut.
+    complet = client.get(
+        "/api/v1/sites/SITE001/measurements",
+        headers=headers,
+        params={"depuis_minutes": 60},
+    )
+    assert len(complet.json()) == 10
+
+
 def make_gold_daily(db_session, record_date, site_id: str, **kwargs) -> AggregateGoldDaily:
     aggregat = AggregateGoldDaily(record_date=record_date, site_id=site_id, **kwargs)
     db_session.add(aggregat)

@@ -148,7 +148,7 @@ describe("DashboardView", () => {
     await flushPromises();
 
     expect(api.get).toHaveBeenCalledWith("/sites");
-    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", { params: { depuis_minutes: 2 } });
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", { params: { depuis_minutes: 2, pas_minutes: 1 } });
     expect(wrapper.text()).toContain("SITE001");
     expect(wrapper.text()).toContain("Bureau Paris La Défense");
     expect(wrapper.text()).toContain("200 kW");
@@ -301,11 +301,145 @@ describe("DashboardView", () => {
     const wrapper = mount(DashboardView);
     await flushPromises();
 
-    await wrapper.find(".select-fenetre").setValue(String(60 * 60 * 1000)); // 1 h
+    await choisirPeriode(wrapper, "1 h");
     await flushPromises();
 
-    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", { params: { depuis_minutes: 60 } });
-    expect(api.get).toHaveBeenCalledWith("/sites/SITE002/measurements", { params: { depuis_minutes: 60 } });
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", { params: { depuis_minutes: 60, pas_minutes: 1 } });
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE002/measurements", { params: { depuis_minutes: 60, pas_minutes: 1 } });
+  });
+
+  // La barre de période : cinq pilules pour les durées les plus demandées, et un formulaire
+  // pour toutes les autres. Les helpers ci-dessous en font le tour comme le ferait la souris.
+  function pilulePeriode(wrapper, libelle) {
+    return wrapper.findAll(".pilule-periode").find((p) => p.text().startsWith(libelle));
+  }
+
+  async function choisirPeriode(wrapper, libelle) {
+    await pilulePeriode(wrapper, libelle).trigger("click");
+    await flushPromises();
+  }
+
+  async function ouvrirSaisiePeriode(wrapper) {
+    await pilulePeriode(wrapper, "personnalisée").trigger("click");
+    await flushPromises();
+  }
+
+  async function saisirPeriode(wrapper, valeur, unite = null) {
+    if (!wrapper.find(".saisie-periode").exists()) await ouvrirSaisiePeriode(wrapper);
+    await wrapper.find(".saisie-periode-duree").setValue(String(valeur));
+    if (unite) await wrapper.find(".saisie-periode-unite").setValue(unite);
+    // La période s'applique à la validation du formulaire (Entrée ou « appliquer ») et pas à
+    // la frappe : sinon « 45 » passerait par une fenêtre de 4 min, tous graphiques rechargés.
+    await wrapper.find(".saisie-periode").trigger("submit");
+    await flushPromises();
+  }
+
+  async function monterAvecMesures() {
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: [MESURE_OK] }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+    });
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+    return wrapper;
+  }
+
+  it("recharge les mesures sur la période saisie, hors préréglages", async () => {
+    const wrapper = await monterAvecMesures();
+
+    await saisirPeriode(wrapper, 45);
+
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", { params: { depuis_minutes: 45, pas_minutes: 1 } });
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE002/measurements", { params: { depuis_minutes: 45, pas_minutes: 1 } });
+    // Aucun préréglage ne vaut 45 min : plus aucune pilule de durée ne peut rester allumée,
+    // sinon deux périodes différentes seraient lisibles pour la seule courbe tracée.
+    expect(pilulePeriode(wrapper, "2 min").classes()).not.toContain("actif");
+    expect(pilulePeriode(wrapper, "personnalisée").classes()).toContain("actif");
+    // Et le résumé dit la période réellement affichée, elle qu'aucune pilule ne nomme plus.
+    expect(wrapper.find(".resume-periode").text()).toContain("45 min");
+  });
+
+  it("compte la période dans l'unité choisie à côté du champ", async () => {
+    const wrapper = await monterAvecMesures();
+
+    await saisirPeriode(wrapper, 3, "h");
+
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", { params: { depuis_minutes: 180, pas_minutes: 1 } });
+    expect(wrapper.find(".resume-periode").text()).toContain("3 h");
+  });
+
+  it("n'applique rien avant la validation du formulaire", async () => {
+    const wrapper = await monterAvecMesures();
+    await ouvrirSaisiePeriode(wrapper);
+    const appelsAvant = api.get.mock.calls.length;
+
+    // Frappe et changement d'unité, sans valider : la période affichée ne bouge pas.
+    await wrapper.find(".saisie-periode-duree").setValue("45");
+    await wrapper.find(".saisie-periode-unite").setValue("h");
+    await flushPromises();
+
+    expect(api.get.mock.calls).toHaveLength(appelsAvant);
+    expect(wrapper.find(".resume-periode").text()).toContain("2 min");
+  });
+
+  it("dépasse les 24 h par le formulaire, en éclaircissant la réponse", async () => {
+    const wrapper = await monterAvecMesures();
+
+    // C'est tout l'intérêt du formulaire : les préréglages s'arrêtent à la semaine, mais
+    // aucune période intermédiaire n'était atteignable avant lui.
+    await saisirPeriode(wrapper, 3, "j");
+
+    // 3 jours à la minute feraient 4320 lectures par site, rechargées pour les sept sites à
+    // chaque cycle : l'API n'en renvoie qu'une toutes les 3 minutes.
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", {
+      params: { depuis_minutes: 3 * 24 * 60, pas_minutes: 3 },
+    });
+    // Et le résumé le dit : la courbe ne porte plus une lecture par minute.
+    expect(wrapper.find(".resume-periode").text()).toContain("3 j");
+    expect(wrapper.find(".resume-periode").text()).toContain("1 point / 3 min");
+  });
+
+  it("ramène une période hors bornes dans celles de l'API, et le dit", async () => {
+    const wrapper = await monterAvecMesures();
+
+    // 30 jours dépassent `depuis_minutes` (le=10080) : envoyés tels quels, l'API répondrait
+    // 422 et les sept graphiques se videraient sans que rien ne l'explique.
+    await saisirPeriode(wrapper, 30, "j");
+
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", {
+      params: { depuis_minutes: 7 * 24 * 60, pas_minutes: 7 },
+    });
+    expect(wrapper.find(".message-periode").text()).toContain("7 j");
+    // Le champ est réaligné sur la période retenue, dans l'unité où elle se lit.
+    expect(wrapper.find(".saisie-periode-duree").element.value).toBe("7");
+    expect(wrapper.find(".saisie-periode-unite").element.value).toBe("j");
+  });
+
+  it("refuse une durée illisible sans toucher à la période affichée", async () => {
+    const wrapper = await monterAvecMesures();
+    const appelsAvant = api.get.mock.calls.length;
+
+    await saisirPeriode(wrapper, "");
+
+    expect(api.get.mock.calls).toHaveLength(appelsAvant);
+    expect(wrapper.find(".resume-periode").text()).toContain("2 min");
+    expect(wrapper.find(".message-periode").classes()).toContain("invalide");
+    // Le champ est signalé aux lecteurs d'écran, pas seulement encadré de rouge.
+    expect(wrapper.find(".saisie-periode-duree").attributes("aria-invalid")).toBe("true");
+  });
+
+  it("ouvre le formulaire sur la période déjà affichée", async () => {
+    const wrapper = await monterAvecMesures();
+
+    await choisirPeriode(wrapper, "6 h");
+    await ouvrirSaisiePeriode(wrapper);
+
+    // Le formulaire est le point de départ de tout ajustement : il part de la période tracée,
+    // et non d'un chiffre resté d'une saisie précédente.
+    expect(wrapper.find(".saisie-periode-duree").element.value).toBe("6");
+    expect(wrapper.find(".saisie-periode-unite").element.value).toBe("h");
   });
 
   it("interroge les mesures de tous les sites à chaque cycle, pas seulement celui affiché", async () => {
@@ -319,8 +453,8 @@ describe("DashboardView", () => {
     mount(DashboardView);
     await flushPromises();
 
-    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", { params: { depuis_minutes: 2 } });
-    expect(api.get).toHaveBeenCalledWith("/sites/SITE002/measurements", { params: { depuis_minutes: 2 } });
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE001/measurements", { params: { depuis_minutes: 2, pas_minutes: 1 } });
+    expect(api.get).toHaveBeenCalledWith("/sites/SITE002/measurements", { params: { depuis_minutes: 2, pas_minutes: 1 } });
   });
 
   // Le grand graphique de la puissance appelée est prolongé par une prédiction
@@ -342,7 +476,7 @@ describe("DashboardView", () => {
   async function monterAvecPrevisionVisible() {
     const wrapper = mount(DashboardView);
     await flushPromises();
-    await wrapper.find(".select-fenetre").setValue(String(60 * 60 * 1000));
+    await choisirPeriode(wrapper, "1 h");
     await flushPromises();
     return wrapper;
   }
@@ -420,7 +554,7 @@ describe("DashboardView", () => {
     expect(wrapper.text()).not.toContain("intervalle 90 %");
 
     // À partir d'une heure, elle réapparaît.
-    await wrapper.find(".select-fenetre").setValue(String(60 * 60 * 1000));
+    await choisirPeriode(wrapper, "1 h");
     await flushPromises();
 
     expect(graphiqueGrand().data.datasets[2].data.length).toBeGreaterThan(0);
@@ -498,7 +632,7 @@ describe("DashboardView", () => {
     await flushPromises();
     // Fenêtre 1 h : sur la fenêtre par défaut (2 min), la purge par âge ne laisserait que
     // deux des vingt mesures et l'assertion ne porterait plus sur le raccord des courbes.
-    await wrapper.find(".select-fenetre").setValue(String(60 * 60 * 1000));
+    await choisirPeriode(wrapper, "1 h");
     await flushPromises();
 
     const grand = graphiqueGrand();
@@ -710,7 +844,7 @@ describe("DashboardView", () => {
 
     const wrapper = mount(DashboardView);
     await flushPromises();
-    await wrapper.find(".select-fenetre").setValue(String(6 * 60 * 60 * 1000)); // 6 h
+    await choisirPeriode(wrapper, "6 h");
     await flushPromises();
 
     const derniersParams = () => {
@@ -726,7 +860,7 @@ describe("DashboardView", () => {
 
     // Plancher à 1 h : les modèles sont horaires, une fenêtre plus courte ne peut pas
     // demander un horizon plus fin.
-    await wrapper.find(".select-fenetre").setValue(String(2 * 60 * 1000));
+    await choisirPeriode(wrapper, "2 min");
     await flushPromises();
     expect(derniersParams().horizon_heures).toBe(1);
   });
@@ -1293,7 +1427,7 @@ describe("DashboardView", () => {
 
     expect(api.get.mock.calls.filter(([url]) => url === "/alerts")).toHaveLength(1);
 
-    await wrapper.find(".select-fenetre").setValue(String(60 * 60 * 1000));
+    await choisirPeriode(wrapper, "1 h");
     await flushPromises();
 
     expect(api.get.mock.calls.filter(([url]) => url === "/alerts")).toHaveLength(1);
