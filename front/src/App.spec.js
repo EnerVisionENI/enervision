@@ -42,7 +42,7 @@ function creerRouteur() {
         path: "/mot-de-passe",
         name: "change-password",
         component: vide,
-        meta: { requiresAuth: true, layout: "bare", nav: "Mot de passe" },
+        meta: { requiresAuth: true, layout: "bare" },
       },
     ],
   });
@@ -91,9 +91,9 @@ describe("App", () => {
     expect(libelles).toContain("Dashboard");
     expect(libelles).toContain("Alertes");
     expect(libelles).not.toContain("Utilisateurs");
-    // Entrée neutre vers le changement de mot de passe : pas d'email dans le menu.
-    expect(libelles).not.toContain("viewer@enervision.fr");
-    expect(libelles).toEqual(["Dashboard", "Alertes", "Mot de passe", "Déconnexion"]);
+    // La barre ne porte plus que les vraies destinations : mot de passe et
+    // déconnexion sont passés dans le menu du compte.
+    expect(libelles).toEqual(["Dashboard", "Alertes"]);
   });
 
   it("affiche l'entrée Utilisateurs pour un admin", async () => {
@@ -101,20 +101,31 @@ describe("App", () => {
     const { wrapper } = await monter("/");
 
     const libelles = wrapper.findAll(".navbar .nav-button").map((l) => l.text());
-    expect(libelles).toEqual([
-      "Dashboard",
-      "Alertes",
-      "Utilisateurs",
-      "Mot de passe",
-      "Déconnexion",
-    ]);
+    expect(libelles).toEqual(["Dashboard", "Alertes", "Utilisateurs"]);
+  });
+
+  it("regroupe mot de passe et déconnexion dans le menu du compte", async () => {
+    connecter({ email: "viewer@enervision.fr", role: "viewer" });
+    const { wrapper } = await monter("/");
+
+    // Fermé au départ.
+    expect(wrapper.find(".user-menu-panel").exists()).toBe(false);
+
+    await wrapper.find(".user-menu-trigger").trigger("click");
+
+    const panneau = wrapper.find(".user-menu-panel");
+    expect(panneau.exists()).toBe(true);
+    expect(panneau.text()).toContain("viewer@enervision.fr");
+    expect(panneau.text()).toContain("Changer le mot de passe");
+    expect(panneau.find(".user-menu-item.logout").exists()).toBe(true);
   });
 
   it("déconnecte et renvoie vers la page de connexion", async () => {
     connecter({ email: "admin@enervision.fr", role: "admin" });
     const { wrapper, router } = await monter("/");
 
-    await wrapper.find(".nav-button.logout").trigger("click");
+    await wrapper.find(".user-menu-trigger").trigger("click");
+    await wrapper.find(".user-menu-item.logout").trigger("click");
     await flushPromises();
 
     expect(logout).toHaveBeenCalled();

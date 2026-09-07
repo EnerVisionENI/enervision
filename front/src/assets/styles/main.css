@@ -4,9 +4,24 @@
   box-sizing: border-box;
 }
 
+/* Palette « console » partagée avec le Dashboard, les Capteurs et les écrans
+   d'auth. Portée par :root pour que la barre d'application (.header) et le cadre
+   de contenu (.main-content) puisent aux mêmes valeurs. */
+:root {
+  --shell-bg: #0b1220;
+  --shell-panel: #121a2b;
+  --shell-border: #1f2b42;
+  --shell-text: #e5e9f0;
+  --shell-muted: #6b7a99;
+  --shell-accent: #2dd4bf;
+  --shell-danger: #ef4444;
+  --shell-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--shell-bg);
+  color: var(--shell-text);
   min-height: 100vh;
 }
 
@@ -22,69 +37,214 @@ body {
 }
 
 .header {
-  text-align: center;
-  color: white;
-  margin-bottom: 40px;
-  padding-top: 20px;
+  background: var(--shell-bg);
+  border-bottom: 1px solid var(--shell-border);
 }
 
-.header h1 {
-  font-size: 3em;
-  margin-bottom: 10px;
-  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+.header-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 14px 20px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
 }
 
-.header p {
+/* Bloc marque repris de l'écran d'auth : filet teal vertical + nom + baseline
+   monospace, pour une signature identique d'un bout à l'autre du produit. */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+  color: var(--shell-text);
+}
+
+.brand-bar {
+  width: 2px;
+  align-self: stretch;
+  min-height: 34px;
+  background: var(--shell-accent);
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.brand-name {
   font-size: 1.2em;
-  opacity: 0.9;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.brand-baseline {
+  margin-top: 2px;
+  font-family: var(--shell-mono);
+  font-size: 0.68em;
+  letter-spacing: 0.03em;
+  color: var(--shell-muted);
 }
 
 .navbar {
   display: flex;
-  gap: 10px;
-  justify-content: center;
-  margin-bottom: 40px;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
   flex-wrap: wrap;
 }
 
 .nav-button {
-  padding: 12px 24px;
-  border: none;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.2);
-  color: white;
-  font-size: 1em;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: var(--shell-muted);
+  font-family: var(--shell-mono);
+  font-size: 0.76em;
+  letter-spacing: 0.04em;
   cursor: pointer;
-  transition: all 0.3s ease;
-  font-weight: 500;
   text-decoration: none;
   display: inline-block;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
 .nav-button:hover {
-  background: rgba(255, 255, 255, 0.3);
-  transform: translateY(-2px);
+  color: var(--shell-text);
+  border-color: var(--shell-border);
 }
 
+/* Actif : teal en filet + tint, jamais en aplat plein — même convention que les
+   boutons d'accent des écrans d'auth. */
 .nav-button.active {
-  background: white;
-  color: #667eea;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+  border-color: var(--shell-accent);
+  background: rgba(45, 212, 191, 0.1);
+  color: var(--shell-accent);
 }
 
-.nav-button.logout {
-  background: rgba(255, 0, 0, 0.25);
+/* Menu du compte : icône dans la barre, panneau déroulant (mot de passe +
+   déconnexion). Même vocabulaire que le reste — filets, mono, angles 3px. */
+.user-menu {
+  position: relative;
+  margin-left: 8px;
 }
 
-.nav-button.logout:hover {
-  background: rgba(255, 0, 0, 0.4);
+.user-menu-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid var(--shell-border);
+  border-radius: 3px;
+  background: none;
+  color: var(--shell-muted);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.user-menu-trigger:hover,
+.user-menu-trigger.open {
+  color: var(--shell-text);
+  border-color: var(--shell-muted);
+}
+
+.user-menu-trigger.open {
+  background: var(--shell-panel);
+}
+
+.user-glyph {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.user-caret {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 4px solid currentColor;
+  transition: transform 0.15s ease;
+}
+
+.user-menu-trigger.open .user-caret {
+  transform: rotate(180deg);
+}
+
+.user-menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 224px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--shell-panel);
+  border: 1px solid var(--shell-border);
+  border-radius: 3px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  z-index: 20;
+}
+
+.user-menu-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--shell-border);
+}
+
+.user-menu-email {
+  font-size: 0.8em;
+  color: var(--shell-text);
+  word-break: break-all;
+}
+
+.user-menu-role {
+  font-family: var(--shell-mono);
+  font-size: 0.66em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--shell-muted);
+}
+
+.user-menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: var(--shell-muted);
+  font-family: var(--shell-mono);
+  font-size: 0.76em;
+  letter-spacing: 0.03em;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.user-menu-item:hover {
+  color: var(--shell-text);
+  background: var(--shell-bg);
+}
+
+.user-menu-item.logout:hover {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.08);
 }
 
 .main-content {
   background: white;
-  border-radius: 12px;
+  border: 1px solid var(--shell-border);
+  border-radius: 8px;
   padding: 40px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
 }
 
 @media (max-width: 768px) {
@@ -92,8 +252,18 @@ body {
     padding: 10px;
   }
 
-  .header h1 {
-    font-size: 2em;
+  .header-inner {
+    padding: 12px 14px;
+    gap: 12px;
+  }
+
+  .navbar {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .user-menu {
+    margin-left: auto;
   }
 
   .main-content {
@@ -109,6 +279,8 @@ body {
 .main-content--pleine-page {
   background: transparent;
   padding: 0;
+  border: none;
+  border-radius: 0;
   box-shadow: none;
 }
 

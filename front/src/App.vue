@@ -4,28 +4,82 @@
   <router-view v-if="pleinePage" />
 
   <div v-else>
-    <div class="container">
-      <header class="header">
-        <h1>EnerVision</h1>
-        <p>Plateforme de suivi énergétique</p>
-      </header>
-
-      <nav v-if="authenticated" class="navbar">
-        <router-link
-          v-for="item in navItems"
-          :key="item.path"
-          :to="item.path"
-          class="nav-button"
-          active-class="active"
-        >
-          {{ item.label }}
+    <!-- Barre d'application pleine largeur, langage graphique « console » commun au
+         Dashboard, aux Capteurs et aux écrans d'auth (fond sombre, accent teal,
+         monospace pour les libellés, angles à 3px). Contenu recentré sur 1200px. -->
+    <header class="header">
+      <div class="header-inner">
+        <router-link to="/" class="brand">
+          <span class="brand-bar" aria-hidden="true"></span>
+          <span class="brand-text">
+            <span class="brand-name">EnerVision</span>
+            <span class="brand-baseline">plateforme de suivi énergétique</span>
+          </span>
         </router-link>
 
-        <button class="nav-button logout" @click="handleLogout">
-          Déconnexion
-        </button>
-      </nav>
+        <nav v-if="authenticated" class="navbar">
+          <router-link
+            v-for="item in navItems"
+            :key="item.path"
+            :to="item.path"
+            class="nav-button"
+            active-class="active"
+          >
+            {{ item.label }}
+          </router-link>
 
+          <!-- Compte : un seul point d'entrée (icône) qui déplie le mot de passe
+               et la déconnexion, plutôt que deux boutons dans la barre. -->
+          <div ref="userMenuRef" class="user-menu">
+            <button
+              type="button"
+              class="user-menu-trigger"
+              :class="{ open: menuOuvert }"
+              aria-haspopup="menu"
+              :aria-expanded="menuOuvert"
+              aria-label="Menu du compte"
+              @click="menuOuvert = !menuOuvert"
+            >
+              <svg class="user-glyph" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="12" cy="8" r="3.4" stroke="currentColor" stroke-width="1.6" />
+                <path
+                  d="M5.5 19c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                />
+              </svg>
+              <span class="user-caret" aria-hidden="true"></span>
+            </button>
+
+            <div v-if="menuOuvert" class="user-menu-panel" role="menu">
+              <div class="user-menu-head">
+                <span class="user-menu-email">{{ currentUser?.email }}</span>
+                <span v-if="currentUser?.role" class="user-menu-role">{{ currentUser.role }}</span>
+              </div>
+              <router-link
+                to="/mot-de-passe"
+                class="user-menu-item"
+                role="menuitem"
+                @click="fermerMenu"
+              >
+                Changer le mot de passe
+              </router-link>
+              <button
+                type="button"
+                class="user-menu-item logout"
+                role="menuitem"
+                @click="handleLogout"
+              >
+                Déconnexion
+              </button>
+            </div>
+          </div>
+        </nav>
+      </div>
+    </header>
+
+    <div class="container">
       <!-- Routes normales : inchangé, imbriqué dans .container (max-width 1200px). -->
       <main v-if="!route.meta?.pleinePage" class="main-content">
         <router-view />
@@ -41,13 +95,15 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { logout, isAuthenticated, currentUser } from "./auth/auth";
 
 const router = useRouter();
 const route = useRoute();
 const authenticated = ref(false);
+const menuOuvert = ref(false);
+const userMenuRef = ref(null);
 
 const pleinePage = computed(() => route.meta?.layout === "bare");
 
@@ -64,12 +120,41 @@ function refreshAuth() {
   authenticated.value = isAuthenticated();
 }
 
+function fermerMenu() {
+  menuOuvert.value = false;
+}
+
 function handleLogout() {
+  fermerMenu();
   logout();
   authenticated.value = false;
   router.push("/login");
 }
 
-onMounted(refreshAuth);
-router.afterEach(refreshAuth); // met à jour le nav après chaque navigation (ex: login)
+// Le menu du compte se ferme sur un clic en dehors ou sur Échap.
+function surClicExterieur(evenement) {
+  if (menuOuvert.value && userMenuRef.value && !userMenuRef.value.contains(evenement.target)) {
+    fermerMenu();
+  }
+}
+
+function surTouche(evenement) {
+  if (evenement.key === "Escape") fermerMenu();
+}
+
+onMounted(() => {
+  refreshAuth();
+  document.addEventListener("click", surClicExterieur);
+  document.addEventListener("keydown", surTouche);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("click", surClicExterieur);
+  document.removeEventListener("keydown", surTouche);
+});
+
+router.afterEach(() => {
+  refreshAuth(); // met à jour le nav après chaque navigation (ex: login)
+  fermerMenu();
+});
 </script>

@@ -115,8 +115,14 @@ export default {
 
   background: var(--bg);
   color: var(--text);
-  padding: 28px;
-  border-radius: 4px;
+  padding: 24px;
+  min-height: calc(100vh - 120px);
+}
+
+@media (max-width: 768px) {
+  .sensor-view {
+    padding: 14px;
+  }
 }
 
 .status-bar {
