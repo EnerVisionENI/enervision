@@ -63,16 +63,40 @@
               </div>
               <div class="legende-graphe">
                 <div class="legende-item"><span class="legende-trait teal"></span>mesure réelle</div>
-                <div v-if="metriqueFocusInfo.avecPrediction" class="legende-item">
-                  <span class="legende-trait violet"></span>prédiction ML
-                </div>
-                <div v-if="metriqueFocusInfo.avecPrediction" class="legende-item">
-                  <span class="legende-bande"></span>incertitude
-                </div>
+                <template v-if="metriqueFocusInfo.avecPrediction && previsions.length > 0">
+                  <div class="legende-item">
+                    <span class="legende-trait violet"></span>prévision ({{ infoPrevision.champion }} v{{
+                      infoPrevision.model_version
+                    }})
+                  </div>
+                  <div class="legende-item"><span class="legende-bande"></span>intervalle 90 %</div>
+                </template>
                 <div v-if="metriqueFocusInfo.avecSeuil" class="legende-item">
                   <span class="legende-trait orange"></span>puissance souscrite
                 </div>
               </div>
+
+              <!-- Distinguer les trois cas plutôt qu'afficher un graphe muet : un site sans
+                   modèle inférable est un état normal du système, une API en échec ne l'est
+                   pas, et une prévision issue de CSV synthétique ne doit jamais passer pour
+                   une prévision validée sur donnée réelle. -->
+              <p v-if="metriqueFocusInfo.avecPrediction && previsionIndisponible" class="note-prevision alerte">
+                Prévision indisponible : service de prédiction injoignable.
+              </p>
+              <p
+                v-else-if="metriqueFocusInfo.avecPrediction && previsions.length === 0"
+                class="note-prevision"
+              >
+                Aucune prévision pour ce site : son modèle exige une variable
+                (<code>solar_irradiance_wm2</code>) que la collecte ne fournit pas encore.
+              </p>
+              <p
+                v-else-if="metriqueFocusInfo.avecPrediction && previsionSurDonneeSynthetique"
+                class="note-prevision alerte"
+              >
+                Modèle entraîné sur données synthétiques, non validé sur données réelles — à
+                lire comme un ordre de grandeur.
+              </p>
             </div>
 
             <!-- Ordre fixe, toujours les 7 visibles : cliquer sur une carte ne
@@ -317,53 +341,26 @@ const RECOMMANDATION_MOCK = {
 // mesurée / puissance souscrite), pas une couleur mise au hasard.
 const SEUIL_ALERTE_PARC = 0.9;
 
-// Prédiction de puissance : horizon maximal du "modèle", jamais plus long que
-// la fenêtre d'historique affichée — sur 6 h on prolonge donc d'1 h, sur 15 min
-// de 15 min, pour que la partie prédite n'écrase jamais l'historique à l'écran.
-const HORIZON_PREDICTION_MS = 60 * 60 * 1000;
-const NB_POINTS_PREDICTION = 60;
+// Prévision de consommation servie par GET /sites/{id}/predictions (table
+// predictions_forecast, réécrite à chaque cycle de ml/predict.py). Plus aucun mock ici : ce
+// que trace la courbe violette vient du registry MLflow, modèle et intervalle compris.
+//
+// Le pas est horaire et non plus continu — les modèles sont calendaires (168 créneaux par
+// semaine), structurellement incapables de descendre sous l'heure. L'unité change donc en
+// apparence (predicted_kwh, pas des kW), mais les deux courbes restent comparables sur le même
+// axe : l'énergie livrée en une heure vaut numériquement la puissance moyenne de cette heure.
+// Cette équivalence ne tient QUE parce que step_minutes vaut 60 ; un futur modèle au quart
+// d'heure imposerait une conversion explicite.
 const COULEUR_PREDICTION = "#a78bfa";
 const COULEUR_BANDE_PREDICTION = "rgba(167, 139, 250, 0.15)";
 
-// Mock du résultat d'un modèle ML de prévision de charge : aucun modèle n'est
-// encore entraîné ni exposé par l'API. Marche aléatoire faiblement bruitée et
-// ramenée vers la moyenne récente, bornée par la puissance souscrite du site.
-// La bande d'incertitude s'élargit avec l'horizon — comme une vraie prévision
-// perdrait en confiance — sans prétendre à un intervalle calibré.
-function genererPrediction(valeursReelles, dernierInstant, capaciteKw, horizonMs) {
-  const valeurs = valeursReelles.filter((v) => v !== null && v !== undefined);
-  if (valeurs.length === 0 || !dernierInstant) return null;
+// Horizon affiché, borné par la fenêtre d'historique : sur 6 h on prolonge de 6 h, sur 2 min
+// d'1 h (le plancher, puisqu'on ne sait pas prédire plus fin que l'heure). Reprend la règle
+// déjà appliquée à l'ancienne courbe simulée — la partie prédite n'écrase jamais l'historique.
+const HEURES_PREVISION_MAX = 24;
 
-  const derniereValeur = valeurs[valeurs.length - 1];
-  const fenetreRecente = valeurs.slice(-15);
-  const moyenneRecente = fenetreRecente.reduce((a, b) => a + b, 0) / fenetreRecente.length;
-  const ecartType =
-    Math.sqrt(fenetreRecente.reduce((s, v) => s + (v - moyenneRecente) ** 2, 0) / fenetreRecente.length) ||
-    moyenneRecente * 0.05 ||
-    5;
-
-  const plafond = capaciteKw ?? Infinity;
-  const pas = horizonMs / NB_POINTS_PREDICTION;
-
-  const instants = [];
-  const predites = [];
-  const bornesHautes = [];
-  const bornesBasses = [];
-
-  let courante = derniereValeur;
-  for (let i = 1; i <= NB_POINTS_PREDICTION; i++) {
-    const bruit = (Math.random() - 0.5) * 2 * ecartType * 0.4;
-    const rappel = (moyenneRecente - courante) * 0.08;
-    courante = Math.min(plafond, Math.max(0, courante + bruit + rappel));
-
-    const incertitude = ecartType * Math.sqrt(i) * 0.6;
-    instants.push(new Date(dernierInstant.getTime() + i * pas));
-    predites.push(courante);
-    bornesHautes.push(Math.min(plafond, courante + incertitude));
-    bornesBasses.push(Math.max(0, courante - incertitude));
-  }
-
-  return { instants, valeurs: predites, bornesHautes, bornesBasses };
+function heuresPrevisionPour(fenetreMs) {
+  return Math.min(HEURES_PREVISION_MAX, Math.max(1, Math.round(fenetreMs / (60 * 60 * 1000))));
 }
 
 function libelleRaison(raison) {
@@ -395,6 +392,8 @@ const derniereQualite = ref("");
 const derniereRaisons = ref([]);
 const tauxDisponibilite = ref(null); // % de points avec une valeur, sur la métrique et la fenêtre affichées
 const resumeJour = ref(null); // aggregates_gold_daily du jour pour le site affiché (null si pas encore calculé)
+const previsions = ref([]); // predictions_forecast à venir pour le site affiché ([] si aucun modèle)
+const previsionIndisponible = ref(false); // l'appel a échoué, à distinguer d'un site sans modèle
 const resumeParSite = ref({}); // { [site_id]: { valeur, alerte, segments } } pour la grille "parc" et le sélecteur
 const maintenant = ref(new Date());
 
@@ -403,6 +402,12 @@ const metriqueFocusInfo = computed(() => METRIQUES.find((m) => m.cle === metriqu
 const derniereValeurFocus = computed(() => derniereMesure.value?.[metriqueFocus.value] ?? null);
 const qualiteFiable = computed(() => !derniereQualite.value || derniereQualite.value === "good");
 const raisonsQualite = computed(() => derniereRaisons.value.map(libelleRaison).join(", "));
+
+// Provenance du modèle, reprise de la première ligne : toutes les lignes d'un même site
+// partagent le même run MLflow. Affichée à l'écran parce que les modèles V1 sont entraînés sur
+// CSV synthétique — sans ce rappel, ces courbes passeraient pour des prévisions validées.
+const infoPrevision = computed(() => previsions.value[0] ?? null);
+const previsionSurDonneeSynthetique = computed(() => infoPrevision.value?.data_source === "csv_synthetic");
 
 const suffixeUnite = computed(() =>
   metriqueFocusInfo.value.unite ? `${metriqueFocusInfo.value.unite} · dernière mesure` : "dernière mesure"
@@ -479,7 +484,7 @@ function construireDatasets(m, { avecPrediction = false } = {}) {
   if (avecPrediction && m.avecPrediction) {
     datasets.push(
       {
-        label: "Prédiction ML",
+        label: "Prévision",
         data: [],
         borderColor: COULEUR_PREDICTION,
         borderDash: [5, 4],
@@ -603,14 +608,17 @@ function rafraichirGraphiqueGrand() {
   }
 
   const capacite = siteActuel.value?.capacity_kw ?? null;
-  const prediction = genererPrediction(
-    valeurs,
-    buffer.instants[buffer.instants.length - 1],
-    capacite,
-    Math.min(HORIZON_PREDICTION_MS, fenetreMs.value)
+  // Une prévision antérieure au dernier point mesuré ne se dessine pas à droite de la courbe :
+  // l'API borne déjà à target_ts >= maintenant, mais l'historique peut contenir des points plus
+  // récents que le début de l'horizon (prévision calculée à H+20, mesures reçues depuis).
+  const dernierInstantReel = buffer.instants[buffer.instants.length - 1] ?? null;
+  const aVenir = previsions.value.filter(
+    (ligne) => !dernierInstantReel || new Date(ligne.target_ts) > dernierInstantReel
   );
 
-  if (!prediction) {
+  if (aVenir.length === 0) {
+    // Site sans modèle inférable, ou API en échec : on n'invente rien, la courbe s'arrête
+    // simplement au dernier point mesuré. Le message d'explication est dans le template.
     chartGrand.data.labels = buffer.labels;
     chartGrand.data.datasets[0].data = valeurs;
     chartGrand.data.datasets[1].data = buffer.seuils;
@@ -623,7 +631,7 @@ function rafraichirGraphiqueGrand() {
 
   // Copies : buffer.labels et buffer.seuils sont partagés avec les petites
   // cartes, les prolonger en place corromprait leur affichage.
-  const labelsPrediction = prediction.instants.map((i) => i.toLocaleTimeString("fr-FR"));
+  const labelsPrediction = aVenir.map((ligne) => new Date(ligne.target_ts).toLocaleTimeString("fr-FR"));
   // Le dataset prédiction est vide sur toute la portion réelle sauf son dernier
   // point, repris tel quel : le trait pointillé démarre exactement là où le
   // trait plein s'arrête, sans trou entre les deux courbes.
@@ -631,14 +639,23 @@ function rafraichirGraphiqueGrand() {
   const derniereValeurReelle = valeurs[valeurs.length - 1] ?? null;
   const amorce = valeurs.length > 0 ? [...avantPrediction, derniereValeurReelle] : [];
 
+  // lower_90/upper_90 sont NULL quand le run MLflow ne porte pas de marge conforme. On propage
+  // le null plutôt que de replier la borne sur la valeur centrale, ce qui dessinerait une bande
+  // d'épaisseur nulle — soit visuellement une prévision certaine.
   chartGrand.data.labels = [...buffer.labels, ...labelsPrediction];
   chartGrand.data.datasets[0].data = valeurs;
   chartGrand.data.datasets[1].data = [...buffer.seuils, ...labelsPrediction.map(() => capacite)];
-  chartGrand.data.datasets[2].data = [...amorce, ...prediction.valeurs];
-  chartGrand.data.datasets[3].data = [...amorce, ...prediction.bornesHautes];
-  chartGrand.data.datasets[4].data = [...amorce, ...prediction.bornesBasses];
+  chartGrand.data.datasets[2].data = [...amorce, ...aVenir.map((ligne) => ligne.predicted_kwh)];
+  chartGrand.data.datasets[3].data = [...amorce, ...aVenir.map((ligne) => ligne.upper_90 ?? null)];
+  chartGrand.data.datasets[4].data = [...amorce, ...aVenir.map((ligne) => ligne.lower_90 ?? null)];
   chartGrand.update();
 }
+
+// Les prévisions arrivent par un appel séparé des mesures : sans ce watch, la courbe violette
+// n'apparaîtrait qu'au cycle de sondage suivant après un changement de site.
+watch(previsions, () => {
+  rafraichirGraphiqueGrand();
+});
 
 watch(metriqueFocus, () => {
   // Reconstruit plutôt que mettre à jour en place : les datasets diffèrent
@@ -787,6 +804,25 @@ function afficherSiteSelectionne() {
   tauxDisponibilite.value = calculerDisponibilite(buffer);
 }
 
+async function chargerPrevisions(siteId) {
+  // Même garde que chargerResumeJour : un résultat qui arrive après un changement de site
+  // afficherait la courbe d'un site sur les mesures d'un autre.
+  try {
+    const { data } = await api.get(`/sites/${siteId}/predictions`, {
+      params: { horizon_heures: heuresPrevisionPour(fenetreMs.value) },
+    });
+    if (siteId !== siteSelectionne.value) return;
+    previsions.value = data;
+    previsionIndisponible.value = false;
+  } catch {
+    if (siteId !== siteSelectionne.value) return;
+    // Liste vidée et drapeau levé : un site sans modèle et une API en échec donnent tous deux
+    // une absence de courbe, mais l'écran ne doit pas raconter la même chose dans les deux cas.
+    previsions.value = [];
+    previsionIndisponible.value = true;
+  }
+}
+
 async function chargerResumeJour(siteId) {
   try {
     const { data } = await api.get(`/sites/${siteId}/daily-summary`);
@@ -801,6 +837,7 @@ async function actualiserToutesLesMesures() {
   const [resultats] = await Promise.all([
     Promise.all(sites.value.map(async (site) => ({ siteId: site.site_id, ok: await chargerHistorique(site) }))),
     chargerResumeJour(siteSelectionne.value),
+    chargerPrevisions(siteSelectionne.value),
   ]);
 
   afficherSiteSelectionne();
@@ -833,6 +870,11 @@ function selectionnerSite(siteId) {
   // l'ancien site le temps que la requête réponde), puis rechargement du bon.
   resumeJour.value = null;
   chargerResumeJour(siteId);
+  // Même raison pour les prévisions : elles sont propres au site et au modèle qui l'a produit,
+  // les garder à l'écran le temps de la requête tracerait la courbe du site précédent.
+  previsions.value = [];
+  previsionIndisponible.value = false;
+  chargerPrevisions(siteId);
 }
 
 async function changerFenetre(ms) {
@@ -1144,6 +1186,26 @@ onBeforeUnmount(() => {
   margin-top: 12px;
   font-size: 0.76em;
   color: var(--text-muted);
+}
+
+.note-prevision {
+  margin: 8px 0 0;
+  font-size: 0.74em;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+/* Réservé aux deux cas qui engagent la lecture du graphe : service injoignable, ou
+   prévision issue d'un modèle non validé sur donnée réelle. */
+.note-prevision.alerte {
+  color: #f59e0b;
+}
+
+.note-prevision code {
+  font-size: 0.95em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.16);
 }
 
 .legende-item {
