@@ -20,13 +20,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 warnings.filterwarnings("ignore")
 
 from dotenv import load_dotenv
+
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
-
 from core.data import load_gold_hourly
 from core.evaluation import conformal_margin, empirical_coverage, mase
 from models.naive import naive_forecast
@@ -45,8 +45,13 @@ CALIB_END = "2024-11-15"
 # gold (FIXME core/data.py) : ça reste des valeurs imputées ici tant qu'EV-047
 # (refiltering ETL) n'a pas fait remonter ces colonnes jusqu'au gold.
 LGBM_FEATURES = [
-    "hour", "day_of_week", "month", "is_weekend", "is_working_hours",
-    "temperature_celsius", "humidity_percent",
+    "hour",
+    "day_of_week",
+    "month",
+    "is_weekend",
+    "is_working_hours",
+    "temperature_celsius",
+    "humidity_percent",
 ]
 
 
@@ -97,12 +102,17 @@ def evaluate_site(site_id):
     calib = df[(df["timestamp"] > TRAIN_END) & (df["timestamp"] <= CALIB_END)].reset_index(drop=True)
     test = df[df["timestamp"] > CALIB_END].reset_index(drop=True)
 
-    df_full = df.set_index("timestamp")
     naive_pred_full = naive_forecast(df, value_col="consumption_kwh")
     naive_on_test = naive_pred_full.loc[test["timestamp"]]
     y_true = test.set_index("timestamp")["consumption_kwh"]
 
-    results = {"site_id": site_id, "site_type": site_type, "n_train": len(train), "n_calib": len(calib), "n_test": len(test)}
+    results = {
+        "site_id": site_id,
+        "site_type": site_type,
+        "n_train": len(train),
+        "n_calib": len(calib),
+        "n_test": len(test),
+    }
 
     # TOW (sans température) vs TOW+Temp (avec) : on garde les deux pour comparer.
     for name, formula in [
@@ -117,7 +127,9 @@ def evaluate_site(site_id):
     lgbm_model = train_lgbm(train)
     pred_lgbm = predict_lgbm(lgbm_model, test)
     results["mase_lightgbm"] = round(mase(y_true, pred_lgbm, naive_on_test), 4)
-    results["lgbm_importance"] = dict(zip(LGBM_FEATURES, [int(v) for v in lgbm_model.feature_importances_]))
+    results["lgbm_importance"] = dict(
+        zip(LGBM_FEATURES, [int(v) for v in lgbm_model.feature_importances_], strict=True)
+    )
 
     # Champion = meilleur MASE parmi les trois.
     champion_name = min(
@@ -127,7 +139,10 @@ def evaluate_site(site_id):
     results["champion"] = champion_name
     champion_model, champion_predict = {
         "tow": (train_ols(train, "consumption_kwh ~ C(time_of_week)"), predict_ols),
-        "tow_temp": (train_ols(train, "consumption_kwh ~ C(time_of_week) + temperature_celsius + I(temperature_celsius**2)"), predict_ols),
+        "tow_temp": (
+            train_ols(train, "consumption_kwh ~ C(time_of_week) + temperature_celsius + I(temperature_celsius**2)"),
+            predict_ols,
+        ),
         "lightgbm": (lgbm_model, predict_lgbm),
     }[champion_name]
 
@@ -155,7 +170,9 @@ def compare_to_real(site_id, champion_name, champion_model, champion_predict):
     real_df["day_of_week"] = real_df["timestamp"].dt.dayofweek
     real_df["month"] = real_df["timestamp"].dt.month
     real_df["is_weekend"] = (real_df["day_of_week"] >= 5).astype(int)
-    real_df["is_working_hours"] = ((real_df["hour"] >= 8) & (real_df["hour"] <= 18) & (~real_df["is_weekend"].astype(bool))).astype(int)
+    real_df["is_working_hours"] = (
+        (real_df["hour"] >= 8) & (real_df["hour"] <= 18) & (~real_df["is_weekend"].astype(bool))
+    ).astype(int)
 
     real_valid = real_df[real_df["avg_consumption_kw"].notna()].copy()
     real_valid["consumption_kwh"] = real_valid["avg_consumption_kw"]

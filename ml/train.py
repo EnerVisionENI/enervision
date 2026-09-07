@@ -92,14 +92,16 @@ def main(site_id: str, fenetres: dict[str, str]) -> str:
 
     train, calib, test = split_train_calib_test(
         df,
-        fenetres["TRAIN_START"], fenetres["TRAIN_END"],
-        fenetres["CALIB_START"], fenetres["CALIB_END"],
-        fenetres["TEST_START"], fenetres["TEST_END"],
+        fenetres["TRAIN_START"],
+        fenetres["TRAIN_END"],
+        fenetres["CALIB_START"],
+        fenetres["CALIB_END"],
+        fenetres["TEST_START"],
+        fenetres["TEST_END"],
     )
     print(f"train={len(train)} · calib={len(calib)} · test={len(test)}")
 
     # 2. Le plancher (naïf)
-    df_full = df.set_index("timestamp")
     naive_pred_full = naive_forecast(df, value_col="consumption_kwh")
     naive_on_test = naive_pred_full.loc[test["timestamp"]]
 

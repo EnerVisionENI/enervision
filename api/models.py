@@ -38,8 +38,8 @@ class Alert(Base):
 class Site(Base):
     __tablename__ = "sites"
 
-    # Modèle en lecture seule, alimenté par etl/sites.py (cf. commentaire sur
-    # Alert.site_id : même principe, pas de logique d'écriture ici).
+    # Modèle en lecture seule, peuplé par infra/postgres/init/04_seed_sites.sql (cf.
+    # commentaire sur Alert.site_id : même principe, pas de logique d'écriture ici).
     site_id: Mapped[str] = mapped_column(String(20), primary_key=True)
     site_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     site_name: Mapped[str | None] = mapped_column(String(100), nullable=True)

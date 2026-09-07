@@ -1,23 +1,32 @@
+# Un seul outil pour toute la qualité de code : ruff (Python) + ESLint (front) +
+# hygiène générale. Installation : `pip install pre-commit && pre-commit install`.
+# Détails et dépannage : CONTRIBUTING.md.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
+      # compose.ci.yml exclu : il utilise le tag `!override` de Docker Compose, que
+      # le `yaml.safe_load` de ce hook ne sait pas construire. Passer `--unsafe`
+      # affaiblirait le contrôle sur TOUS les autres YAML ; ce fichier est de toute
+      # façon validé par `docker compose config` dans le job test-e2e.
       - id: check-yaml
+        exclude: ^compose\.ci\.yml$
       - id: check-added-large-files
       - id: check-merge-conflict
       - id: mixed-line-ending
         args: [--fix=lf]
 
+  # Tout le Python du dépôt : api/, etl/, ml/, e2e/, infra/backup/. Les exclusions
+  # et les E402 structurels de ml/ sont déclarés dans pyproject.toml, pas ici, pour
+  # que `ruff check .` en local donne exactement le même résultat que le hook.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.5
+    rev: v0.16.6
     hooks:
       - id: ruff
         args: [--fix]
-        files: ^(api|etl)/
       - id: ruff-format
-        files: ^(api|etl)/
 
   # Réutilise l'ESLint + les devDependencies déjà installées dans front/ (via
   # `npm install`) plutôt que de faire gérer un environnement Node séparé par

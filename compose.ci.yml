@@ -6,7 +6,7 @@
 #
 # Démarrage :
 #   docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
-#     up -d --build postgres minio minio-init api etl-collect etl-alerts etl-sites
+#     up -d --build postgres minio minio-init api etl-collect etl-alerts
 #
 # Destruction (y compris en cas d'échec des tests) :
 #   docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
@@ -48,9 +48,6 @@ services:
     container_name: enervision-ci-etl-alerts
     environment:
       ALERTS_INTERVALLE_SECONDES: "5"
-
-  etl-sites:
-    container_name: enervision-ci-etl-sites
 
 volumes:
   pgdata:

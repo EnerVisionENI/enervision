@@ -15,8 +15,8 @@ import os
 from datetime import datetime, timedelta
 
 import boto3
-from botocore.exceptions import ClientError
 import pandas as pd
+from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
@@ -105,9 +105,10 @@ def load_gold_hourly(site_id: str, start: str, end: str) -> pd.DataFrame:
     if not frames:
         existing = _list_prefix(client, MINIO_BUCKET_GOLD, MINIO_GOLD_HOURLY_PREFIX)
         hint = (
-            "\n".join(existing) if existing
+            "\n".join(existing)
+            if existing
             else "(rien trouvé sous ce préfixe — le bucket est peut-être vide, "
-                 "ou la structure est différente à la racine)"
+            "ou la structure est différente à la racine)"
         )
         raise FileNotFoundError(
             f"Aucune partition gold trouvée pour {site_id} entre {start} et {end} "
@@ -165,9 +166,12 @@ def load_gold_hourly(site_id: str, start: str, end: str) -> pd.DataFrame:
 
 def split_train_calib_test(
     df: pd.DataFrame,
-    train_start: str, train_end: str,
-    calib_start: str, calib_end: str,
-    test_start: str, test_end: str,
+    train_start: str,
+    train_end: str,
+    calib_start: str,
+    calib_end: str,
+    test_start: str,
+    test_end: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Découpe en 3 jeux temporellement disjoints. Le jeu de calibration

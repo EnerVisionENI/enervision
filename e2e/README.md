@@ -54,9 +54,16 @@ La base est persistante entre deux runs (contrairement à `api/tests/`). Les
 tests qui créent des données suffixent leurs emails d'un uuid pour rester
 rejouables sans collision sur l'unicité (`users.email`).
 
-## Limitation connue
+## Dépendance à la table `sites`
 
-`test_alerts_pipeline_reaches_the_api` échoue par timeout tant que
-`etl/sites.py` reste un stub : `alerts.py` ignore silencieusement toute alerte
-dont le `site_id` n'existe pas encore dans la table `sites` (contrainte FK).
-C'est le signal attendu, pas un faux positif — voir le docstring du test.
+`alerts.py` ignore silencieusement toute alerte dont le `site_id` n'existe pas
+dans la table `sites` (contrainte de clé étrangère). Cette table est peuplée par
+[`infra/postgres/init/04_seed_sites.sql`](../infra/postgres/init/04_seed_sites.sql)
+à la première initialisation du volume `pgdata`.
+
+Un timeout sur `test_alerts_pipeline_reaches_the_api` signale donc l'une des deux
+causes suivantes, jamais un défaut du test lui-même :
+
+- `etl-alerts` n'est pas démarré (profil `etl` oublié) ;
+- le volume PostgreSQL a été initialisé sans ce seed — vérifier avec
+  `docker compose exec postgres psql -U ev_admin -d ev_monitoring -c "SELECT count(*) FROM sites;"`.

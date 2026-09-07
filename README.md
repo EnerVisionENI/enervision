@@ -1,32 +1,72 @@
 # EnerVision
 
-Plateforme de suivi et d'optimisation énergétique : collecte de mesures IoT,
-pipeline de qualité de données (bronze → silver → gold), API REST et interface web.
+Plateforme de suivi et d'optimisation énergétique : collecte de mesures IoT, pipeline de
+qualité de données (bronze → silver → gold), API REST, interface web et prévision de
+consommation.
+
+```bash
+cp .env.example .env          # les valeurs de dev sont utilisables telles quelles
+docker compose up -d --build  # http://localhost:3000
+```
+
+---
+
+## Sommaire
+
+- [Ce que fait la plateforme](#ce-que-fait-la-plateforme)
+- [Architecture](#architecture)
+- [Démarrage local](#démarrage-local)
+- [Comptes et rôles](#comptes-et-rôles)
+- [Documentation par domaine](#documentation-par-domaine)
+- [Configuration](#configuration)
+- [Tests](#tests)
+- [Qualité de code](#qualité-de-code)
+- [Déploiement](#déploiement)
+- [Pistes connues](#pistes-connues)
+
+---
+
+## Ce que fait la plateforme
+
+Une API Mock IoT externe expose des relevés de consommation pour 7 sites (bureaux, usines,
+data center, hôpital, centre commercial). EnerVision :
+
+1. **collecte** ces relevés en continu et les archive tels quels (couche *bronze*) ;
+2. **valide et normalise** chaque mesure, met les rejets en quarantaine (couche *silver*) ;
+3. **agrège** aux grains horaire et journalier (couche *gold*) ;
+4. **restitue** le tout dans une interface web, avec les alertes et l'état des capteurs ;
+5. **prévoit** la consommation à venir à partir de modèles suivis dans MLflow.
+
+Le fil conducteur du pipeline : **ne jamais inventer une donnée**. Un capteur muet produit
+un trou explicite et daté, pas un zéro — voir [Trous de données](etl/README.md#trous-de-données--ce-qui-nest-jamais-inventé).
 
 ## Architecture
 
-Application multi-services conteneurisée, orchestrée par un unique `compose.yaml`
-à la racine.
+Application multi-services conteneurisée, orchestrée par un unique
+[`compose.yaml`](compose.yaml) à la racine.
 
-| Service | Dossier | Rôle | Stack |
-|---|---|---|---|
-| **api** | [`api/`](api/) | API REST (auth, comptes utilisateurs, alertes, sites, capteurs) | FastAPI, SQLAlchemy, PostgreSQL |
-| **front** | [`front/`](front/) | Interface web (dashboard, alertes, capteurs, administration des comptes) | Vue 3, Vite, servi par Nginx en prod |
-| **etl** | [`etl/`](etl/) | Collecte des mesures + qualité de données | Python, APScheduler, boto3 |
-| **postgres** | — | Base de données | PostgreSQL 16 |
-| **minio** | — | Stockage objet S3 (bronze/silver/gold/quarantine/audit) | MinIO |
-| **audit-sync** | [`infra/audit-sync/`](infra/audit-sync/) | Réplication chiffrée MinIO → Azure Blob | rclone |
-| **traefik** | [`infra/traefik/`](infra/traefik/) | Reverse proxy TLS | Traefik v2 |
+| Service | Dossier | Rôle | Stack | Profil |
+|---|---|---|---|---|
+| **front** | [`front/`](front/) | Interface web | Vue 3, Vite, Nginx | *(toujours)* |
+| **api** | [`api/`](api/) | API REST | FastAPI, SQLAlchemy | *(toujours)* |
+| **postgres** | [`infra/postgres/`](infra/postgres/) | Base de données | PostgreSQL 16 | *(toujours)* |
+| **minio** | [`infra/minio/`](infra/minio/) | Stockage objet S3 | MinIO | *(toujours)* |
+| **etl-collect** | [`etl/`](etl/) | Collecte + qualité de données | Python, APScheduler | `etl` |
+| **etl-alerts** | [`etl/`](etl/) | Collecte des alertes | Python, APScheduler | `etl` |
+| **mlflow** | [`infra/mlflow/`](infra/mlflow/) | Tracking + Model Registry | MLflow | `mlflow` |
+| **ml** | [`ml/`](ml/) | Réentraînement (à la demande) | LightGBM, statsmodels | `mlflow` |
+| **ml-predict** | [`ml/`](ml/) | Inférence batch horaire | MLflow, pandas | `mlflow` |
+| **audit-sync** | [`infra/audit-sync/`](infra/audit-sync/) | Réplication chiffrée → Azure Blob | rclone | `audit` |
+| **traefik** | [`infra/traefik/`](infra/traefik/) | Reverse proxy TLS | Traefik v2 | `proxy` |
+| **prometheus**, **grafana**, **node-exporter**, **cadvisor** | [`infra/`](infra/) | Observabilité | — | `observability` |
 
-### Diagrammes
-
-#### Vue d'ensemble des services
+### Vue d'ensemble
 
 ```mermaid
 flowchart TB
     iot(["API Mock IoT<br/>(externe)"])
 
-    subgraph stack["Stack Docker Compose (compose.yaml)"]
+    subgraph stack["Stack Docker Compose"]
         direction TB
 
         subgraph always["toujours démarrés"]
@@ -36,17 +76,27 @@ flowchart TB
             minio[("minio<br/>:9000 / :9001")]
         end
 
-        subgraph pETL["profile etl"]
-            collect["etl-collect<br/>collecte 60s + gold cron"]
+        subgraph pETL["profil etl"]
+            collect["etl-collect<br/>collecte 60s + crons gold"]
             alerts["etl-alerts<br/>cycle 300s"]
-            sites["etl-sites<br/>(stub, restart: no)"]
         end
 
-        subgraph pAudit["profile audit"]
+        subgraph pML["profil mlflow"]
+            mlflow["mlflow<br/>:5000"]
+            mltrain["ml<br/>(à la demande)"]
+            mlpredict["ml-predict<br/>cron horaire"]
+        end
+
+        subgraph pObs["profil observability"]
+            grafana["grafana :3001"]
+            prom["prometheus :9090"]
+        end
+
+        subgraph pAudit["profil audit"]
             auditsync["audit-sync<br/>rclone"]
         end
 
-        subgraph pProxy["profile proxy"]
+        subgraph pProxy["profil proxy"]
             traefik["traefik<br/>:80 / :443"]
         end
     end
@@ -61,97 +111,53 @@ flowchart TB
 
     collect -->|mesures| iot
     alerts -->|alertes| iot
-    sites -.->|"stub : aucun appel réel"| iot
 
     collect -->|"bronze + audit (JSON)"| minio
     collect -->|"silver / gold (Parquet)"| minio
     collect -->|"silver / gold (SQL)"| postgres
     alerts --> postgres
 
+    mltrain -->|"lit le gold"| minio
+    mltrain -->|"logue runs + modèles"| mlflow
+    mlpredict -->|"charge le modèle"| mlflow
+    mlpredict -->|"predictions_forecast"| postgres
+    api -->|"prévisions"| postgres
+
+    prom --> grafana
     minio -->|bucket audit| auditsync
     auditsync -->|chiffré| azure
 ```
 
-`etl-collect` appelle `quality.py` en in-process, sur trois plannings distincts (voir
-[`etl/collect.py`](etl/collect.py)) : la collecte + promotion silver toutes les
-`INTERVALLE_SECONDES` (60s par défaut), et deux recalculs gold séparés, parce que
-relire tout le silver d'une partition à chaque cycle de collecte faisait déborder son
-intervalle. Collecte **100 % temps réel** : pas de rejeu d'historique, la donnée
-commence au premier cycle.
-
-#### Flux de données (bronze → silver → gold)
+### Flux de données
 
 ```mermaid
 flowchart LR
     iot(["API Mock IoT"]) -->|"GET /sites/{id}/current"| collect["collect.py<br/>(cycle 60s)"]
 
     collect -->|"1 objet JSON / mesure"| bronze[("bronze<br/>{site}/{date}/{heure}.json")]
-    collect -->|"copie du SHA-256"| audit[("audit (WORM)<br/>bronze/{site}/...")]
+    collect -->|"copie du SHA-256"| audit[("audit (WORM)")]
 
-    bronze --> run["quality.run()<br/>(bronze → silver, in-process après chaque cycle)"]
+    bronze --> run["quality.run()<br/>(bronze → silver)"]
 
-    run -->|enregistrement valide| silver[("silver<br/>Parquet, append-only")]
-    run -->|"invalide (JSON corrompu,<br/>champ obligatoire manquant, ...)"| quarantine[("quarantine<br/>Parquet, partitionné<br/>comme silver/gold")]
-    run -->|"partitions touchées<br/>(record_date, site_id)"| pending[("manifests<br/>gold_pending.json")]
-    run -->|clés bronze déjà traitées| manifests[("manifests<br/>etl_state.json")]
+    run -->|valide| silver[("silver<br/>Parquet, append-only")]
+    run -->|"invalide<br/>(JSON corrompu, hors bornes…)"| quarantine[("quarantine<br/>Parquet")]
+    run -->|"partitions touchées"| pending[("manifests<br/>gold_pending.json")]
+    run -->|clés déjà traitées| manifests[("manifests<br/>etl_state.json")]
 
-    pending --> rungold["quality.run_gold()<br/>(cron horaire + quotidien, voir pipeline)"]
+    pending --> rungold["quality.run_gold()<br/>(cron horaire + quotidien)"]
     rungold -->|"relit tout le silver<br/>de la partition"| gold[("gold<br/>daily / hourly")]
 
-    silver -.->|réplication| pgsilver[("PostgreSQL<br/>measurements_silver")]
-    quarantine -.->|réplication| pgquarantine[("PostgreSQL<br/>measurements_quarantine")]
-    gold -.->|réplication| pggold[("PostgreSQL<br/>aggregates_gold_daily/hourly")]
+    silver -.->|réplication| pgsilver[("PostgreSQL")]
+    gold -.->|réplication| pggold[("PostgreSQL")]
+    quarantine -.->|réplication| pgq[("PostgreSQL")]
 ```
 
-MinIO reste la source de vérité ; les mêmes lignes silver/gold/quarantine sont répliquées
-dans PostgreSQL pour être interrogeables en SQL par l'API. Une panne PostgreSQL
-n'interrompt pas l'écriture MinIO. Le gold n'est **pas** recalculé dans le même passage
-que le silver : chaque partition `(record_date, site_id)` touchée est empilée dans
-`gold_pending.json` et reprise par un passage `--gold-only` dédié (voir plus bas).
+**MinIO est la source de vérité.** Les mêmes lignes sont répliquées dans PostgreSQL pour
+être interrogeables en SQL par l'API ; une panne PostgreSQL n'interrompt pas l'écriture
+MinIO. Le détail du découpage des plannings est expliqué dans
+[`etl/README.md`](etl/README.md#pourquoi-le-gold-est-recalculé-à-part).
 
-#### Pipeline ETL — régime permanent
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant SchedC as cycle_collecte (60s)
-    participant SchedH as cycle_gold_horaire (cron 3 * * * *)
-    participant SchedQ as cycle_gold_quotidien (cron 15 0 * * *)
-    participant IoT as API Mock IoT
-    participant S3 as MinIO
-    participant PG as PostgreSQL
-
-    par Toutes les 60s
-        SchedC->>IoT: GET /sites puis /sites/{id}/current
-        SchedC->>S3: put bronze/... + audit/bronze/... (par site)
-        SchedC->>S3: quality.run() : lit le bronze non traité
-        alt enregistrement valide
-            SchedC->>S3: put silver/*.parquet
-            SchedC->>PG: upsert measurements_silver
-            SchedC->>S3: empile la partition dans gold_pending.json
-        else invalide
-            SchedC->>S3: put quarantine/*.json
-        end
-        SchedC->>S3: put manifests/etl_state.json (clés traitées)
-    and À la minute 3 de chaque heure
-        SchedH->>S3: quality.run_gold() : lit gold_pending.json
-        SchedH->>S3: relit le silver de chaque partition en attente
-        SchedH->>S3: put gold/daily+hourly.parquet
-        SchedH->>PG: upsert aggregates_gold_daily / hourly
-        SchedH->>S3: retire du pending les partitions réussies
-    and Chaque jour à 00:15
-        SchedQ->>S3: quality.run_gold(--gold-date veille) : pending + toutes les partitions de la veille
-        SchedQ->>S3: put gold/daily+hourly.parquet (veille garantie complète)
-        SchedQ->>PG: upsert aggregates_gold_daily / hourly
-    end
-```
-
-Les trois jobs tournent avec `max_instances=1` + `coalesce=True` : si un passage déborde,
-les occurrences manquées sont sautées plutôt qu'empilées. Une erreur dans `quality.py`
-est interceptée et loguée sans jamais arrêter le planificateur (voir `lancer_quality()`
-dans [`etl/collect.py`](etl/collect.py)).
-
-#### Authentification et requêtes API
+### Authentification
 
 ```mermaid
 sequenceDiagram
@@ -161,22 +167,16 @@ sequenceDiagram
     participant A as api (FastAPI)
     participant DB as PostgreSQL
 
-    U->>F: saisit email + mot de passe
-    F->>A: POST /api/v1/auth/login (form)
-    A->>DB: SELECT users WHERE email = ...
-    DB-->>A: user + password_hash
+    U->>F: email + mot de passe
+    F->>A: POST /api/v1/auth/login
+    A->>DB: SELECT users WHERE email = …
     A->>A: bcrypt.checkpw()
     alt identifiants valides
         A-->>F: 200 { access_token JWT }
-        F->>F: localStorage.setItem("enervision_token")
         F->>A: GET /api/v1/auth/me
         A-->>F: profil (role, must_change_password)
-        alt must_change_password = true
+        alt mot de passe temporaire
             F->>F: redirige vers /mot-de-passe
-            F->>A: POST /api/v1/auth/password
-            A->>DB: UPDATE users SET password_hash, must_change_password = false
-            A-->>F: 200
-            F->>F: redirige vers /
         else mot de passe à jour
             F->>F: redirige vers /
         end
@@ -184,128 +184,126 @@ sequenceDiagram
         A-->>F: 401
     end
 
-    Note over F,A: Chaque appel API suivant
+    Note over F,A: Chaque appel suivant porte le JWT
 
-    F->>A: GET /api/v1/sites (Authorization: Bearer JWT)
-    A->>A: décode le JWT, charge l'utilisateur (get_active_user)
-    alt token valide et mot de passe à jour
-        A->>DB: SELECT ...
-        DB-->>A: résultat
-        A-->>F: 200 JSON
+    F->>A: GET /api/v1/sites (Bearer)
+    alt token valide, mot de passe à jour
+        A-->>F: 200
     else mot de passe temporaire non changé
-        A-->>F: 403 (accès limité à /auth/me et /auth/password)
+        A-->>F: 403
     else token expiré / invalide
-        A-->>F: 401
-        F->>F: logout() + redirection /login
+        A-->>F: 401 → logout() + /login
     end
 ```
 
-Le rôle (`viewer` / `operator` / `admin`) est encodé dans le JWT et vérifié par
-`require_role` / `require_min_role` (voir [`api/auth.py`](api/auth.py)) sur les routes qui
-en ont besoin, par ex. `POST /api/v1/users` réservé aux admins. Un compte dont
-`must_change_password` est vrai n'a accès à rien d'autre que `/auth/me` et
-`/auth/password` (403 sur le reste, voir `get_active_user`).
-
-### Trous de données et complétude
-
-L'API mock renvoie par intermittence des relevés « critical » dont toutes les métriques
-sont nulles (panne capteur simulée, `null_reasons: ["network_loss"]`). Le pipeline ne les
-confond jamais avec des mesures :
-
-- ils restent en silver — un trou doit être visible **et daté** — mais avec
-  `is_valid = false` et `usable_metrics_count = 0` ;
-- le gold les compte à part (`critical_count`, `empty_count`) et les compteurs de qualité
-  bouclent sans reste sur `records_count` ;
-- les moyennes valent `NULL` et **jamais 0** quand rien n'a été mesuré,
-  `total_consumption_kwh` compris : un 0 factice s'apprend comme une consommation nulle
-  réelle ;
-- le grain horaire est complété à 24 lignes par jour et par site, une heure sans relevé
-  ayant `records_count = 0`, pour qu'une série temporelle ne recolle pas deux heures non
-  adjacentes.
-
 ## Démarrage local
 
-Prérequis : Docker Desktop en cours d'exécution.
+**Prérequis** : Docker Desktop en cours d'exécution.
 
 ```bash
-cp .env.example .env          # valeurs de dev déjà utilisables telles quelles
-docker compose up -d --build  # cœur : postgres, minio, api, front
+cp .env.example .env
+docker compose up -d --build
 ```
 
-| | URL |
+| | URL | Identifiants |
+|---|---|---|
+| Front | http://localhost:3000 | `admin@enervision.io` / `admin` |
+| API (OpenAPI) | http://localhost:8000/docs | — |
+| Console MinIO | http://localhost:9001 | voir `.env` |
+| PostgreSQL | `localhost:5433` | voir `.env` |
+
+Le compte d'amorçage est marqué « mot de passe à changer » : la première connexion impose de
+choisir un vrai mot de passe.
+
+### Services optionnels (profils Compose)
+
+```bash
+docker compose --profile etl up -d --build              # pipeline ETL
+docker compose --profile observability up -d --build    # Prometheus / Grafana / exporters
+docker compose --profile mlflow up -d --build           # MLflow + inférence
+docker compose --profile proxy up -d --build            # Traefik (TLS)
+docker compose --profile audit up -d --build            # réplication chiffrée vers Azure
+
+# Tout à la fois
+docker compose --profile etl --profile observability --profile mlflow \
+               --profile audit --profile proxy up -d --build
+```
+
+| Profil | Ce qu'il ajoute |
 |---|---|
-| Front | http://localhost:3000 |
-| API (OpenAPI) | http://localhost:8000/docs |
-| Console MinIO | http://localhost:9001 |
-| PostgreSQL | `localhost:5433` |
+| `etl` | La donnée commence à arriver : sans lui, la base reste vide |
+| `observability` | Grafana sur http://localhost:3001 (`admin`/`admin`), datasource et dashboard provisionnés |
+| `mlflow` | MLflow sur http://localhost:5000 + prévisions horaires |
+| `audit` | Réplication chiffrée vers Azure — demande les secrets `AZURE_*` |
+| `proxy` | Traefik + Let's Encrypt — pour un déploiement exposé, pas en local |
 
-Services optionnels, derrière des profils Compose :
+> VS Code : les tâches Docker les plus courantes sont disponibles via
+> *Terminal → Exécuter la tâche…* ([`.vscode/tasks.json`](.vscode/tasks.json)).
 
-```bash
-docker compose --profile etl up -d --build                        # + pipeline ETL
-docker compose --profile observability up -d --build              # + Prometheus / Grafana / exporters
-docker compose --profile etl --profile audit --profile proxy --profile observability up -d --build   # tout
-```
+## Comptes et rôles
 
-Profile `observability` : métriques serveur (hôte via node-exporter, conteneurs
-via cAdvisor), scrapées par Prometheus et affichées dans Grafana
-(http://localhost:3001, `admin` / `admin` par défaut) avec datasource et
-dashboard provisionnés automatiquement. Détails dans
-[`infra/DEPLOYMENT.md`](infra/DEPLOYMENT.md).
+Trois rôles par privilège croissant : `viewer` (lecture), `operator`, `admin`.
 
-Créer le premier compte admin (aucune route publique de création) :
+Un **admin** gère les comptes depuis la page *Utilisateurs* du front — création, changement
+de rôle, réinitialisation, suppression. Ces routes (`/api/v1/users`) lui sont réservées.
+
+Un compte créé par un admin part avec un **mot de passe temporaire** : tant qu'il n'a pas
+été remplacé, l'API répond `403` sur tout sauf `/auth/me` et `/auth/password`, et le front
+redirige vers l'écran de changement. Même mécanisme après une réinitialisation.
+
+Créer un admin supplémentaire (aucune route publique de création n'existe) :
 
 ```bash
 docker compose exec api python -m api.create_admin --email admin@enervision.fr
 ```
 
-Le schéma amorce aussi un compte `admin@enervision.io` / `admin`, marqué « mot de passe
-à changer » : la première connexion impose donc de choisir un vrai mot de passe.
+## Documentation par domaine
 
-## Comptes et rôles
+Chaque dossier documente son propre périmètre :
 
-Trois rôles, par privilège croissant : `viewer` (lecture), `operator`, `admin`.
-
-Un **admin** gère les comptes depuis la page *Utilisateurs* du front (création,
-changement de rôle, réinitialisation de mot de passe, suppression) — routes
-`/api/v1/users`, toutes réservées au rôle `admin`.
-
-Un compte créé par un admin part avec un **mot de passe temporaire** : tant qu'il n'a
-pas été remplacé via `POST /api/v1/auth/password`, l'API répond 403 sur tout le reste
-(`must_change_password`) et le front redirige vers l'écran de changement de mot de
-passe. Même mécanisme après une réinitialisation par un admin.
+| Document | Sujet |
+|---|---|
+| [`api/README.md`](api/README.md) | Endpoints, authentification, rôles, configuration |
+| [`etl/README.md`](etl/README.md) | Couches bronze/silver/gold, plannings, traitement des trous |
+| [`front/README.md`](front/README.md) | Routes, gardes de navigation, style, build |
+| [`ml/README.md`](ml/README.md) | Modèles, MLflow, promotion en Production |
+| [`e2e/README.md`](e2e/README.md) | Tests bout-en-bout contre la vraie stack |
+| [`infra/README.md`](infra/README.md) | Index de l'infrastructure |
+| [`infra/DEPLOYMENT.md`](infra/DEPLOYMENT.md) | **Déploiement, CI/CD, secrets, sauvegardes** |
+| [`infra/postgres/README.md`](infra/postgres/README.md) | Schéma SQL et exploitation de la base |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Environnement de dev, pre-commit, tests, conventions |
 
 ## Configuration
 
-Toute la configuration passe par un seul fichier `.env` à la racine
-(voir [`.env.example`](.env.example)). Le front a en plus un
-[`front/.env.example`](front/.env.example) pour les variables `VITE_*`.
+Toute la configuration passe par un seul `.env` à la racine — voir
+[`.env.example`](.env.example), commenté section par section. Le front a en plus un
+[`front/.env.example`](front/.env.example) pour ses variables `VITE_*`.
 
-En Compose, le service `api` force `POSTGRES_HOST=postgres` / `POSTGRES_PORT=5432` ;
-les valeurs `localhost:5433` du `.env` ne servent qu'à lancer l'API hors Docker.
+Deux pièges à connaître :
+
+- En Compose, le service `api` force `POSTGRES_HOST=postgres` / `POSTGRES_PORT=5432` ; les
+  valeurs `localhost:5433` du `.env` ne servent qu'à lancer l'API **hors** Docker.
+- `ML_MINIO_*` doit viser le MinIO du **même hôte** que `MLFLOW_TRACKING_URI` : le client
+  MLflow télécharge les artefacts directement depuis le bucket, sans relai par le serveur.
+
+Aucun secret n'est versionné : `.env` est ignoré par Git, seul `.env.example` (valeurs de
+dev) est suivi.
 
 ## Tests
 
 ```bash
-# API
-pip install -r api/requirements-dev.txt
-pytest api/tests
-
-# ETL
-pip install -r etl/requirements-dev.txt
-cd etl && pytest
-
-# Front
-cd front && npm install && npm test
+pip install -r api/requirements-dev.txt && pytest api/tests -q     # API   (60 tests)
+pip install -r etl/requirements-dev.txt && cd etl && pytest -q     # ETL   (59 tests)
+cd front && npm install && npm test                                # Front (86 tests)
 ```
 
-Les `requirements.txt` ne contiennent que le runtime (ce qui est installé dans les
-images) ; pytest & co. sont dans les `requirements-dev.txt`.
+Les `requirements.txt` ne contiennent que le runtime — ce qui est installé dans les images ;
+pytest & co. vivent dans les `requirements-dev.txt`.
+
+Les tests API et ETL ne dépendent d'aucun service démarré (SQLite en mémoire, MinIO et
+PostgreSQL mockés). Pour valider contre la **vraie** stack, voir [`e2e/`](e2e/README.md).
 
 ## Qualité de code
-
-`pre-commit` (ruff lint + format sur `api/` et `etl/`, ESLint sur `front/`,
-normalisation des fins de ligne) :
 
 ```bash
 pip install pre-commit
@@ -313,24 +311,41 @@ pre-commit install
 pre-commit run --all-files
 ```
 
-Le hook ESLint réutilise les dépendances déjà installées dans `front/` (donc
-`npm install` doit avoir été fait au moins une fois là-bas) plutôt que de faire
-gérer un environnement Node séparé par `pre-commit`.
+`ruff` (lint + format) sur tout le Python du dépôt, ESLint sur le front, plus des garde-fous
+d'hygiène. Les mêmes règles tournent en CI. Procédure complète, dépannage et conventions :
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+> Si `git config core.hooksPath` renvoie une valeur, Git ignore les hooks installés par
+> pre-commit et **rien ne tourne au commit**. Corriger avec `git config --unset core.hooksPath`.
 
 ## Déploiement
 
-CI/CD GitHub Actions sur push `dev` : voir [`infra/DEPLOYMENT.md`](infra/DEPLOYMENT.md).
+CI/CD GitHub Actions sur push `dev` : lint, tests, build des 4 images, scan Trivy,
+publication sur GHCR, tests e2e sur une stack jetable, puis déploiement — dans cet ordre, et
+seulement si chaque étape passe.
 
-## Pistes connues (non traitées)
+Tout est décrit dans [`infra/DEPLOYMENT.md`](infra/DEPLOYMENT.md).
 
-- **Migrations DB** : le schéma vit dans [`infra/postgres/init/`](infra/postgres/init/)
-  (fait foi), les modèles SQLAlchemy restent partiels (`users`, `alerts`, `sites`,
-  `measurements_silver`, `aggregates_gold_*`). Ces scripts n'étant rejoués que sur un
-  volume vide, tout ajout de colonne se passe à la main sur une base existante (voir
-  *Changements de schéma sur une base existante* dans
-  [`infra/DEPLOYMENT.md`](infra/DEPLOYMENT.md)). Introduire Alembic quand le modèle
-  se stabilise.
-- **`etl/sites.py` reste un stub** : le service `etl-sites` (`restart: "no"`) ne
-  peuple pas encore la table `sites` automatiquement. Côté API, `GET /api/v1/sites`
-  et `GET /api/v1/sites/{id}/current` existent désormais ([`api/routers/sites.py`](api/routers/sites.py)).
-- **Tests front dans la CI** : `npm test` (Vitest) existe et passe en local, mais `.github/workflows/deploy-dev.yml` ne fait encore qu'un `npm run build` — l'ajouter au job `build-front`.
+## Pistes connues
+
+Points ouverts, assumés et documentés — pas des oublis.
+
+- **Pas de migrations de base.** Le schéma vit dans
+  [`infra/postgres/init/`](infra/postgres/init/) et n'est rejoué que sur un volume vide :
+  tout ajout de colonne sur une base existante se fait à la main. Introduire Alembic quand
+  le modèle se stabilisera.
+- **La table `sites` est alimentée par un seed manuel**
+  ([`04_seed_sites.sql`](infra/postgres/init/04_seed_sites.sql), snapshot de l'API Mock IoT).
+  Aucune synchronisation automatique n'existe : un site ajouté côté API Mock doit être
+  ajouté ici. Côté lecture, `GET /api/v1/sites` et `/sites/{id}/current` fonctionnent.
+- **Aucun modèle de prévision n'est en `Production`.** Les modèles persistés sont en
+  `Staging`, entraînés sur données synthétiques. `ml-predict` n'écrit donc rien tant qu'une
+  promotion humaine n'a pas eu lieu — c'est l'état normal. Il faut environ 3 mois
+  d'historique gold réel avant qu'un réentraînement aboutisse
+  ([`ml/README.md`](ml/README.md#ce-qui-bloque-encore-concrètement)).
+- **`ml/` n'a pas de tests unitaires** (le reste du dépôt en a 205). C'est ce qui bloque le
+  découplage de `predict.py` et de `scripts/train_csv_experiment.py`, dont il importe
+  aujourd'hui ses fonctions d'inférence.
+- **Le réentraînement n'est pas planifié**, volontairement : il se lance à la main
+  (`docker compose --profile mlflow run --rm ml`) tant que le volume de données ne le
+  justifie pas.

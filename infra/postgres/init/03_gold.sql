@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS aggregates_gold_hourly (
 
 -- Rejouable sur une base déjà initialisée : les scripts de init/ ne tournent qu'à la
 -- création du volume, ces ALTER appliquent le nouveau schéma à chaud.
---   docker exec -i ev006-postgres psql -U ev_admin -d ev_monitoring < 03_gold.sql
+--   docker exec -i enervision-postgres psql -U ev_admin -d ev_monitoring < 03_gold.sql
 ALTER TABLE aggregates_gold_daily  ADD COLUMN IF NOT EXISTS usable_count     INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE aggregates_gold_daily  ADD COLUMN IF NOT EXISTS empty_count      INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE aggregates_gold_daily  ADD COLUMN IF NOT EXISTS critical_count   INTEGER NOT NULL DEFAULT 0;

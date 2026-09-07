@@ -75,16 +75,12 @@ os.environ.setdefault("AWS_ACCESS_KEY_ID", os.environ["MINIO_ACCESS_KEY"])
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", os.environ["MINIO_SECRET_KEY"])
 os.environ.setdefault("MLFLOW_S3_ENDPOINT_URL", _minio_endpoint_url())
 
-from apscheduler.schedulers.blocking import BlockingScheduler  # noqa: E402
-from apscheduler.triggers.cron import CronTrigger  # noqa: E402
-
 import mlflow  # noqa: E402
 import mlflow.lightgbm  # noqa: E402
 import mlflow.statsmodels  # noqa: E402
 import pandas as pd  # noqa: E402
-from mlflow.exceptions import MlflowException  # noqa: E402
-from mlflow.tracking import MlflowClient  # noqa: E402
-
+from apscheduler.schedulers.blocking import BlockingScheduler  # noqa: E402
+from apscheduler.triggers.cron import CronTrigger  # noqa: E402
 from core.features import (  # noqa: E402
     UNAVAILABLE_IN_GOLD,
     build_future_frame,
@@ -97,6 +93,8 @@ from core.postgres_store import (  # noqa: E402
     make_pg_connection,
     write_predictions,
 )
+from mlflow.exceptions import MlflowException  # noqa: E402
+from mlflow.tracking import MlflowClient  # noqa: E402
 from scripts.train_csv_experiment import LGBM_FEATURES, SITES, predict_lgbm, predict_ols  # noqa: E402
 
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")

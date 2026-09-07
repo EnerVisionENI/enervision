@@ -1,8 +1,9 @@
 -- infra/postgres/init/04_seed_sites.sql
--- EV-035 : seed manuel des 7 sites, le temps qu'un script de synchronisation
--- (etl/sites.py, actuellement un stub) interroge automatiquement l'API Mock IoT
--- (GET /api/v1/sites) et tienne cette table à jour. Valeurs reprises telles quelles
--- depuis cette API le 2026-09-02. À supprimer/adapter une fois ce script en place.
+-- EV-035 : seed des 7 sites, snapshot de l'API Mock IoT (GET /api/v1/sites) pris le
+-- 2026-09-02. C'est aujourd'hui la seule source de la table `sites` : la synchronisation
+-- automatique depuis l'API n'existe pas encore. Tant qu'elle n'existe pas, tout site
+-- ajouté côté API Mock doit être ajouté ici à la main (voir « Pistes connues » du
+-- README racine).
 -- Idempotent : ON CONFLICT permet de rejouer ce fichier sans dupliquer les lignes.
 
 INSERT INTO sites (site_id, site_type, site_name, location, capacity_kw, status) VALUES

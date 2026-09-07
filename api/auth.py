@@ -13,9 +13,6 @@ from api.models import User
 
 settings = get_settings()
 
-# Ordre croissant de privilège, utilisé par require_role pour les comparaisons "au moins".
-ROLE_HIERARCHY = ("viewer", "operator", "admin")
-
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
@@ -75,6 +72,12 @@ def get_active_user(user: User = Depends(get_current_user)) -> User:
 
 
 def require_role(*allowed_roles: str):
+    """Dépendance FastAPI : n'autorise que les rôles listés (exactement, pas « au moins »).
+
+    S'appuie sur get_active_user, donc un compte encore sur son mot de passe
+    temporaire est refusé avant même que son rôle soit examiné.
+    """
+
     def dependency(user: User = Depends(get_active_user)) -> User:
         if user.role not in allowed_roles:
             raise HTTPException(
@@ -84,9 +87,3 @@ def require_role(*allowed_roles: str):
         return user
 
     return dependency
-
-
-def require_min_role(min_role: str):
-    min_index = ROLE_HIERARCHY.index(min_role)
-    allowed = ROLE_HIERARCHY[min_index:]
-    return require_role(*allowed)

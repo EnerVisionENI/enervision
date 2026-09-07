@@ -1,10 +1,11 @@
-# Config partagée des outils Python (api/ et etl/). Le dépôt n'est pas un package :
-# chaque service a ses propres dépendances (api/requirements*.txt, etl/requirements*.txt).
+# Config partagée des outils Python. Le dépôt n'est pas un package : chaque service a
+# ses propres dépendances (api/requirements*.txt, etl/requirements*.txt, ml/requirements.txt,
+# e2e/requirements.txt, infra/backup/requirements-dev.txt).
 
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-extend-exclude = [".venv", "front", "infra"]
+extend-exclude = [".venv", "front", "infra/outline", "infra/grafana"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -12,6 +13,15 @@ ignore = ["E501", "SIM105"]
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = ["fastapi.Depends", "fastapi.params.Depends", "fastapi.Query"]
+
+[tool.ruff.lint.per-file-ignores]
+# ml/ n'est pas un package installé : chaque point d'entrée amorce son sys.path et
+# charge le .env de la racine AVANT d'importer core/ et models/ (qui lisent des
+# variables d'environnement au moment de l'import). Les imports ne peuvent donc pas
+# remonter en tête de fichier — E402 est structurel ici, pas un oubli.
+"ml/train.py" = ["E402"]
+"ml/predict.py" = ["E402"]
+"ml/scripts/*.py" = ["E402"]
 
 [tool.ruff.format]
 indent-style = "space"

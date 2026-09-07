@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS users (
 -- du volume (infra_pgdata est réutilisé depuis l'ancien projet Compose), cet ALTER applique le
 -- schéma à chaud. Sans lui, une base créée avant l'ajout de must_change_password fait échouer
 -- toute requête d'authentification en 500 (get_active_user sélectionne la colonne).
---   docker exec -i ev006-postgres psql -U ev_admin -d ev_monitoring < 01_core.sql
+--   docker exec -i enervision-postgres psql -U ev_admin -d ev_monitoring < 01_core.sql
 --
 -- Placé ici et non en fin de fichier comme dans 02_silver.sql / 03_gold.sql : l'INSERT
 -- ci-dessous nomme must_change_password, il échouerait sur une base où la colonne manque.

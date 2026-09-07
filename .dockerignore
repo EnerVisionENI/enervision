@@ -41,5 +41,5 @@ front/.vite
 .editorconfig
 
 # Documentation : aucune image n'en a besoin
-README.md
-infra/DEPLOYMENT.md
+*.md
+**/*.md

@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS measurements_silver (
 
 -- Rejouable sur une base déjà initialisée : les scripts de init/ ne tournent qu'à la
 -- création du volume, ces ALTER appliquent le nouveau schéma à chaud.
---   docker exec -i ev006-postgres psql -U ev_admin -d ev_monitoring < 02_silver.sql
+--   docker exec -i enervision-postgres psql -U ev_admin -d ev_monitoring < 02_silver.sql
 -- usable_metrics_count : nombre de métriques réellement mesurées sur les 7 possibles.
 -- is_valid vaut désormais (usable_metrics_count > 0) : une lecture critical / network_loss
 -- est conservée — le trou doit rester daté — mais n'est pas comptée comme une mesure.

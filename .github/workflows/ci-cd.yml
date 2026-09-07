@@ -1,7 +1,9 @@
 # Pipeline unique : remplace deploy-dev.yml + trivy.yml + etl-ci.yml.
 #
-#   test-api ┐
-#   test-etl ├─→ build (build → Trivy → push GHCR) ─→ test-e2e ─→ deploy
+#   lint-python ┐
+#   test-api    │
+#   test-etl    ├─→ build (build → Trivy → push GHCR) ─→ test-e2e ─→ deploy
+#   test-backup │
 #   build-front ┘
 #
 # Les images sont construites UNE SEULE FOIS, dans le job `build`, taguées par
@@ -47,8 +49,39 @@ env:
   IMAGE_TAG: sha-${{ github.sha }}
 
 jobs:
+  # Un seul job de lint pour TOUT le Python du dépôt (api, etl, ml, e2e,
+  # infra/backup). Auparavant chaque job de test lintait son propre dossier, ce
+  # qui laissait ml/ et e2e/ sans aucune couverture. `ruff check .` à la racine
+  # lit pyproject.toml et applique exactement les mêmes règles que le hook
+  # pre-commit local — un `pre-commit run --all-files` qui passe garantit ce job.
+  lint-python:
+    name: Lint Python (ruff)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      # Version fixée : une nouvelle release de ruff peut activer de nouvelles
+      # règles par défaut et faire échouer la CI sans qu'aucun code n'ait changé.
+      # Doit rester alignée sur la `rev` de .pre-commit-config.yaml.
+      - name: Install ruff
+        run: pip install ruff==0.16.6
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Format check
+        run: ruff format --check .
+
   test-api:
-    name: API lint + tests
+    name: API tests
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -63,15 +96,6 @@ jobs:
           cache: pip
           cache-dependency-path: api/requirements-dev.txt
 
-      # Version fixée : une nouvelle release de ruff peut activer de nouvelles
-      # règles par défaut et faire échouer la CI sans qu'aucun code n'ait changé.
-      - name: Install ruff
-        run: pip install ruff==0.16.6
-
-      # Config partagée dans pyproject.toml (racine) : mêmes règles que etl/.
-      - name: Lint (ruff)
-        run: ruff check api
-
       - name: Install API dependencies
         run: |
           python -m pip install --upgrade pip
@@ -81,7 +105,7 @@ jobs:
         run: pytest api/tests -q
 
   test-etl:
-    name: ETL lint + tests
+    name: ETL tests
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -98,13 +122,6 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: etl/requirements-dev.txt
-
-      # Même version que test-api : mêmes règles pyproject.toml, même risque de dérive.
-      - name: Install ruff
-        run: pip install ruff==0.16.6
-
-      - name: Lint (ruff)
-        run: ruff check .
 
       - name: Install ETL dependencies
         run: pip install -r requirements-dev.txt
@@ -183,7 +200,7 @@ jobs:
     # tiré au lieu d'être reconstruit. Un « Re-run all jobs » ne recompile donc
     # rien, et le cron nocturne rescanne l'image RÉELLEMENT publiée plutôt qu'un
     # rebuild qui serait, par construction, un artefact différent.
-    needs: [test-api, test-etl, test-backup, build-front]
+    needs: [lint-python, test-api, test-etl, test-backup, build-front]
     if: always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -455,9 +472,9 @@ jobs:
         run: |
           set -e
           docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
-            pull postgres minio minio-init api etl-collect etl-alerts etl-sites
+            pull postgres minio minio-init api etl-collect etl-alerts
           docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
-            up -d --no-build postgres minio minio-init api etl-collect etl-alerts etl-sites
+            up -d --no-build postgres minio minio-init api etl-collect etl-alerts
 
       - name: Wait for API health
         run: |

@@ -3,7 +3,7 @@
 # Suppose que la stack tourne déjà : `docker compose --profile etl up -d --build`
 # depuis la racine du dépôt (compose.yaml). Ne mocke rien : vraies requêtes HTTP
 # contre le vrai serveur API (port 8000), vraie PostgreSQL, alimentée par les
-# vrais services etl-alerts / etl-sites / etl-collect.
+# vrais services etl-alerts / etl-collect.
 #
 # Contrairement à api/tests/ (SQLite en mémoire, recréée à chaque run), la base
 # ici est partagée et persistante entre les runs : les tests qui créent des
@@ -151,11 +151,11 @@ def test_alerts_pipeline_reaches_the_api(admin_token):
     les 60s par défaut, ALERTS_INTERVALLE_SECONDES) : on poll au lieu de déclencher
     un cycle nous-mêmes, alerts.py n'a pas de mode "run once".
 
-    Nécessite que la table `sites` soit peuplée (service etl-sites) : alerts.py
-    ignore silencieusement toute alerte dont le site_id n'existe pas encore côté
-    sites (contrainte FK, cf. etl/alerts.py::enregistrer_alertes). Tant que
-    etl/sites.py reste un stub, ce test échoue par timeout — c'est le signal
-    attendu, pas un faux positif de ce test.
+    Nécessite que la table `sites` soit peuplée : alerts.py ignore silencieusement
+    toute alerte dont le site_id n'y figure pas (contrainte FK, cf.
+    etl/alerts.py::enregistrer_alertes). Le seed infra/postgres/init/04_seed_sites.sql
+    s'en charge à la première initialisation du volume pgdata — un timeout ici veut
+    donc dire soit etl-alerts arrêté, soit un volume initialisé sans ce seed.
     """
 
     def alertes_recues():
@@ -164,7 +164,7 @@ def test_alerts_pipeline_reaches_the_api(admin_token):
         return resp.json()
 
     data = poll(alertes_recues, timeout=90, interval=5)
-    assert data, "Aucune alerte reçue après 90s : vérifier etl-sites (stub ?) et les logs de etl-alerts"
+    assert data, "Aucune alerte reçue après 90s : vérifier les logs de etl-alerts et la table sites"
     premiere = data[0]
     assert premiere["alert_id"]
     assert premiere["site_id"], "site_id vide : alerts.py n'a pas pu résoudre le site (table sites vide ?)"

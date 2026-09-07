@@ -4,8 +4,8 @@
 
 Le dépôt contient une pipeline GitHub Actions unique dans `.github/workflows/ci-cd.yml`.
 
-- Sur chaque pull request vers `dev` ou `main` : tests API (lint + pytest), tests ETL (lint + pytest), tests
-  du script de sauvegarde, build + tests + lint du frontend, puis le job `build` (construction des 3 images,
+- Sur chaque pull request vers `dev` ou `main` : lint Python de tout le dépôt (ruff), tests API, tests ETL, tests
+  du script de sauvegarde, build + tests + lint du frontend, puis le job `build` (construction des 4 images,
   scan de sécurité Trivy, publication sur GHCR), puis tests end-to-end sur une stack éphémère jetable
   (voir `compose.ci.yml`).
 - Sur chaque push vers `dev` (donc aussi après un merge de PR) : la même chaîne de vérifications, puis un
@@ -22,6 +22,7 @@ GitHub Container Registry :
 | API   | `ghcr.io/enervisionani/enervision-api` |
 | Front | `ghcr.io/enervisionani/enervision-front` |
 | ETL   | `ghcr.io/enervisionani/enervision-etl` |
+| ML    | `ghcr.io/enervisionani/enervision-ml` |
 
 Chaque image porte un tag immuable `sha-<commit>`, plus un tag mouvant `dev` / `main` sur push de branche.
 `test-e2e` et `deploy` font un `docker pull` du tag `sha-<commit>` du run : ils ne reconstruisent plus rien.
@@ -81,7 +82,7 @@ derrière des profils Compose :
 | Profil | Services | |
 |--------|----------|---|
 | _(aucun)_ | `postgres`, `minio`, `minio-init`, `api`, `front` | toujours démarrés |
-| `etl`   | `etl-collect`, `etl-alerts`, `etl-sites` | collecte temps réel mesures + alertes + sites |
+| `etl`   | `etl-collect`, `etl-alerts` | collecte temps réel des mesures + des alertes |
 | `audit` | `audit-sync`  | synchro MinIO → Azure Blob |
 | `proxy` | `traefik`     | reverse proxy TLS |
 | `observability` | `prometheus`, `grafana`, `node-exporter`, `cadvisor` | métriques serveur (hôte + conteneurs) |
@@ -225,7 +226,7 @@ up` est lancé — pas seulement le temps du job GitHub Actions.
 Pour trouver ce dossier sans le deviner (utile aussi pour un test manuel, en dehors de tout cron) :
 
 ```bash
-docker inspect ev006-postgres --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}'
+docker inspect enervision-postgres --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}'
 ```
 
 **Crontab** (`crontab -e`, sur l'utilisateur qui a accès au dépôt et à Docker) — `<dossier_du_depot>` est le

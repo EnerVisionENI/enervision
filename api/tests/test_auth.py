@@ -61,6 +61,3 @@ def test_operator_cannot_create_user(client, db_session):
         headers=headers,
     )
     assert response.status_code == 403
-
-
-

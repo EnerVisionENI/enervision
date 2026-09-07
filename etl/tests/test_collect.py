@@ -172,6 +172,7 @@ def test_cycle_gold_quotidien_cible_la_veille(monkeypatch):
 def test_lancer_quality_survit_a_une_erreur(monkeypatch):
     """Une erreur de quality.py ne doit jamais remonter jusqu'au planificateur,
     sinon un run gold en échec tuerait aussi la collecte."""
+
     def echouer(argv):
         raise RuntimeError("erreur simulée")
 

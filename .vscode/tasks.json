@@ -5,7 +5,7 @@
   "tasks": [
     {
       "label": "Docker: démarrer tout (cœur + ETL)",
-      "detail": "postgres, minio, api, front + les jobs ETL (collect, alerts, sites).",
+      "detail": "postgres, minio, api, front + les jobs ETL (collect, alerts).",
       "type": "shell",
       "command": "docker compose --profile etl up -d --build",
       "group": { "kind": "build", "isDefault": true },

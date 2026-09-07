@@ -59,6 +59,7 @@ pour voir les 7 modèles enregistrés et leur version `Staging`.
 Récupérer un modèle en code :
 ```python
 import mlflow
+
 mlflow.set_tracking_uri("sqlite:///mlflow.db")
 model = mlflow.pyfunc.load_model("models:/enervision-forecast-site001/Staging")
 ```

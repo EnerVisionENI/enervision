@@ -30,7 +30,8 @@ MASE_PROMOTION_THRESHOLD = float(os.environ.get("MASE_PROMOTION_THRESHOLD", "1.0
 
 def log_run(
     site_id: str,
-    train_start: str, train_end: str,
+    train_start: str,
+    train_end: str,
     mase_towt: float,
     mase_lgbm: float,
     conformal_margin_90: float,
@@ -61,10 +62,7 @@ def log_run(
 
         # TOWT reste champion par défaut sous le seuil, même si LightGBM fait
         # mieux : on ne bascule que sur un gain net et durable (ADR-04).
-        if mase_towt < MASE_PROMOTION_THRESHOLD:
-            promoted = "towt"
-        else:
-            promoted = "naive_fallback"
+        promoted = "towt" if mase_towt < MASE_PROMOTION_THRESHOLD else "naive_fallback"
 
         mlflow.set_tag("promoted", promoted)
         mlflow.set_tag("data_source", "gold_real")
@@ -105,6 +103,8 @@ def log_run(
             )
             print(f"[MLflow] -> {registered_name} v{mv.version} (Staging)")
         else:
-            print(f"⚠️  FUSIBLE DÉCLENCHÉ : MASE TOWT = {mase_towt:.3f} >= {MASE_PROMOTION_THRESHOLD} — pas de nouvelle version enregistrée")
+            print(
+                f"⚠️  FUSIBLE DÉCLENCHÉ : MASE TOWT = {mase_towt:.3f} >= {MASE_PROMOTION_THRESHOLD} — pas de nouvelle version enregistrée"
+            )
 
         return promoted

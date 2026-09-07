@@ -128,9 +128,7 @@ def test_sauvegarder_table_nettoie_le_fichier_local_apres_televersement(tmp_path
     monkeypatch.setattr(backup, "compresser", lambda donnees: b"compresse")
 
     appels = []
-    monkeypatch.setattr(
-        backup, "televerser_vers_azure", lambda table, chemin: appels.append((table, chemin))
-    )
+    monkeypatch.setattr(backup, "televerser_vers_azure", lambda table, chemin: appels.append((table, chemin)))
 
     backup.sauvegarder_table("users")
 

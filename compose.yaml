@@ -16,7 +16,7 @@ services:
   # --------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
-    container_name: ev006-postgres
+    container_name: enervision-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -213,37 +213,6 @@ services:
           cpus: "0.5"
           memory: 256M
 
-  # Synchro des sites (API Mock IoT -> table sites Postgres) — profile "etl"
-  # NOTE: sites.py est encore un stub (ne fait rien). restart:"no" tant qu'il
-  # n'est pas implémenté, sinon le conteneur boucle. Passer à unless-stopped ensuite.
-  etl-sites:
-    build:
-      context: ./etl
-      dockerfile: Dockerfile
-    image: ${ETL_IMAGE:-enervision-etl:local}
-    container_name: enervision-etl-sites
-    profiles: ["etl"]
-    command: ["python", "sites.py"]
-    env_file:
-      - .env
-    environment:
-      API_BASE: ${API_BASE:-http://10.105.200.45:8000}
-      SITES_INTERVALLE_SECONDES: ${SITES_INTERVALLE_SECONDES:-60}
-      PYTHONUNBUFFERED: "1"
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-    networks:
-      - enervision-network
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   # --------------------------------------------------------------------------
   # Synchro audit -> Azure Blob — profile "audit"
   # --------------------------------------------------------------------------
@@ -307,31 +276,16 @@ services:
         max-file: "3"
 
   # --------------------------------------------------------------------------
-  # Réentraînement des modèles de prévision à la demande
+  # Réentraînement des modèles de prévision — à la demande
   #
-  # Pas de restart: unless-stopped : ce conteneur tourne à la demande
-  # (`docker compose --profile mlflow run --rm ml`)
-  # un seul passage puis le conteneur se
-  # termine (pas de --schedule contrairement à ml-predict).
-  # justification : pour le moment nous n'avons pas assez de données pour automatiser
+  # Pas de `restart: unless-stopped` : ce conteneur fait un seul passage puis se
+  # termine (contrairement à ml-predict, qui tourne en boucle avec --schedule).
   #
-  # Une fois assez de données, planifier via un scheduler Docker-natif déclaré ici même
-  # (pas de crontab système à installer à la main sur le serveur — `docker compose up`
-  # suffirait à tout activer). Exemple avec ofelia (https://github.com/mcuadros/ofelia) :
+  #   docker compose --profile mlflow run --rm ml
   #
-  # scheduler:
-  #   image: mcuadros/ofelia:latest
-  #   container_name: enervision-scheduler
-  #   profiles: ["mlflow"]
-  #   command: daemon --docker
-  #   volumes:
-  #     - /var/run/docker.sock:/var/run/docker.sock:ro
-  #   labels:
-  #     # Le 1er de chaque mois à 4h UTC (décalé du backup de 3h et du recalcul gold
-  #     # quotidien de 00h15, pour ne pas cumuler la charge sur le serveur).
-  #     ofelia.job-run.ml-retrain.schedule: "0 4 1 * *"
-  #     ofelia.job-run.ml-retrain.container: "enervision-ml"
-  #   restart: unless-stopped
+  # Volontairement non planifié : le gold n'a pas encore assez d'historique pour
+  # qu'un réentraînement automatique ait du sens (voir ml/README.md, section
+  # « Automatiser le réentraînement »).
   # --------------------------------------------------------------------------
   ml:
     build:

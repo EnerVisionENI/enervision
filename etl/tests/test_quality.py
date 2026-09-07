@@ -24,6 +24,7 @@ def _no_postgres(monkeypatch):
     pg_conn=None et n'écrit que dans MinIO (le faux S3). Les capacités site
     (normalement lues dans la table `sites`) sont donc absentes par défaut —
     un test qui veut load_percent monkeypatche `load_site_capacities`."""
+
     def _boom():
         raise psycopg2.OperationalError("pas de Postgres en test")
 
@@ -52,11 +53,7 @@ class _Paginator:
 
     def paginate(self, Bucket, Prefix=""):
         with self._s3.lock:
-            contents = [
-                {"Key": key}
-                for (bucket, key) in self._s3.store
-                if bucket == Bucket and key.startswith(Prefix)
-            ]
+            contents = [{"Key": key} for (bucket, key) in self._s3.store if bucket == Bucket and key.startswith(Prefix)]
         yield {"Contents": contents}
 
 
@@ -65,7 +62,7 @@ class FakeS3:
     latence par clé pour tester le parallélisme."""
 
     def __init__(self, *, errors=(), delays=None):
-        self.store = {}            # (bucket, key) -> bytes
+        self.store = {}  # (bucket, key) -> bytes
         self.buckets = set()
         self.errors = set(errors)
         self.delays = dict(delays or {})
@@ -134,6 +131,7 @@ def mesure(site_id="SITE001", timestamp="2025-01-01T00:00:00", **extra):
 
 # ----------------------------------------------------------------- fetch_records
 
+
 def test_fetch_records_recupere_et_decode_tout():
     s3 = FakeS3()
     keys = [f"SITE001/2025-01-01/00000{i}.json" for i in range(5)]
@@ -143,7 +141,7 @@ def test_fetch_records_recupere_et_decode_tout():
     records, errors = quality.fetch_records(s3, "bronze", keys, workers=8)
 
     assert errors == 0
-    assert [k for k, _ in records] == keys              # sortie ordonnée comme l'entrée
+    assert [k for k, _ in records] == keys  # sortie ordonnée comme l'entrée
     assert all(rec["site_id"] == "SITE001" for _, rec in records)
 
 
@@ -179,14 +177,15 @@ def test_fetch_records_json_invalide_reste_en_records():
     s3.seed_bronze("SITE001/2025-01-01/000001.json", mesure())
 
     records, errors = quality.fetch_records(
-        s3, "bronze",
+        s3,
+        "bronze",
         ["SITE001/2025-01-01/000000.json", "SITE001/2025-01-01/000001.json"],
         workers=4,
     )
 
-    assert errors == 0            # décodage raté != erreur de lecture
+    assert errors == 0  # décodage raté != erreur de lecture
     assert len(records) == 2
-    assert records[0][1]["_parse_error"]   # partira en quarantaine plus loin
+    assert records[0][1]["_parse_error"]  # partira en quarantaine plus loin
 
 
 def test_fetch_records_liste_vide_ne_touche_pas_s3():
@@ -224,12 +223,16 @@ def test_fetch_records_borne_workers_au_nombre_de_cles():
     s3 = FakeS3()
     s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure())
     records, errors = quality.fetch_records(
-        s3, "bronze", ["SITE001/2025-01-01/000000.json"], workers=64,
+        s3,
+        "bronze",
+        ["SITE001/2025-01-01/000000.json"],
+        workers=64,
     )
     assert (len(records), errors) == (1, 0)
 
 
 # ------------------------------------------------------------------- main (e2e)
+
 
 def test_main_bout_en_bout_puis_idempotent(monkeypatch, capsys):
     s3 = FakeS3()
@@ -296,13 +299,14 @@ def test_main_supporte_un_lot_entierement_null(monkeypatch, capsys):
     assert quality.main([]) == 0
     out = capsys.readouterr().out
     assert "lignes_silver=4" in out
-    assert s3.keys("silver")            # silver écrit malgré la consommation absente
+    assert s3.keys("silver")  # silver écrit malgré la consommation absente
 
     assert quality.main(["--gold-only"]) == 0
     assert any(k.startswith("daily/") for k in s3.keys("gold"))
 
 
 # ------------------------------------------------------- découplage du gold
+
 
 def test_process_batch_ne_recalcule_pas_le_gold_par_defaut():
     """Le chemin appelé chaque minute (et à chaque tranche du rattrapage) écrit le
@@ -448,21 +452,30 @@ def mesure_vide(site_id="SITE001", timestamp="2025-01-01T00:00:00"):
     """Lecture bien formée mais sans aucune métrique : ce que renvoie l'API mock quand le
     capteur réseau est en panne (null_reasons = network_loss, data_quality = critical)."""
     return mesure(
-        site_id, timestamp,
-        consumption_kw=None, consumption_kwh=None,
-        data_quality="critical", null_reasons=["network_loss"],
+        site_id,
+        timestamp,
+        consumption_kw=None,
+        consumption_kwh=None,
+        data_quality="critical",
+        null_reasons=["network_loss"],
     )
 
 
 # ------------------------------------------------------------- score de qualité
 
+
 def test_score_qualite_classe_critical_au_pire():
     """critical tombait dans la branche par défaut (-5) et sortait donc MIEUX noté que
     partial (-10) et degraded (-25) : sur les données réelles, 55 contre 40 de moyenne."""
     scores = {
-        niveau: quality.compute_quality_score({
-            "data_quality": niveau, "consumption_kw": 42.0, "timestamp": "x", "site_id": "SITE001",
-        })
+        niveau: quality.compute_quality_score(
+            {
+                "data_quality": niveau,
+                "consumption_kw": 42.0,
+                "timestamp": "x",
+                "site_id": "SITE001",
+            }
+        )
         for niveau in ("good", "partial", "degraded", "critical")
     }
 
@@ -470,16 +483,27 @@ def test_score_qualite_classe_critical_au_pire():
 
 
 def test_score_qualite_niveau_inconnu_reste_penalise():
-    inconnu = quality.compute_quality_score({
-        "data_quality": "farfelu", "consumption_kw": 42.0, "timestamp": "x", "site_id": "SITE001",
-    })
-    parfait = quality.compute_quality_score({
-        "data_quality": "good", "consumption_kw": 42.0, "timestamp": "x", "site_id": "SITE001",
-    })
+    inconnu = quality.compute_quality_score(
+        {
+            "data_quality": "farfelu",
+            "consumption_kw": 42.0,
+            "timestamp": "x",
+            "site_id": "SITE001",
+        }
+    )
+    parfait = quality.compute_quality_score(
+        {
+            "data_quality": "good",
+            "consumption_kw": 42.0,
+            "timestamp": "x",
+            "site_id": "SITE001",
+        }
+    )
     assert inconnu < parfait
 
 
 # ------------------------------------------------------- complétude du silver
+
 
 def test_lecture_sans_metrique_reste_en_silver_marquee_invalide(monkeypatch):
     """Le trou doit rester visible ET daté : la ligne n'est pas rejetée, mais elle ne doit
@@ -492,12 +516,13 @@ def test_lecture_sans_metrique_reste_en_silver_marquee_invalide(monkeypatch):
     assert quality.main([]) == 0
 
     silver = s3.parquet("silver", s3.keys("silver")[0]).sort_values("timestamp")
-    assert s3.keys("quarantine") == []                       # bien formée : pas un rejet
+    assert s3.keys("quarantine") == []  # bien formée : pas un rejet
     assert list(silver["usable_metrics_count"]) == [0, 2]
     assert list(silver["is_valid"]) == [False, True]
 
 
 # ----------------------------------------------------- load_percent en silver
+
 
 def test_load_percent_calcule_depuis_la_capacite_du_site(monkeypatch, capacites):
     """load_percent = consumption_kw / capacity_kw * 100 : le seul indicateur de charge
@@ -543,24 +568,25 @@ def test_gold_agrege_load_percent(monkeypatch, capacites):
     daily = _gold(s3, "daily").iloc[0]
 
     assert daily["capacity_kw"] == 200.0
-    assert daily["avg_load_percent"] == 70.0       # (50 + 90) / 2
+    assert daily["avg_load_percent"] == 70.0  # (50 + 90) / 2
     assert daily["max_load_percent"] == 90.0
 
 
 # --------------------------------------------------- validation de plage
+
 
 def test_valeur_hors_plage_part_en_quarantaine(monkeypatch):
     """Une métrique présente mais physiquement impossible n'est pas une mesure douteuse,
     c'est un capteur en défaut : tout l'enregistrement part en quarantaine."""
     s3 = FakeS3()
     monkeypatch.setattr(quality.storage, "get_s3", lambda: s3)
-    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure(voltage_v=5000.0))     # max 1000
+    s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure(voltage_v=5000.0))  # max 1000
     s3.seed_bronze("SITE001/2025-01-01/010000.json", mesure(timestamp="2025-01-01T01:00:00"))
 
     assert quality.main([]) == 0
 
     silver = s3.parquet("silver", s3.keys("silver")[0])
-    assert len(silver) == 1                                  # seule la 2e est passée
+    assert len(silver) == 1  # seule la 2e est passée
     rejet = s3.parquet("quarantine", s3.keys("quarantine")[0]).iloc[0]
     assert rejet["error_type"] == "out_of_range"
     assert "voltage_v=5000" in rejet["error_message"]
@@ -577,7 +603,7 @@ def test_valeur_negative_impossible_rejetee(monkeypatch):
 
     assert quality.main([]) == 0
 
-    assert len(s3.parquet("silver", s3.keys("silver")[0])) == 1        # seule la 3e passe
+    assert len(s3.parquet("silver", s3.keys("silver")[0])) == 1  # seule la 3e passe
     rejets = pd.concat([s3.parquet("quarantine", k) for k in s3.keys("quarantine")])
     assert list(rejets["error_type"]) == ["out_of_range", "out_of_range"]
 
@@ -598,6 +624,7 @@ def test_valeurs_aux_bornes_restent_valides(monkeypatch):
 
 
 # ------------------------------------------------------------ compteurs du gold
+
 
 def test_compteurs_gold_partitionnent_records_count(monkeypatch):
     """good + partial + degraded + critical + unknown doit boucler sur records_count.
@@ -673,6 +700,7 @@ def test_total_kwh_somme_normalement_des_qu_une_mesure_existe(monkeypatch):
 
 # --------------------------------------------------------- grille horaire 24 h
 
+
 def test_gold_horaire_complete_les_24_heures(monkeypatch):
     """Une heure sans relevé doit exister avec records_count=0 : sinon elle est
     indiscernable d'une heure absente du jeu de données, et une série temporelle recolle
@@ -690,7 +718,7 @@ def test_gold_horaire_complete_les_24_heures(monkeypatch):
     assert list(hourly["record_hour"])[:2] == ["2025-01-01T00:00:00Z", "2025-01-01T01:00:00Z"]
     assert list(hourly["records_count"]) == [1, 0, 0, 0, 0, 1] + [0] * 18
     creuse = hourly[hourly["record_hour"] == "2025-01-01T03:00:00Z"].iloc[0]
-    assert pd.isna(creuse["avg_consumption_kw"])            # trou explicite, pas un zéro
+    assert pd.isna(creuse["avg_consumption_kw"])  # trou explicite, pas un zéro
     assert creuse["site_id"] == "SITE001" and creuse["site_type"] == "office"
 
 
@@ -711,6 +739,7 @@ def test_gold_horaire_a_les_memes_metriques_que_le_journalier(monkeypatch):
 
 
 # --------------------------------------------- complétude horaire du gold daily
+
 
 def test_gold_daily_mesure_la_couverture_des_24_heures(monkeypatch):
     """usable_count / records_count ne dit pas la complétude : 3 relevés reçus à 3 heures
@@ -745,11 +774,12 @@ def test_gold_daily_couverture_ignore_les_heures_100pct_vides(monkeypatch):
     daily = _gold(s3, "daily").iloc[0]
 
     assert daily["records_count"] == 2
-    assert daily["covered_hours"] == 1                       # seule l'heure 0 porte une mesure
+    assert daily["covered_hours"] == 1  # seule l'heure 0 porte une mesure
     assert daily["completeness_pct"] == round(1 / 24 * 100, 1)
 
 
 # ------------------------------------------------------------------ anomalies
+
 
 def test_anomalies_calculees_sur_toute_la_partition(monkeypatch):
     """En collecte temps réel un batch vaut une ligne par site : shift(1) et l'écart-type y
@@ -783,9 +813,9 @@ def test_gold_dedoublonne_une_cle_bronze_reingeree(monkeypatch):
     s3.seed_bronze("SITE001/2025-01-01/000000.json", mesure())
 
     quality.main([])
-    quality.save_state(s3, "manifests", "etl_state.json", set())   # état incrémental purgé
+    quality.save_state(s3, "manifests", "etl_state.json", set())  # état incrémental purgé
     quality.main([])
-    assert len(s3.keys("silver")) == 2                             # deux batches, même mesure
+    assert len(s3.keys("silver")) == 2  # deux batches, même mesure
 
     quality.main(["--gold-only"])
 
@@ -793,6 +823,7 @@ def test_gold_dedoublonne_une_cle_bronze_reingeree(monkeypatch):
 
 
 # ----------------------------------------------------------------- quarantaine
+
 
 def test_quarantaine_ecrite_en_parquet_partitionne_sur_la_date_mesuree(monkeypatch, capsys):
     """Partitionnée comme silver et gold, pour qu'un rejet puisse être rapproché du trou
@@ -839,7 +870,7 @@ def test_quarantaine_regroupe_un_lot_en_un_parquet_par_partition(monkeypatch):
     assert quality.main([]) == 0
 
     cles = s3.keys("quarantine")
-    assert len(cles) == 1                                # un objet, pas quatre
+    assert len(cles) == 1  # un objet, pas quatre
     assert len(s3.parquet("quarantine", cles[0])) == 4
 
 

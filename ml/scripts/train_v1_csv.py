@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 warnings.filterwarnings("ignore")
 
 from dotenv import load_dotenv
+
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 # Le client MLflow uploade les artifacts directement vers MinIO (le serveur ne
@@ -32,10 +33,10 @@ import mlflow
 import mlflow.lightgbm
 import mlflow.statsmodels
 import pandas as pd
-from mlflow.tracking import MlflowClient
-
 from core.evaluation import conformal_margin, empirical_coverage, mase
+from mlflow.tracking import MlflowClient
 from models.naive import naive_forecast
+
 from scripts.train_csv_experiment import (
     CSV_DIR,
     predict_lgbm,
@@ -155,10 +156,15 @@ def persist_site(client, site_id):
         )
 
         return {
-            "site_id": site_id, "site_type": site_type, "champion": champion,
-            "run_id": run.info.run_id, "registered_name": registered_name,
-            "version": mv.version, "mase_test": round(mase_test, 4),
-            "conformal_margin_90": round(margin, 2), "coverage_90": round(coverage, 4),
+            "site_id": site_id,
+            "site_type": site_type,
+            "champion": champion,
+            "run_id": run.info.run_id,
+            "registered_name": registered_name,
+            "version": mv.version,
+            "mase_test": round(mase_test, 4),
+            "conformal_margin_90": round(margin, 2),
+            "coverage_90": round(coverage, 4),
         }
 
 
@@ -173,8 +179,10 @@ def main():
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(rows, f, indent=2, ensure_ascii=False)
 
-    print(f"\n>>> {len(rows)} modeles persistes dans MLflow ({MLFLOW_TRACKING_URI}), "
-          f"experiment '{MLFLOW_EXPERIMENT_NAME}', stage=Staging.")
+    print(
+        f"\n>>> {len(rows)} modeles persistes dans MLflow ({MLFLOW_TRACKING_URI}), "
+        f"experiment '{MLFLOW_EXPERIMENT_NAME}', stage=Staging."
+    )
     print(f">>> Resume ecrit dans {report_path}")
 
 

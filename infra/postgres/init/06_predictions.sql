@@ -69,7 +69,7 @@ CREATE INDEX IF NOT EXISTS idx_predictions_predicted_at ON predictions_forecast(
 -- Rejouable sur une base déjà initialisée : les scripts de init/ ne tournent qu'à la création
 -- du volume (infra_pgdata est réutilisé depuis l'ancien projet Compose), ces ALTER appliquent
 -- le schéma à chaud.
---   docker exec -i ev006-postgres psql -U ev_admin -d ev_monitoring < 06_predictions.sql
+--   docker exec -i enervision-postgres psql -U ev_admin -d ev_monitoring < 06_predictions.sql
 ALTER TABLE predictions_forecast ADD COLUMN IF NOT EXISTS step_minutes        SMALLINT NOT NULL DEFAULT 60;
 ALTER TABLE predictions_forecast ADD COLUMN IF NOT EXISTS lower_90            NUMERIC;
 ALTER TABLE predictions_forecast ADD COLUMN IF NOT EXISTS upper_90            NUMERIC;

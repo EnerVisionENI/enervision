@@ -25,9 +25,21 @@ import psycopg2.extras
 # Ordre des colonnes de l'INSERT — doit suivre 06_predictions.sql. predicted_at est laissé
 # à son DEFAULT now() : c'est l'heure d'écriture réelle, pas une valeur calculée en Python.
 PREDICTION_COLUMNS = [
-    "site_id", "target_ts", "step_minutes", "predicted_kwh", "lower_90", "upper_90",
-    "model_name", "model_version", "model_stage", "champion", "run_id", "data_source",
-    "temperature_celsius", "temperature_source", "horizon_h",
+    "site_id",
+    "target_ts",
+    "step_minutes",
+    "predicted_kwh",
+    "lower_90",
+    "upper_90",
+    "model_name",
+    "model_version",
+    "model_stage",
+    "champion",
+    "run_id",
+    "data_source",
+    "temperature_celsius",
+    "temperature_source",
+    "horizon_h",
 ]
 
 
@@ -147,14 +159,10 @@ def write_predictions(
     effacerait les lignes horaires du même site.
     """
     columns_sql = ", ".join(PREDICTION_COLUMNS)
-    rows = [
-        tuple(_sql_value(row.get(column)) for column in PREDICTION_COLUMNS)
-        for row in df.to_dict("records")
-    ]
+    rows = [tuple(_sql_value(row.get(column)) for column in PREDICTION_COLUMNS) for row in df.to_dict("records")]
     with conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM predictions_forecast "
-            "WHERE site_id = %s AND step_minutes = %s AND target_ts >= %s",
+            "DELETE FROM predictions_forecast WHERE site_id = %s AND step_minutes = %s AND target_ts >= %s",
             (site_id, step_minutes, start.to_pydatetime()),
         )
         if rows:

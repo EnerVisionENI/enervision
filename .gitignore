@@ -1,43 +1,53 @@
+# ==============================================================================
 # Secrets — jamais commités
+# ==============================================================================
 .env
 .env.*
 !.env.example
 *.pem
 *.key
-infra/keycloak/realm-export.json
-# Outline : config Dex avec hash de mots de passe (garder le .example versionné)
+# Outline : config Dex, contient des hash de mots de passe (le .example est versionné)
 infra/outline/dex-config.yaml
 # Certificats Let's Encrypt générés par Traefik (clés privées une fois peuplé)
 infra/traefik/acme.json
 
-# Python (api, etl)
+# ==============================================================================
+# Python (api, etl, ml, infra/backup, e2e)
+# ==============================================================================
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
 .venv/
 venv/
-*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 uv.lock
 
-# Node / front
-front/node_modules/
+# ==============================================================================
+# Node (front)
+# ==============================================================================
+node_modules/
 front/dist/
 front/.vite/
 *.log
 npm-debug.log*
 
-# Docker
-*.pid
-
-# MLflow (artefacts locaux)
+# ==============================================================================
+# MLflow / artefacts ML
+# ==============================================================================
 mlruns/
 mlartifacts/
-ml/reports/*.json  # Rapports générés (sauf les .md versionés)
+ml/mlflow.db
+# Rapports générés. Exception : report_data.json est versionné, c'est la seule
+# trace des résultats d'entraînement (le CSV source, lui, n'est pas dans le dépôt).
+ml/reports/*.json
+!ml/reports/report_data.json
 
-# Data locale — ne jamais commiter de données (tout vit dans MinIO)
+# ==============================================================================
+# Données locales — rien ne se commite, tout vit dans MinIO
+# ==============================================================================
 *.parquet
 *.jsonl
 data/
@@ -45,13 +55,14 @@ tmp/
 bronze/
 ml/data/csv/
 
-# IDE / OS
+# ==============================================================================
+# Outillage local / OS
+# ==============================================================================
 # .vscode/tasks.json est versionné (tâches Docker partagées), le reste non.
 .vscode/*
 !.vscode/tasks.json
 .idea/
+.claude/
 .DS_Store
 Thumbs.db
-node_modules/
-ml/mlflow.db
-.claude/
+*.pid

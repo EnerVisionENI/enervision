@@ -81,11 +81,16 @@ def commande_pg_dump(table):
     fichier : cette sortie alimente directement compresser()."""
     return [
         "pg_dump",
-        "--host", POSTGRES_HOST,
-        "--port", str(POSTGRES_PORT),
-        "--username", POSTGRES_USER,
-        "--dbname", POSTGRES_DB,
-        "--table", table,
+        "--host",
+        POSTGRES_HOST,
+        "--port",
+        str(POSTGRES_PORT),
+        "--username",
+        POSTGRES_USER,
+        "--dbname",
+        POSTGRES_DB,
+        "--table",
+        table,
     ]
 
 

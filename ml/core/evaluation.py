@@ -23,9 +23,7 @@ def mase(y_true: pd.Series, y_pred: pd.Series, y_naive: pd.Series) -> float:
     Les trois séries doivent être alignées sur le même index
     (mêmes timestamps) et ne pas contenir de NaN résiduel.
     """
-    aligned = pd.concat(
-        {"true": y_true, "pred": y_pred, "naive": y_naive}, axis=1
-    ).dropna()
+    aligned = pd.concat({"true": y_true, "pred": y_pred, "naive": y_naive}, axis=1).dropna()
 
     if aligned.empty:
         raise ValueError("Aucune ligne alignée entre y_true, y_pred et y_naive.")
