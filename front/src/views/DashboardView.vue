@@ -253,7 +253,8 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Chart } from "chart.js/auto";
+import { Chart, Interaction } from "chart.js/auto";
+import { getRelativePosition } from "chart.js/helpers";
 // Enregistre l'adaptateur de dates auprès de Chart.js (effet de bord, pas d'export) : sans lui
 // l'échelle de type "time" du grand graphique lève au premier rendu.
 import "chartjs-adapter-date-fns";
@@ -432,6 +433,12 @@ function formatValeur(nombre, decimales = 0) {
   return nombre === null || nombre === undefined ? "—" : Number(nombre).toFixed(decimales);
 }
 
+// Heure rendue dans le fuseau du navigateur : l'API livre des horodatages bruts, et rien dans
+// ses messages ne fige l'heure en UTC.
+function formatHeure(instant) {
+  return new Date(instant).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+}
+
 function formatMillier(nombre) {
   return nombre === null || nombre === undefined ? "—" : Math.round(nombre).toLocaleString("fr-FR");
 }
@@ -477,13 +484,9 @@ const classeRecommandation = computed(() => {
   return "";
 });
 
-// Les horodatages sont rendus ici, dans le fuseau du navigateur : l'API les livre bruts et son
-// message n'en porte aucune trace, précisément pour que la phrase ne fige pas l'heure en UTC.
 // `fin` est une borne exclusive — la fin du dernier créneau, pas son début.
 function formatCreneau(reco) {
-  const heure = (iso) =>
-    new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-  return `${heure(reco.debut)} — ${heure(reco.fin)}`;
+  return `${formatHeure(reco.debut)} — ${formatHeure(reco.fin)}`;
 }
 
 const suffixeUnite = computed(() =>
@@ -519,6 +522,10 @@ const ecouleDepuisDerniereLecture = computed(() => {
 
 const canvasGrandRef = ref(null);
 let chartGrand = null;
+// Instant porté par le titre de l'infobulle, retenu par le callback `title` pour les callbacks
+// `label` qui le suivent — Chart.js construit toujours le titre avant le corps. Sans lui, une
+// ligne ne saurait pas si elle tombe sur l'instant lu ou sur un autre.
+let instantTitreInfobulle = null;
 const canvasEls = {};
 const charts = {};
 // Historique + dernière lecture par site (rempli en continu pour tous les
@@ -528,6 +535,63 @@ const historiques = {};
 const dernieresLectures = {};
 let intervalSondage = null;
 let intervalHorloge = null;
+
+// Chart.js n'offre aucun mode d'interaction qui apparie les séries par horodatage. "index" les
+// apparie par numéro de point : les mesures en portent ~360 (à la minute) contre ~9 pour la
+// prévision (à l'heure), si bien que survoler 09:05 affichait la prévision d'index 5 — une tout
+// autre heure. "nearest" ne renvoie qu'un seul point, celui de la série la plus dense : la
+// mesure, à 30 s du curseur, gagnait toujours contre une prévision à 30 min, et on ne voyait
+// jamais qu'une des trois séries.
+//
+// Ce mode renvoie, pour chaque série, le point dont la « cellule » contient le curseur — la
+// cellule allant jusqu'à mi-chemin des voisins. Chaque série est donc lue à son propre pas : la
+// prévision horaire couvre l'axe par tranches de 30 min (plus besoin de viser le point), la
+// mesure à la minute par tranches de 30 s. Passé la dernière mesure, plus aucune cellule de
+// mesure ne couvre le curseur : la partie prédite n'affiche pas de mesure, plutôt que de
+// reporter la dernière connue à une heure où elle n'existe pas.
+const MODE_MEME_INSTANT = "memeInstant";
+
+function pointsAuMemeInstant(chart, evenement) {
+  const position = getRelativePosition(evenement, chart);
+  const trouves = [];
+
+  for (const meta of chart.getSortedVisibleDatasetMetas()) {
+    // Les bornes de l'incertitude ne sont pas survolables : elles ne servent qu'à remplir la
+    // bande, et les activer ferait apparaître deux points parasites sur ses lisières.
+    if (chart.data.datasets[meta.index]?.decoratif) continue;
+
+    let choisi = -1;
+    let ecartChoisi = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < meta.data.length; i += 1) {
+      // Un point sans valeur (NULL en base, ~30-50 % des lectures) n'est pas candidat, mais
+      // reste dans le tableau : il compte donc comme voisin ci-dessous, et un trou de mesures
+      // reste un trou au lieu d'élargir la cellule des points qui l'encadrent.
+      if (meta.data[i].skip) continue;
+      const ecart = Math.abs(meta.data[i].x - position.x);
+      if (ecart < ecartChoisi) {
+        ecartChoisi = ecart;
+        choisi = i;
+      }
+    }
+
+    if (choisi !== -1 && ecartChoisi <= demiEcartAuVoisin(meta.data, choisi)) {
+      trouves.push({ element: meta.data[choisi], datasetIndex: meta.index, index: choisi });
+    }
+  }
+  return trouves;
+}
+
+// Demi-distance en pixels au voisin le plus proche, soit la demi-largeur de la cellule du
+// point. Sans voisin — série d'un seul point, ou abscisses inattendues (NaN) — la cellule
+// couvre tout l'axe : mieux vaut une série toujours lisible qu'une série jamais affichée.
+function demiEcartAuVoisin(points, i) {
+  const gauche = i > 0 ? points[i].x - points[i - 1].x : Number.POSITIVE_INFINITY;
+  const droite = i + 1 < points.length ? points[i + 1].x - points[i].x : Number.POSITIVE_INFINITY;
+  const ecart = Math.min(gauche, droite);
+  return Number.isFinite(ecart) ? ecart / 2 : Number.POSITIVE_INFINITY;
+}
+
+Interaction.modes[MODE_MEME_INSTANT] = pointsAuMemeInstant;
 
 function construireDatasets(m, { avecPrediction = false } = {}) {
   const datasets = [
@@ -554,6 +618,10 @@ function construireDatasets(m, { avecPrediction = false } = {}) {
       pointRadius: 0,
       pointHoverRadius: 3,
       fill: false,
+      // Horizontale tracée entre les deux bords de l'axe : elle vaut autant à toute heure, et
+      // l'horodatage de ses deux points ne désigne rien. L'infobulle ne l'affiche donc jamais
+      // comme instant de référence, et ne rappelle pas son heure.
+      constante: true,
     });
   }
   // Uniquement sur le grand graphique, et seulement pour la puissance appelée :
@@ -583,6 +651,8 @@ function construireDatasets(m, { avecPrediction = false } = {}) {
         fill: "+1",
         tension: 0.3,
         pointRadius: 0,
+        // Série de rendu, pas de lecture : ni survolable, ni affichée dans l'infobulle.
+        decoratif: true,
       },
       {
         label: "Borne basse",
@@ -591,6 +661,7 @@ function construireDatasets(m, { avecPrediction = false } = {}) {
         fill: false,
         tension: 0.3,
         pointRadius: 0,
+        decoratif: true,
       }
     );
   }
@@ -635,16 +706,11 @@ function creerGraphiqueGrand() {
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
-      // mode "nearest" sur l'axe X, et surtout PAS "index" : ce dernier apparie les séries
-      // par numéro d'index, pas par horodatage. Il convenait tant que toutes partageaient le
-      // tableau de libellés, mais les prévisions portent désormais leurs propres abscisses —
-      // ~360 mesures à la minute face à ~9 prévisions à l'heure. L'index 5 des mesures (09:05)
-      // affichait alors la prévision d'index 5, une tout autre heure : l'infobulle inventait
-      // des prévisions à la minute alors que la base n'en contient qu'à l'heure.
-      //
-      // "nearest" ne renvoie qu'un point réel, jamais une correspondance fabriquée. La
-      // comparaison prévu/réalisé se lit sur les deux courbes superposées, pas dans l'infobulle.
-      interaction: { mode: "nearest", axis: "x", intersect: false },
+      // Les trois séries sont lues ensemble, à l'instant survolé et chacune à son propre pas :
+      // voir MODE_MEME_INSTANT. Surtout PAS "index", qui apparie par numéro de point et
+      // fabriquait des prévisions à la minute, ni "nearest", qui n'en renvoie qu'une des trois.
+      // Aucune n'exige que le curseur touche le point : il suffit d'être dans le graphique.
+      interaction: { mode: MODE_MEME_INSTANT },
       scales: {
         // Échelle temporelle et non catégorielle : les mesures arrivent à la minute, la
         // prévision à l'heure. Sur une échelle catégorielle, chaque point occupe la même
@@ -672,20 +738,42 @@ function creerGraphiqueGrand() {
       plugins: {
         legend: { display: false },
         tooltip: {
-          mode: "nearest",
-          axis: "x",
-          intersect: false,
+          mode: MODE_MEME_INSTANT,
+          // Ancrage sur le point le plus proche du curseur, et non sur la moyenne des points
+          // affichés (défaut) : le seuil n'ayant que deux points, aux deux bords de l'axe,
+          // cette moyenne emportait l'infobulle à des centaines de pixels du curseur.
+          position: "nearest",
           backgroundColor: "#0e1728",
           borderColor: "#1f2b42",
           borderWidth: 1,
           titleColor: "#e5e9f0",
           bodyColor: "#e5e9f0",
           padding: 10,
-          // Les deux bornes de l'incertitude ne sont là que pour dessiner la
-          // bande : les lire dans l'infobulle n'apprendrait rien.
-          filter: (item) => item.dataset.label !== "Borne haute" && item.dataset.label !== "Borne basse",
+          // Les deux bornes de l'incertitude ne sont là que pour dessiner la bande : les lire
+          // n'apprendrait rien. Le mode d'interaction les écarte déjà, ce filtre reste le
+          // garde-fou si l'infobulle retombait un jour sur un mode standard.
+          filter: (item) => !item.dataset.decoratif,
           callbacks: {
-            label: (ctx) => `${ctx.dataset.label}: ${formatValeur(ctx.parsed.y, m.decimales)} ${m.unite}`,
+            // L'instant lu est celui de la mesure survolée, à défaut celui de la prévision
+            // (dans la partie prédite, il n'y a pas encore de mesure). Jamais celui du seuil :
+            // ses deux points sont aux bords de l'axe et leur heure ne désigne rien.
+            title: (items) => {
+              const reference = items.find((item) => !item.dataset.constante) ?? items[0];
+              instantTitreInfobulle = reference?.parsed?.x ?? null;
+              return reference?.label ?? "";
+            },
+            // Le pas des séries diffère : la mesure est à la minute, la prévision à l'heure.
+            // Une ligne qui ne tombe pas sur l'instant du titre rappelle donc le sien, sans
+            // quoi l'infobulle laisserait croire à une prévision à la minute — celle que le
+            // correctif du mode "index" avait justement pour but de ne plus inventer.
+            label: (ctx) => {
+              const valeur = `${formatValeur(ctx.parsed.y, m.decimales)} ${m.unite}`.trimEnd();
+              const decale = !ctx.dataset.constante && ctx.parsed.x !== instantTitreInfobulle;
+              const serie = decale
+                ? `${ctx.dataset.label} (${formatHeure(ctx.parsed.x)})`
+                : ctx.dataset.label;
+              return `${serie}: ${valeur}`;
+            },
           },
         },
       },
