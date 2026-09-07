@@ -223,10 +223,41 @@
               </ul>
             </div>
 
-            <div class="panneau recommandation">
-              <p class="recommandation-titre">recommandation active</p>
-              <p class="recommandation-texte">{{ RECOMMANDATION_MOCK.texte }}</p>
-              <div class="recommandation-gain">{{ RECOMMANDATION_MOCK.gain }}</div>
+            <!-- Quatre états distincts, parce qu'ils appellent des réactions différentes :
+                 un ajustement à faire, une surveillance, un « rien à signaler » qui est une
+                 information en soi, et une absence de prévision qui n'est pas un feu vert. -->
+            <div class="panneau recommandation" :class="classeRecommandation">
+              <p class="recommandation-titre">recommandation</p>
+
+              <template v-if="recommandations.length > 0">
+                <div v-for="(reco, i) in recommandations" :key="i" class="reco-bloc">
+                  <p class="reco-creneau">{{ formatCreneau(reco) }}</p>
+                  <p class="recommandation-texte">{{ reco.message }}</p>
+                  <div class="recommandation-gain" :class="reco.niveau">
+                    +{{ formatValeur(reco.depassement_max_kw, 0) }} kW
+                  </div>
+                </div>
+                <p class="reco-mention">Suggestion, aucune commande automatique n'est émise.</p>
+              </template>
+
+              <!-- previsionIndisponible compte autant que recommandationIndisponible : sans
+                   prévision joignable il n'y a rien à analyser, et annoncer « aucun modèle pour
+                   ce site » serait un diagnostic faux — le site en a peut-être un. -->
+              <p
+                v-else-if="recommandationIndisponible || previsionIndisponible"
+                class="recommandation-texte"
+              >
+                Recommandations indisponibles : service injoignable.
+              </p>
+              <p v-else-if="previsions.length === 0" class="recommandation-texte">
+                Aucun modèle de prévision pour ce site : impossible d'anticiper un dépassement.
+              </p>
+              <p v-else-if="siteActuel && siteActuel.capacity_kw === null" class="recommandation-texte">
+                Puissance souscrite inconnue pour ce site : aucun seuil à comparer.
+              </p>
+              <p v-else class="recommandation-texte">
+                Aucun dépassement prévu sur les prochaines heures.
+              </p>
             </div>
           </div>
         </div>
@@ -457,12 +488,12 @@ const LIBELLES_RAISON = {
   voltage_sensor_failure: "capteur tension en panne",
 };
 
-// Contenu de démonstration : aucun moteur de recommandation ni de suivi de
-// modèle n'existe côté backend. Tout le reste de l'écran est alimenté par
-// l'API : sélecteur de site (dont la pastille d'alerte), en-tête, graphiques
-// de mesures, grille "parc", KPI du jour, prévisions et panneau d'alertes
-// (GET /sites, GET /sites/{id}/measurements, GET /sites/{id}/daily-summary,
-// GET /sites/{id}/predictions, GET /alerts).
+// Contenu de démonstration : aucun suivi de modèle (santé/scoring) n'existe côté backend. Tout
+// le reste de l'écran est réellement alimenté par l'API : sélecteur de site (dont la pastille
+// d'alerte), en-tête, graphiques de mesures, grille "parc", KPI du jour, prévisions,
+// recommandations et panneau d'alertes (GET /sites, GET /sites/{id}/measurements,
+// GET /sites/{id}/daily-summary, GET /sites/{id}/predictions, GET /sites/{id}/recommendations,
+// GET /alerts).
 const SANTE_MOCK = [
   { label: "fiabilité", valeur: "0,71", ok: true },
   { label: "couverture — cible 96 %", valeur: "91,2 %", ok: false },
@@ -484,11 +515,6 @@ const LIBELLES_SEVERITE = {
 // Ces deux niveaux passent le texte en rouge : ils appellent une action, là
 // où "faible" et "moyenne" ne sont qu'à lire.
 const SEVERITES_CRITIQUES = ["high", "critical"];
-
-const RECOMMANDATION_MOCK = {
-  texte: "Décaler 80 kW de 14h à 15h pour éviter le pic. Suggestion envoyée à un humain, aucune commande automatique.",
-  gain: "340 € évités",
-};
 
 // Site proche de sa limite contractuelle : signal réel (dernière puissance
 // mesurée / puissance souscrite), pas une couleur mise au hasard.
@@ -583,6 +609,8 @@ const tauxDisponibilite = ref(null); // % de points avec une valeur, sur la mét
 const resumeJour = ref(null); // aggregates_gold_daily du jour pour le site affiché (null si pas encore calculé)
 const previsions = ref([]); // predictions_forecast à venir pour le site affiché ([] si aucun modèle)
 const previsionIndisponible = ref(false); // l'appel a échoué, à distinguer d'un site sans modèle
+const recommandations = ref([]); // fenêtres de dépassement à venir pour le site affiché
+const recommandationIndisponible = ref(false); // l'appel a échoué, à distinguer d'un « rien à signaler »
 const resumeParSite = ref({}); // { [site_id]: { valeur, alerte, segments } } pour la grille "parc" et le sélecteur
 const alertesRecentes = ref([]); // les NB_ALERTES_DASHBOARD dernières lignes de la table alerts, tous sites confondus
 // Vrai dès la déclaration, faux définitivement à la première réponse : le
@@ -630,6 +658,23 @@ const titreMetriqueFocus = computed(() => {
   // et l'axe 0-100 la donne déjà.
   return m.unite && !m.unite.startsWith("/") ? `${m.label} (${m.unite})` : m.label;
 });
+
+// La bordure du panneau reprend le niveau le plus grave : un dépassement prévu et un simple
+// risque n'appellent pas la même réaction, et la couleur doit le dire avant la lecture.
+const classeRecommandation = computed(() => {
+  if (recommandations.value.some((r) => r.niveau === "depassement_prevu")) return "critique";
+  if (recommandations.value.length > 0) return "avertissement";
+  return "";
+});
+
+// Les horodatages sont rendus ici, dans le fuseau du navigateur : l'API les livre bruts et son
+// message n'en porte aucune trace, précisément pour que la phrase ne fige pas l'heure en UTC.
+// `fin` est une borne exclusive — la fin du dernier créneau, pas son début.
+function formatCreneau(reco) {
+  const heure = (iso) =>
+    new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  return `${heure(reco.debut)} — ${heure(reco.fin)}`;
+}
 
 const suffixeUnite = computed(() =>
   metriqueFocusInfo.value.unite ? `${metriqueFocusInfo.value.unite} · dernière mesure` : "dernière mesure"
@@ -1212,6 +1257,24 @@ async function chargerPrevisions(siteId) {
   }
 }
 
+async function chargerRecommandations(siteId) {
+  // Horizon fixe et non calé sur la fenêtre du graphique : une recommandation porte sur ce
+  // qu'il faut décider, pas sur ce qu'on regarde. Un dépassement prévu dans 8 h doit remonter
+  // même si l'écran affiche 15 minutes d'historique.
+  try {
+    const { data } = await api.get(`/sites/${siteId}/recommendations`, {
+      params: { horizon_heures: HEURES_PREVISION_MAX },
+    });
+    if (siteId !== siteSelectionne.value) return;
+    recommandations.value = data;
+    recommandationIndisponible.value = false;
+  } catch {
+    if (siteId !== siteSelectionne.value) return;
+    recommandations.value = [];
+    recommandationIndisponible.value = true;
+  }
+}
+
 async function chargerResumeJour(siteId) {
   try {
     const { data } = await api.get(`/sites/${siteId}/daily-summary`);
@@ -1243,6 +1306,7 @@ async function actualiserToutesLesMesures() {
     Promise.all(sites.value.map(async (site) => ({ siteId: site.site_id, ok: await chargerHistorique(site) }))),
     chargerResumeJour(siteSelectionne.value),
     chargerPrevisions(siteSelectionne.value),
+    chargerRecommandations(siteSelectionne.value),
   ]);
 
   afficherSiteSelectionne();
@@ -1287,6 +1351,9 @@ function selectionnerSite(siteId) {
   previsions.value = [];
   previsionIndisponible.value = false;
   chargerPrevisions(siteId);
+  recommandations.value = [];
+  recommandationIndisponible.value = false;
+  chargerRecommandations(siteId);
 }
 
 async function changerFenetre(ms) {
@@ -1879,8 +1946,40 @@ onBeforeUnmount(() => {
 }
 
 .recommandation {
+  /* Vert par défaut : l'absence de dépassement prévu est une bonne nouvelle, pas un état
+     neutre. La bordure passe à l'orange ou au rouge selon le niveau le plus grave. */
   border-left: 3px solid var(--ok);
   background: var(--panel-2);
+}
+
+.recommandation.avertissement {
+  border-left-color: #f59e0b;
+}
+
+.recommandation.critique {
+  border-left-color: #ef4444;
+}
+
+/* Plusieurs fenêtres peuvent coexister (un dépassement ce soir, un risque demain) : chacune
+   est un bloc séparé, un filet les distingue sans alourdir. */
+.reco-bloc + .reco-bloc {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border, #1f2b42);
+}
+
+.reco-creneau {
+  margin: 0 0 4px;
+  font-family: var(--mono);
+  font-size: 0.8em;
+  color: var(--text-muted);
+}
+
+.reco-mention {
+  margin: 10px 0 0;
+  font-size: 0.72em;
+  font-style: italic;
+  color: var(--text-muted);
 }
 
 .recommandation-titre {
@@ -1901,6 +2000,15 @@ onBeforeUnmount(() => {
   font-size: 1.2em;
   font-weight: 700;
   color: var(--ok);
+}
+
+/* L'amplitude reprend la couleur du niveau : c'est le chiffre que l'œil accroche en premier. */
+.recommandation-gain.depassement_prevu {
+  color: #ef4444;
+}
+
+.recommandation-gain.risque_depassement {
+  color: #f59e0b;
 }
 
 .section-titre {
