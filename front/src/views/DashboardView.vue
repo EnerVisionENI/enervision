@@ -218,7 +218,9 @@
                 </li>
                 <li class="confiance-item">
                   <span class="confiance-label">incertitude</span>
-                  <span class="confiance-valeur">± 24 kW</span>
+                  <span class="confiance-valeur">
+                    {{ incertitudeFocus === null ? "—" : `± ${formatValeur(incertitudeFocus, metriqueFocusInfo.decimales)} ${metriqueFocusInfo.unite}` }}
+                  </span>
                 </li>
               </ul>
             </div>
@@ -664,6 +666,16 @@ const titreMetriqueFocus = computed(() => {
   // "/100" est une échelle, pas une unité : "Score qualité (/100)" se lirait mal,
   // et l'axe 0-100 la donne déjà.
   return m.unite && !m.unite.startsWith("/") ? `${m.label} (${m.unite})` : m.label;
+});
+
+// Demi-largeur de la bande upper_90/lower_90 sur la prévision la plus proche : même null que
+// dans le graphique quand le run MLflow ne porte pas de marge conforme, plutôt qu'une valeur
+// inventée à 0.
+const incertitudeFocus = computed(() => {
+  if (!metriqueFocusInfo.value.avecPrediction) return null;
+  const { upper_90: haut, lower_90: bas } = infoPrevision.value ?? {};
+  if (haut == null || bas == null) return null;
+  return (haut - bas) / 2;
 });
 
 // La bordure du panneau reprend le niveau le plus grave : un dépassement prévu et un simple
