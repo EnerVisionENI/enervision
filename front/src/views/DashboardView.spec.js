@@ -293,6 +293,17 @@ describe("DashboardView", () => {
     return chartInstances.filter((c) => !c.destroyed).find((c) => c.options.scales.x.display !== false);
   }
 
+  // La prévision est volontairement masquée sous une heure d'historique (modèles horaires),
+  // et la fenêtre par défaut est de 2 min : tout test qui porte sur la courbe doit d'abord
+  // se placer sur une fenêtre où elle s'affiche.
+  async function monterAvecPrevisionVisible() {
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+    await wrapper.find(".select-fenetre").setValue(String(60 * 60 * 1000));
+    await flushPromises();
+    return wrapper;
+  }
+
   function mesuresSurUneHeure({ n = 20, base = 100 } = {}) {
     const mesures = [];
     for (let i = n; i > 0; i--) {
@@ -300,6 +311,60 @@ describe("DashboardView", () => {
     }
     return mesures;
   }
+
+  it("masque la prévision sous une heure d'historique, et le dit", async () => {
+    // Fenêtre par défaut : 2 min. Un point de prévision horaire étirerait l'axe à 62 min et
+    // réduirait les mesures à 3 % de la largeur — l'inverse exact du défaut qu'on vient de
+    // corriger. Tant qu'on n'affiche rien, il faut dire pourquoi.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir() }),
+      },
+    });
+
+    const wrapper = mount(DashboardView);
+    await flushPromises();
+
+    expect(graphiqueGrand().data.datasets[2].data).toEqual([]);
+    expect(wrapper.text()).toContain("Prévision masquée sur cette fenêtre");
+    expect(wrapper.text()).not.toContain("intervalle 90 %");
+
+    // À partir d'une heure, elle réapparaît.
+    await wrapper.find(".select-fenetre").setValue(String(60 * 60 * 1000));
+    await flushPromises();
+
+    expect(graphiqueGrand().data.datasets[2].data.length).toBeGreaterThan(0);
+    expect(wrapper.text()).not.toContain("Prévision masquée sur cette fenêtre");
+  });
+
+  it("place les points sur une échelle temporelle, pas catégorielle", async () => {
+    // Les mesures arrivent à la minute, la prévision à l'heure. Sur une échelle catégorielle
+    // chaque point occupe la même largeur : 6 h de prévision (6 points) se tassaient sur 1,6 %
+    // de l'axe face à 6 h de mesures (360 points). L'axe doit rester en "time" et recevoir des
+    // Date, seul moyen que les durées soient représentées à leur proportion réelle.
+    mockApi({
+      lectures: {
+        "/sites/SITE001/measurements": () => Promise.resolve({ data: mesuresSurUneHeure() }),
+        "/sites/SITE002/measurements": () => Promise.resolve({ data: [] }),
+      },
+      previsions: {
+        "/sites/SITE001/predictions": () => Promise.resolve({ data: previsionsAVenir({ n: 3 }) }),
+      },
+    });
+
+    mount(DashboardView);
+    await flushPromises();
+
+    const grand = graphiqueGrand();
+    expect(grand.options.scales.x.type).toBe("time");
+    // Des Date jusqu'au bout : une seule chaîne formatée suffirait à faire retomber
+    // Chart.js sur un placement à index constant pour toute la série.
+    expect(grand.data.labels.every((l) => l instanceof Date)).toBe(true);
+  });
 
   it("prolonge la puissance appelée par la prévision servie par l'API", async () => {
     const reelles = mesuresSurUneHeure({ n: 20, base: 100 });
@@ -351,8 +416,7 @@ describe("DashboardView", () => {
       },
     });
 
-    mount(DashboardView);
-    await flushPromises();
+    await monterAvecPrevisionVisible();
 
     expect(graphiqueGrand().data.datasets[2].data.slice(-2)).toEqual([400, 410]);
   });
@@ -371,8 +435,7 @@ describe("DashboardView", () => {
       },
     });
 
-    mount(DashboardView);
-    await flushPromises();
+    await monterAvecPrevisionVisible();
 
     const [, , prediction, hautes, basses] = graphiqueGrand().data.datasets.map((d) => d.data);
     expect(prediction.slice(-2)).toEqual([150, 160]);
@@ -391,8 +454,7 @@ describe("DashboardView", () => {
       },
     });
 
-    const wrapper = mount(DashboardView);
-    await flushPromises();
+    const wrapper = await monterAvecPrevisionVisible();
 
     expect(wrapper.text()).toContain("tow_temp");
     expect(wrapper.text()).toContain("v1");
@@ -410,8 +472,7 @@ describe("DashboardView", () => {
       },
     });
 
-    const wrapper = mount(DashboardView);
-    await flushPromises();
+    const wrapper = await monterAvecPrevisionVisible();
 
     expect(wrapper.text()).toContain("données synthétiques");
   });
@@ -470,8 +531,7 @@ describe("DashboardView", () => {
       },
     });
 
-    mount(DashboardView);
-    await flushPromises();
+    await monterAvecPrevisionVisible();
 
     expect(graphiqueGrand().data.datasets[2].data.slice(-2)).toEqual([150, 160]);
   });
@@ -511,8 +571,7 @@ describe("DashboardView", () => {
       },
     });
 
-    const wrapper = mount(DashboardView);
-    await flushPromises();
+    const wrapper = await monterAvecPrevisionVisible();
 
     const carteSite002 = wrapper.findAll(".parc-carte").find((c) => c.text().includes("SITE002"));
     await carteSite002.trigger("click");
@@ -559,8 +618,7 @@ describe("DashboardView", () => {
       },
     });
 
-    const wrapper = mount(DashboardView);
-    await flushPromises();
+    const wrapper = await monterAvecPrevisionVisible();
     expect(wrapper.text()).toContain("données synthétiques");
 
     const carteTension = wrapper.findAll(".graphique-carte").find((c) => c.text().includes("Tension"));
