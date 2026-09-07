@@ -38,9 +38,15 @@ TRAIN_END = "2024-09-30"
 CALIB_END = "2024-11-15"
 # test_end = fin du CSV (2024-12-31)
 
+
+# solar_irradiance_wm2 retiré : jamais émis par l'API Mock IoT (absent de
+# bronze/silver/gold), seul le CSV synthétique le porte. temperature_celsius
+# et humidity_percent existent bien en /current, mais pas encore au grain
+# gold (FIXME core/data.py) : ça reste des valeurs imputées ici tant qu'EV-047
+# (refiltering ETL) n'a pas fait remonter ces colonnes jusqu'au gold.
 LGBM_FEATURES = [
     "hour", "day_of_week", "month", "is_weekend", "is_working_hours",
-    "temperature_celsius", "humidity_percent", "solar_irradiance_wm2",
+    "temperature_celsius", "humidity_percent",
 ]
 
 
@@ -166,10 +172,9 @@ def compare_to_real(site_id, champion_name, champion_model, champion_predict):
         return out
 
     if champion_name == "lightgbm":
-        # Pas de temp/humidité/solaire au grain gold : imputées à 0 (signalé, pas silencieux).
+        # Pas de temp/humidité au grain gold actuel (FIXME core/data.py) : imputées à 0.
         real_valid["temperature_celsius"] = 0.0
         real_valid["humidity_percent"] = 0.0
-        real_valid["solar_irradiance_wm2"] = 0.0
         preds = champion_predict(champion_model, real_valid)
     else:
         real_valid["temperature_celsius"] = 20.0  # pas de mesure réelle disponible à cette granularité gold

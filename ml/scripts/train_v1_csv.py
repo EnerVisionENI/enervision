@@ -55,7 +55,7 @@ CHAMPIONS = {
     "SITE003": "tow_temp",
     "SITE004": "lightgbm",
     "SITE005": "tow_temp",
-    "SITE006": "tow_temp",
+    "SITE006": "lightgbm",
     "SITE007": "lightgbm",
 }
 
@@ -129,11 +129,14 @@ def persist_site(client, site_id):
         registered_name = f"enervision-forecast-{site_id.lower()}"
         mv = mlflow.register_model(model_uri, registered_name)
 
+        # archive_existing_versions=False : une version déjà en Production ne doit
+        # jamais être archivée par le simple fait d'enregistrer une nouvelle version
+        # en Staging — la bascule Staging -> Production reste un choix explicite.
         client.transition_model_version_stage(
             name=registered_name,
             version=mv.version,
             stage="Staging",
-            archive_existing_versions=True,
+            archive_existing_versions=False,
         )
         client.update_model_version(
             name=registered_name,
