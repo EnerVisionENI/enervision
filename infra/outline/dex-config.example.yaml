@@ -1,0 +1,52 @@
+# ---------------------------------------------------------------------------
+# Dex — fournisseur d'identité OIDC pour Outline. 100 % on-premise.
+#
+#   cp dex-config.example.yaml dex-config.yaml
+#   # puis éditer dex-config.yaml : issuer, secret, et les comptes (staticPasswords)
+#
+# dex-config.yaml (le vrai) n'est PAS versionné (contient des hash de mots de
+# passe). Ce fichier .example l'est.
+# ---------------------------------------------------------------------------
+
+# URL publique de Dex. DOIT être identique à OUTLINE_OIDC_ISSUER dans .env, et
+# joignable à la fois par le navigateur des utilisateurs ET par le conteneur
+# outline (donc l'IP + port publié de l'hôte).
+#   local   : http://localhost:5556/dex
+#   serveur : http://10.105.200.44:5556/dex
+issuer: http://localhost:5556/dex
+
+# Pas de base de données : tout est en mémoire, rechargé depuis ce fichier au
+# démarrage. Modifier un compte = éditer ce fichier + `docker compose restart outline-dex`.
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+# Client OIDC = Outline. Le secret doit être identique à OUTLINE_OIDC_CLIENT_SECRET.
+staticClients:
+  - id: outline
+    name: Outline
+    secret: CHANGER_ME_identique_a_OUTLINE_OIDC_CLIENT_SECRET
+    redirectURIs:
+      # <OUTLINE_URL>/auth/oidc.callback — adapter à l'URL réelle d'Outline
+      - http://localhost:3002/auth/oidc.callback
+
+# Comptes locaux. Le hash est du bcrypt, généré par :
+#   docker run --rm httpd:2.4-alpine htpasswd -nBC 10 "" | tr -d ':\n'
+# (saisir le mot de passe deux fois ; copier la sortie qui commence par $2y$)
+enablePasswordDB: true
+staticPasswords:
+  - email: "admin@enervision.local"
+    # exemple de hash pour le mot de passe "changeme" — À REMPLACER
+    hash: "$2y$10$2b2cu2a6Yjc0y0Q0y3hI5eQ7l0m0e8m0N0oQ0r0s0t0u0v0w0x0y"
+    username: "admin"
+    userID: "0001"
+  # - email: "prenom.nom@enervision.local"
+  #   hash: "$2y$10$..."
+  #   username: "prenom.nom"
+  #   userID: "0002"
+
+oauth2:
+  # Pas d'écran "autoriser cette application" : client interne de confiance.
+  skipApprovalScreen: true

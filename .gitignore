@@ -5,6 +5,8 @@
 *.pem
 *.key
 infra/keycloak/realm-export.json
+# Outline : config Dex avec hash de mots de passe (garder le .example versionné)
+infra/outline/dex-config.yaml
 # Certificats Let's Encrypt générés par Traefik (clés privées une fois peuplé)
 infra/traefik/acme.json
 

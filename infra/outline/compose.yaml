@@ -1,0 +1,150 @@
+# ---------------------------------------------------------------------------
+# Outline — wiki de documentation, stack ISOLÉE et 100 % on-premise.
+#
+# Volontairement séparée du compose.yaml racine : Outline embarque sa PROPRE
+# base Postgres, son PROPRE Redis, son PROPRE fournisseur d'identité (Dex),
+# son PROPRE réseau et ses PROPRES volumes. Rien ne sort de la machine.
+# Une panne / migration / restauration d'Outline ne touche jamais la base
+# applicative EnerVision, et inversement.
+#
+#   cd infra/outline
+#   cp .env.example .env
+#   cp dex-config.example.yaml dex-config.yaml   # puis y définir les comptes
+#   docker compose up -d
+#
+# Exposé directement sur des ports hôte, comme les autres services du projet
+# (api :8000, front :3000, grafana :3001…). Traefik n'est branché sur aucun
+# service ici : accès HTTPS externe = proxy TLS en amont (voir DEPLOYMENT.md).
+# ---------------------------------------------------------------------------
+
+name: outline
+
+services:
+  outline:
+    image: outlinewiki/outline:${OUTLINE_VERSION:-1.10.0}
+    container_name: outline
+    restart: unless-stopped
+    depends_on:
+      outline-postgres:
+        condition: service_healthy
+      outline-redis:
+        condition: service_healthy
+      outline-dex:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      # --- Secrets (obligatoires) : openssl rand -hex 32 ---
+      SECRET_KEY: "${OUTLINE_SECRET_KEY:?generer avec openssl rand -hex 32}"
+      UTILS_SECRET: "${OUTLINE_UTILS_SECRET:?generer avec openssl rand -hex 32}"
+      # --- URL publique : DOIT correspondre à l'URL réellement tapée dans le navigateur ---
+      URL: "${OUTLINE_URL:?URL publique exacte, ex http://IP:3002}"
+      PORT: 3000
+      # true UNIQUEMENT si un proxy TLS termine le HTTPS en amont
+      FORCE_HTTPS: ${OUTLINE_FORCE_HTTPS:-false}
+      # --- Base de données interne (service outline-postgres) ---
+      DATABASE_URL: "postgres://outline:${OUTLINE_DB_PASSWORD:?mot de passe base Outline}@outline-postgres:5432/outline"
+      PGSSLMODE: disable
+      # --- Cache interne (service outline-redis) ---
+      REDIS_URL: redis://outline-redis:6379
+      # --- Stockage des pièces jointes : local, dans le volume outline-data ---
+      FILE_STORAGE: local
+      FILE_STORAGE_LOCAL_ROOT_DIR: /var/lib/outline/data
+      FILE_STORAGE_UPLOAD_MAX_SIZE: "26214400"
+      DEFAULT_LANGUAGE: fr_FR
+
+      # --- Authentification : OIDC vers Dex (auto-hébergé, service outline-dex) ---
+      # OUTLINE_OIDC_ISSUER doit être identique à `issuer:` dans dex-config.yaml
+      # ET joignable À LA FOIS par le navigateur ET par le conteneur outline
+      # (donc l'IP/port publié de l'hôte, pas un nom interne).
+      OIDC_CLIENT_ID: ${OUTLINE_OIDC_CLIENT_ID:-outline}
+      OIDC_CLIENT_SECRET: "${OUTLINE_OIDC_CLIENT_SECRET:?identique au secret du staticClient dans dex-config.yaml}"
+      OIDC_ISSUER: "${OUTLINE_OIDC_ISSUER:?ex http://10.105.200.44:5556/dex}"
+      OIDC_AUTH_URI: "${OUTLINE_OIDC_ISSUER}/auth"
+      OIDC_TOKEN_URI: "${OUTLINE_OIDC_ISSUER}/token"
+      OIDC_USERINFO_URI: "${OUTLINE_OIDC_ISSUER}/userinfo"
+      OIDC_USERNAME_CLAIM: preferred_username
+      OIDC_DISPLAY_NAME: ${OUTLINE_OIDC_DISPLAY_NAME:-Compte EnerVision}
+      OIDC_SCOPES: "openid profile email offline_access"
+
+      # --- SMTP : OPTIONNEL --------------------------------------------------
+      # Non requis pour se connecter (Outline provisionne le compte à la 1re
+      # connexion OIDC). Utile seulement pour les notifications e-mail / digests.
+      # Laisser
+      # vide pour un fonctionnement totalement hors-ligne.
+      SMTP_HOST: ${OUTLINE_SMTP_HOST:-}
+      SMTP_PORT: ${OUTLINE_SMTP_PORT:-587}
+      SMTP_USERNAME: ${OUTLINE_SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${OUTLINE_SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${OUTLINE_SMTP_FROM_EMAIL:-}
+      SMTP_SECURE: ${OUTLINE_SMTP_SECURE:-false}
+    volumes:
+      - outline-data:/var/lib/outline/data
+    ports:
+      - "${OUTLINE_PORT:-3002}:3000"
+    # Permet au conteneur de joindre Dex via l'IP de l'hôte quand OUTLINE_OIDC_ISSUER
+    # utilise host.docker.internal (utile en local ; sur serveur, mettre l'IP réelle).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - outline-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/_health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # Fournisseur d'identité OIDC auto-hébergé. Comptes définis en dur dans
+  # dex-config.yaml (staticPasswords) — aucun appel externe, aucune base.
+  outline-dex:
+    image: dexidp/dex:${OUTLINE_DEX_VERSION:-v2.45.1}
+    container_name: outline-dex
+    restart: unless-stopped
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    volumes:
+      - ./dex-config.yaml:/etc/dex/config.yaml:ro
+    ports:
+      - "${OUTLINE_DEX_PORT:-5556}:5556"
+    networks:
+      - outline-net
+
+  outline-postgres:
+    image: postgres:16-alpine
+    container_name: outline-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: outline
+      POSTGRES_PASSWORD: ${OUTLINE_DB_PASSWORD:?mot de passe base Outline}
+      POSTGRES_DB: outline
+    volumes:
+      - outline-pgdata:/var/lib/postgresql/data
+    networks:
+      - outline-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U outline -d outline"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  outline-redis:
+    image: redis:7-alpine
+    container_name: outline-redis
+    restart: unless-stopped
+    volumes:
+      - outline-redis:/data
+    networks:
+      - outline-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  outline-net:
+    name: outline-net
+
+volumes:
+  outline-pgdata:
+  outline-redis:
+  outline-data:
