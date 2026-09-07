@@ -422,6 +422,11 @@ jobs:
             echo "JWT_SECRET_KEY=$JWT_SECRET_KEY"
             echo "INGEST_API_KEY=$INGEST_API_KEY"
             echo "MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD"
+            # Même secret que MINIO_ROOT_PASSWORD, sous le nom que lit ml-predict : sur le
+            # serveur, le MinIO des artefacts ML et celui du pipeline sont la même instance.
+            # Sans cette ligne, compose retombe sur le placeholder de développement et
+            # ml-predict échoue à télécharger les modèles.
+            echo "ML_MINIO_SECRET_KEY=$MINIO_ROOT_PASSWORD"
             echo "AZURE_STORAGE_KEY=$AZURE_STORAGE_KEY"
             echo "RCLONE_CRYPT_PASSWORD_RAW=$RCLONE_CRYPT_PASSWORD_RAW"
           } >> .env
@@ -533,6 +538,11 @@ jobs:
             echo "JWT_SECRET_KEY=$JWT_SECRET_KEY"
             echo "INGEST_API_KEY=$INGEST_API_KEY"
             echo "MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD"
+            # Même secret que MINIO_ROOT_PASSWORD, sous le nom que lit ml-predict : sur le
+            # serveur, le MinIO des artefacts ML et celui du pipeline sont la même instance.
+            # Sans cette ligne, compose retombe sur le placeholder de développement et
+            # ml-predict échoue à télécharger les modèles.
+            echo "ML_MINIO_SECRET_KEY=$MINIO_ROOT_PASSWORD"
             echo "AZURE_STORAGE_KEY=$AZURE_STORAGE_KEY"
             echo "RCLONE_CRYPT_PASSWORD_RAW=$RCLONE_CRYPT_PASSWORD_RAW"
           } >> .env
