@@ -8,7 +8,16 @@ ENV PYTHONUNBUFFERED=1
 # `import lightgbm` échoue sinon sur « libgomp.so.1: cannot open shared object file », et
 # predict.py l'importe via scripts/train_csv_experiment même pour un site TOWT.
 # L'upgrade couvre les CVE du tag de base, comme côté etl.
-RUN apt-get update && apt-get upgrade -y \
+# OS_PATCH_DATE est référencé dans le RUN ci-dessous, et non seulement déclaré : BuildKit
+# n'invalide le cache qu'à la PREMIÈRE UTILISATION d'un ARG, pas à sa définition. La CI y
+# injecte la date du jour, ce qui force le patch à rejouer une fois par jour.
+#
+# Sans ce garde-fou, `cache-from` resservait indéfiniment la couche de patch d'un build
+# antérieur : l'image repartait avec les paquets figés à cette date-là, alors que le correctif
+# était disponible en dépôt, et Trivy échouait sur des CVE que ce RUN corrige pourtant.
+ARG OS_PATCH_DATE=unknown
+RUN echo "patch OS : $OS_PATCH_DATE" \
+    && apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
