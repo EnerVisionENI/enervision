@@ -256,10 +256,12 @@ services:
     # le port 5000, suppression de modèle incluse (EV-064). Le fichier de config
     # est généré au démarrage (pas de secret versionné) ; la table des comptes
     # vit dans la même base "mlflow" que le tracking, pour persister aux redéploiements.
+    # Flask-WTF est requis par ce plugin (CSRF) et absent de l'image de base, comme
+    # psycopg2 — sans lui le serveur crashe en boucle au démarrage (EV-066).
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >
-        pip install --no-cache-dir psycopg2-binary &&
+        pip install --no-cache-dir psycopg2-binary Flask-WTF &&
         mkdir -p /etc/mlflow &&
         printf '[mlflow]\ndefault_permission = READ\ndatabase_uri = postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow\nadmin_username = ${MLFLOW_ADMIN_USER}\nadmin_password = ${MLFLOW_ADMIN_PASSWORD}\nauthorization_function = mlflow.server.auth:authenticate_request_basic_auth\n' > /etc/mlflow/basic_auth.ini &&
         MLFLOW_AUTH_CONFIG_PATH=/etc/mlflow/basic_auth.ini mlflow server
