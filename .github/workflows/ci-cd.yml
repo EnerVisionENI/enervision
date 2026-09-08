@@ -421,6 +421,7 @@ jobs:
           JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
           INGEST_API_KEY: ${{ secrets.INGEST_API_KEY }}
           MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
+          MLFLOW_ADMIN_PASSWORD: ${{ secrets.MLFLOW_ADMIN_PASSWORD }}
           AZURE_STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
           RCLONE_CRYPT_PASSWORD_RAW: ${{ secrets.RCLONE_CRYPT_PASSWORD_RAW }}
         run: |
@@ -444,6 +445,11 @@ jobs:
             # Sans cette ligne, compose retombe sur le placeholder de développement et
             # ml-predict échoue à télécharger les modèles.
             echo "ML_MINIO_SECRET_KEY=$MINIO_ROOT_PASSWORD"
+            echo "MLFLOW_ADMIN_PASSWORD=$MLFLOW_ADMIN_PASSWORD"
+            # Même secret, sous le nom que lit le client mlflow (train_v1_csv.py,
+            # predict.py...) : un seul compte admin sert à la fois de bootstrap
+            # auth serveur et d'identité client pour l'instant (EV-064).
+            echo "MLFLOW_TRACKING_PASSWORD=$MLFLOW_ADMIN_PASSWORD"
             echo "AZURE_STORAGE_KEY=$AZURE_STORAGE_KEY"
             echo "RCLONE_CRYPT_PASSWORD_RAW=$RCLONE_CRYPT_PASSWORD_RAW"
           } >> .env
@@ -540,6 +546,7 @@ jobs:
           JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
           INGEST_API_KEY: ${{ secrets.INGEST_API_KEY }}
           MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
+          MLFLOW_ADMIN_PASSWORD: ${{ secrets.MLFLOW_ADMIN_PASSWORD }}
           AZURE_STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
           RCLONE_CRYPT_PASSWORD_RAW: ${{ secrets.RCLONE_CRYPT_PASSWORD_RAW }}
         run: |
@@ -560,6 +567,11 @@ jobs:
             # Sans cette ligne, compose retombe sur le placeholder de développement et
             # ml-predict échoue à télécharger les modèles.
             echo "ML_MINIO_SECRET_KEY=$MINIO_ROOT_PASSWORD"
+            echo "MLFLOW_ADMIN_PASSWORD=$MLFLOW_ADMIN_PASSWORD"
+            # Même secret, sous le nom que lit le client mlflow (train_v1_csv.py,
+            # predict.py...) : un seul compte admin sert à la fois de bootstrap
+            # auth serveur et d'identité client pour l'instant (EV-064).
+            echo "MLFLOW_TRACKING_PASSWORD=$MLFLOW_ADMIN_PASSWORD"
             echo "AZURE_STORAGE_KEY=$AZURE_STORAGE_KEY"
             echo "RCLONE_CRYPT_PASSWORD_RAW=$RCLONE_CRYPT_PASSWORD_RAW"
           } >> .env
