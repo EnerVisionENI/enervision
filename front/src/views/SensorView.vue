@@ -104,13 +104,13 @@ export default {
 
 <style scoped>
 .sensor-view {
-  --bg: #0b1220;
-  --panel: #121a2b;
-  --panel-border: #1f2b42;
-  --text: #e5e9f0;
-  --text-muted: #6b7a99;
-  --ok: #2dd4bf;
-  --alerte: #f59e0b;
+  --bg: var(--shell-bg);
+  --panel: var(--shell-panel);
+  --panel-border: var(--shell-border);
+  --text: var(--shell-text);
+  --text-muted: var(--shell-muted);
+  --ok: var(--shell-accent);
+  --alerte: var(--shell-warning);
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 
   background: var(--bg);

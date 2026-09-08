@@ -352,6 +352,15 @@ import { getRelativePosition } from "chart.js/helpers";
 // l'échelle de type "time" du grand graphique lève au premier rendu.
 import "chartjs-adapter-date-fns";
 import api from "../api/client";
+import { theme } from "../theme";
+
+// Lit une variable CSS du thème courant (posée sur <html> par src/theme.js) au moment
+// de l'appel : le canevas Chart.js ne prend pas les couleurs des règles CSS comme le
+// reste de la page, donc les graphiques doivent les relire eux-mêmes à chaque bascule
+// jour/nuit plutôt que d'en garder une valeur figée.
+function couleurTheme(nom) {
+  return getComputedStyle(document.documentElement).getPropertyValue(nom).trim();
+}
 
 // etl-collect écrit measurements_silver environ une fois par minute — mais
 // sonder à cette même cadence crée un effet de battement : si le cycle du
@@ -952,7 +961,6 @@ function creerGraphiques() {
 }
 
 const POLICE_GRAPHE = '10px Consolas, "Liberation Mono", monospace';
-const TRAIT_REPERE = "#3b4a68";
 const ETIQUETTE_MAINTENANT = "maintenant";
 
 // L'axe du grand graphique porte du mesuré ET du prédit, bout à bout. Rien ne
@@ -976,7 +984,7 @@ const separateurPrevision = {
     ctx.fillStyle = "rgba(167, 139, 250, 0.05)";
     ctx.fillRect(x, chartArea.top, chartArea.right - x, chartArea.bottom - chartArea.top);
 
-    ctx.strokeStyle = TRAIT_REPERE;
+    ctx.strokeStyle = couleurTheme("--shell-line");
     ctx.lineWidth = 1;
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
@@ -985,7 +993,7 @@ const separateurPrevision = {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    ctx.fillStyle = "#6b7a99";
+    ctx.fillStyle = couleurTheme("--shell-muted");
     ctx.font = POLICE_GRAPHE;
     ctx.textBaseline = "top";
     // Étiquette basculée à gauche du trait quand la place manque à droite, plutôt
@@ -1011,7 +1019,7 @@ const croisillon = {
     if (!Number.isFinite(x)) return;
 
     ctx.save();
-    ctx.strokeStyle = TRAIT_REPERE;
+    ctx.strokeStyle = couleurTheme("--shell-line");
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(x, chartArea.top);
@@ -1054,18 +1062,23 @@ function creerGraphiqueGrand() {
             displayFormats: { minute: "HH:mm", hour: "HH:mm", day: "dd/MM" },
             tooltipFormat: "dd/MM HH:mm",
           },
-          ticks: { color: "#6b7a99", maxRotation: 0, autoSkip: true, font: { size: 10 } },
+          ticks: {
+            color: couleurTheme("--shell-muted"),
+            maxRotation: 0,
+            autoSkip: true,
+            font: { size: 10 },
+          },
           // Pas de verticales : sur une série à la minute elles n'aident à lire aucune
           // valeur et posent autant de traits que de graduations. L'axe suffit.
           grid: { display: false },
-          border: { color: "#1f2b42" },
+          border: { color: couleurTheme("--shell-border") },
         },
         y: {
           beginAtZero: m.debuteAZero,
-          ticks: { color: "#6b7a99", font: { size: 10 } },
+          ticks: { color: couleurTheme("--shell-muted"), font: { size: 10 } },
           // Horizontales seules, et plus discrètes que le filet des panneaux : elles
           // servent à reporter une valeur sur l'axe, pas à quadriller l'image.
-          grid: { color: "rgba(31, 43, 66, 0.55)", drawTicks: false },
+          grid: { color: couleurTheme("--shell-border"), drawTicks: false },
           border: { display: false },
         },
       },
@@ -1077,11 +1090,11 @@ function creerGraphiqueGrand() {
           // affichés (défaut) : le seuil n'ayant que deux points, aux deux bords de l'axe,
           // cette moyenne emportait l'infobulle à des centaines de pixels du curseur.
           position: "nearest",
-          backgroundColor: "#0e1728",
-          borderColor: "#1f2b42",
+          backgroundColor: couleurTheme("--shell-panel-2"),
+          borderColor: couleurTheme("--shell-border"),
           borderWidth: 1,
-          titleColor: "#e5e9f0",
-          bodyColor: "#e5e9f0",
+          titleColor: couleurTheme("--shell-text"),
+          bodyColor: couleurTheme("--shell-text"),
           padding: 10,
           // Les deux bornes de l'incertitude ne sont là que pour dessiner la bande : les lire
           // n'apprendrait rien. Le mode d'interaction les écarte déjà, ce filtre reste le
@@ -1195,6 +1208,13 @@ watch(metriqueFocus, () => {
 
   const buffer = historiques[siteSelectionne.value];
   if (buffer) tauxDisponibilite.value = calculerDisponibilite(buffer);
+});
+
+// Les couleurs d'axes et d'infobulle du grand graphique sont lues une fois à sa
+// création (Chart.js ne suit pas les variables CSS) : une bascule jour/nuit doit
+// donc le reconstruire pour rester lisible dans le nouveau thème.
+watch(theme, () => {
+  creerGraphiqueGrand();
 });
 
 function bufferPour(siteId) {
@@ -1565,15 +1585,15 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .dashboard {
-  --bg: #0b1220;
-  --panel: #121a2b;
-  --panel-2: #0e1728;
-  --border: #1f2b42;
-  --text: #e5e9f0;
-  --text-muted: #6b7a99;
-  --ok: #2dd4bf;
-  --alerte: #f59e0b;
-  --danger: #ef4444;
+  --bg: var(--shell-bg);
+  --panel: var(--shell-panel);
+  --panel-2: var(--shell-panel-2);
+  --border: var(--shell-border);
+  --text: var(--shell-text);
+  --text-muted: var(--shell-muted);
+  --ok: var(--shell-accent);
+  --alerte: var(--shell-warning);
+  --danger: var(--shell-danger);
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 
   background: var(--bg);

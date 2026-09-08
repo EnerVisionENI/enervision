@@ -28,6 +28,41 @@
             {{ item.label }}
           </router-link>
 
+          <!-- Bascule jour/nuit : au premier chargement le thème suit le système
+               (voir src/theme.js), ce bouton permet de le forcer explicitement
+               et retient le choix pour les prochaines visites. -->
+          <button
+            type="button"
+            class="theme-toggle"
+            :aria-label="theme === 'dark' ? 'Passer au thème jour' : 'Passer au thème nuit'"
+            :title="theme === 'dark' ? 'Thème jour' : 'Thème nuit'"
+            @click="basculerTheme"
+          >
+            <svg
+              v-if="theme === 'dark'"
+              class="theme-glyph"
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="4.2" stroke="currentColor" stroke-width="1.6" />
+              <path
+                d="M12 2.5v2.4M12 19.1v2.4M21.5 12h-2.4M4.9 12H2.5M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7M18.4 18.4l-1.7-1.7M7.3 7.3 5.6 5.6"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+            </svg>
+            <svg v-else class="theme-glyph" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M20.5 14.7A8.5 8.5 0 1 1 9.3 3.5a6.7 6.7 0 0 0 11.2 11.2Z"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+
           <!-- Compte : un seul point d'entrée (icône) qui déplie le mot de passe
                et la déconnexion, plutôt que deux boutons dans la barre. -->
           <div ref="userMenuRef" class="user-menu">
@@ -98,6 +133,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { logout, isAuthenticated, currentUser } from "./auth/auth";
+import { theme, basculerTheme } from "./theme";
 
 const router = useRouter();
 const route = useRoute();

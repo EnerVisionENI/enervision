@@ -10,12 +10,37 @@
 :root {
   --shell-bg: #0b1220;
   --shell-panel: #121a2b;
+  --shell-panel-2: #0e1728;
   --shell-border: #1f2b42;
   --shell-text: #e5e9f0;
   --shell-muted: #6b7a99;
   --shell-accent: #2dd4bf;
+  --shell-warning: #f59e0b;
   --shell-danger: #ef4444;
+  --shell-danger-text: #fca5a5;
+  --shell-line: #3b4a68;
   --shell-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+/* Thème jour : mêmes rôles de variables, surfaces claires et accents assombris
+   pour rester lisibles (AA) sur fond blanc. Le thème est choisi par thème.js
+   (préférence système au premier chargement, sinon choix explicite mémorisé
+   dans localStorage) et posé en attribut sur <html> — ce bloc gagne la cascade
+   face à :root grâce à l'attribut, sans dupliquer les règles qui consomment
+   ces variables. Les écrans d'authentification (.auth-page) restent sombres
+   dans les deux thèmes : c'est un choix de maquette, pas un oubli. */
+:root[data-theme="light"] {
+  --shell-bg: #eef2f9;
+  --shell-panel: #ffffff;
+  --shell-panel-2: #f4f6fb;
+  --shell-border: #d7dfec;
+  --shell-text: #101828;
+  --shell-muted: #5b6b85;
+  --shell-accent: #0f766e;
+  --shell-warning: #b45309;
+  --shell-danger: #dc2626;
+  --shell-danger-text: #dc2626;
+  --shell-line: #94a3b8;
 }
 
 body {
@@ -122,6 +147,34 @@ body {
   border-color: var(--shell-accent);
   background: rgba(45, 212, 191, 0.1);
   color: var(--shell-accent);
+}
+
+/* Bascule jour/nuit : même vocabulaire graphique que le déclencheur du menu du
+   compte (filet, angles 3px), pour rester cohérente avec le reste de la barre. */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--shell-border);
+  border-radius: 3px;
+  background: none;
+  color: var(--shell-muted);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.theme-toggle:hover {
+  color: var(--shell-accent);
+  border-color: var(--shell-muted);
+}
+
+.theme-glyph {
+  width: 17px;
+  height: 17px;
+  display: block;
 }
 
 /* Menu du compte : icône dans la barre, panneau déroulant (mot de passe +
@@ -235,7 +288,7 @@ body {
 }
 
 .user-menu-item.logout:hover {
-  color: #fca5a5;
+  color: var(--shell-danger-text);
   background: rgba(239, 68, 68, 0.08);
 }
 
