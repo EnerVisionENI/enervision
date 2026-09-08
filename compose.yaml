@@ -274,6 +274,10 @@ services:
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      # Clé statique de signature CSRF exigée par le plugin basic-auth (EV-066) — sans
+      # elle le serveur crashe au boot de chaque worker (MlflowException explicite).
+      # Doit rester stable dans le temps : la changer invalide les sessions en cours.
+      MLFLOW_FLASK_SERVER_SECRET_KEY: ${MLFLOW_FLASK_SERVER_SECRET_KEY}
     ports:
       - "5000:5000"
     depends_on:
