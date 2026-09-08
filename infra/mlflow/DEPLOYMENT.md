@@ -38,27 +38,49 @@ En local/manuel :
 docker compose --profile mlflow up -d --build mlflow
 ```
 
-Aucun nouveau secret nécessaire : le service réutilise `POSTGRES_USER`/`POSTGRES_PASSWORD` et
-`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` déjà présents dans `.env`.
+Le service réutilise `POSTGRES_USER`/`POSTGRES_PASSWORD` et `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`
+déjà présents dans `.env`. Un seul secret à définir spécifiquement : `MLFLOW_ADMIN_USER` /
+`MLFLOW_ADMIN_PASSWORD` (authentification, voir section suivante).
 
 Une fois up, MLflow UI est accessible à :
 ```
 http://10.105.200.44:5000
 ```
+— une fenêtre de login s'affiche désormais (EV-064, voir plus bas).
 
-### 3. Configuration clients (ml/*, api/*, front/*)
+### 3. Authentification (EV-064)
+
+Le serveur tourne avec le plugin natif `--app-name basic-auth` de MLflow : sans ça, l'UI **et**
+l'API sont ouvertes en écriture à quiconque atteint le port 5000, suppression de modèle du
+Model Registry incluse (contrairement aux runs, `delete_registered_model` n'a pas de corbeille).
+
+- Compte admin bootstrap : `MLFLOW_ADMIN_USER` / `MLFLOW_ADMIN_PASSWORD` (`.env`). Le fichier de
+  config auth (`/etc/mlflow/basic_auth.ini`) est généré au démarrage du conteneur, jamais versionné.
+- La table des comptes vit dans la base Postgres `mlflow` (même base que le tracking) — persiste
+  aux redéploiements, contrairement à un SQLite local au conteneur.
+- `default_permission = READ` : par défaut, un compte authentifié peut lire mais pas écrire — seul
+  l'admin (ou un compte explicitement autorisé) peut enregistrer/promouvoir un modèle.
+
+### 4. Configuration clients (ml/*, api/*, front/*)
 
 Les clients parlent à MLflow via `MLFLOW_TRACKING_URI` (voir `ml/.env`) :
 
 ```bash
-# En local (dev) — sqlite, pas de dépendance à un serveur
+# En local (dev) — sqlite, pas de dépendance à un serveur, pas d'auth
 MLFLOW_TRACKING_URI=sqlite:///mlflow.db
 
-# En prod (une fois le profile "mlflow" déployé)
+# En prod (une fois le profile "mlflow" déployé) — auth requise
 MLFLOW_TRACKING_URI=http://10.105.200.44:5000
+MLFLOW_TRACKING_USERNAME=admin
+MLFLOW_TRACKING_PASSWORD=<MLFLOW_ADMIN_PASSWORD>
 ```
 
-### 4. Pérennité des données
+`MLFLOW_TRACKING_USERNAME`/`MLFLOW_TRACKING_PASSWORD` sont lues automatiquement par le client
+Python `mlflow` (convention native de la librairie) : aucun code à changer dans `ml/`, seulement
+les définir dans l'environnement avant de lancer un script qui cible le serveur prod. Sans elles,
+n'importe quel appel (`train_v1_csv.py`, `predict.py`...) échoue avec une 401.
+
+### 5. Pérennité des données
 
 - **Métadonnées runs/modèles** → base Postgres `mlflow`, dans le volume `infra_pgdata` existant
   (même politique de backup que le reste).
