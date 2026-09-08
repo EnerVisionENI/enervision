@@ -251,19 +251,19 @@ services:
     # L'image officielle n'embarque pas psycopg2 (driver postgres) : installé au
     # démarrage, faute d'image mieux adaptée disponible sur le registre public.
     #
-    # Authentification basique (plugin natif MLflow, --app-name basic-auth) :
-    # sans elle, l'UI et l'API sont en lecture ET écriture pour quiconque atteint
-    # le port 5000, suppression de modèle incluse (EV-064). Le fichier de config
-    # est généré au démarrage (pas de secret versionné) ; la table des comptes
-    # vit dans la même base "mlflow" que le tracking, pour persister aux redéploiements.
+    # EV-064/066 (authentification basique --app-name basic-auth) ont été tentées
+    # puis reverties (EV-067) : le plugin crashait au boot en prod pour une raison
+    # non résolue après plusieurs itérations (Flask-WTF, MLFLOW_FLASK_SERVER_SECRET_KEY
+    # et --workers 1 ajoutés successivement, échec persistant sans traceback exploitable
+    # pendant la migration Alembic de la base d'auth). Revenu à l'état sans auth le temps
+    # de creuser dans un environnement où on peut itérer plus vite (Docker local).
+    # Le serveur reste protégé uniquement par le réseau interne (10.105.200.44)
+    # en attendant — voir infra/mlflow/DEPLOYMENT.md.
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >
         pip install --no-cache-dir psycopg2-binary &&
-        mkdir -p /etc/mlflow &&
-        printf '[mlflow]\ndefault_permission = READ\ndatabase_uri = postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow\nadmin_username = ${MLFLOW_ADMIN_USER}\nadmin_password = ${MLFLOW_ADMIN_PASSWORD}\nauthorization_function = mlflow.server.auth:authenticate_request_basic_auth\n' > /etc/mlflow/basic_auth.ini &&
-        MLFLOW_AUTH_CONFIG_PATH=/etc/mlflow/basic_auth.ini mlflow server
-        --app-name basic-auth
+        mlflow server
         --backend-store-uri=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
         --default-artifact-root=s3://mlflow-artifacts
         --host=0.0.0.0

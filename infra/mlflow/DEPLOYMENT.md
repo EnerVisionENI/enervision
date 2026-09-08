@@ -39,46 +39,55 @@ docker compose --profile mlflow up -d --build mlflow
 ```
 
 Le service réutilise `POSTGRES_USER`/`POSTGRES_PASSWORD` et `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`
-déjà présents dans `.env`. Un seul secret à définir spécifiquement : `MLFLOW_ADMIN_USER` /
-`MLFLOW_ADMIN_PASSWORD` (authentification, voir section suivante).
+déjà présents dans `.env`. Aucun secret spécifique à MLflow n'est requis actuellement (authentification
+tentée puis reverted, voir section suivante).
 
 Une fois up, MLflow UI est accessible à :
 ```
 http://10.105.200.44:5000
 ```
-— une fenêtre de login s'affiche désormais (EV-064, voir plus bas).
+Sans authentification — protégé uniquement par le fait que le serveur n'est joignable que depuis
+le réseau interne (10.105.200.44 n'est pas exposé publiquement).
 
-### 3. Authentification (EV-064)
+### 3. Authentification — tentée (EV-064/066), reverted (EV-067)
 
-Le serveur tourne avec le plugin natif `--app-name basic-auth` de MLflow : sans ça, l'UI **et**
-l'API sont ouvertes en écriture à quiconque atteint le port 5000, suppression de modèle du
-Model Registry incluse (contrairement aux runs, `delete_registered_model` n'a pas de corbeille).
+Le plugin natif `--app-name basic-auth` de MLflow a été activé pour fermer l'accès anonyme en
+écriture (suppression de modèle du Model Registry incluse — contrairement aux runs,
+`delete_registered_model` n'a pas de corbeille). En prod, le serveur crashait en boucle au boot de
+chaque worker :
 
-- Compte admin bootstrap : `MLFLOW_ADMIN_USER` / `MLFLOW_ADMIN_PASSWORD` (`.env`). Le fichier de
-  config auth (`/etc/mlflow/basic_auth.ini`) est généré au démarrage du conteneur, jamais versionné.
-- La table des comptes vit dans la base Postgres `mlflow` (même base que le tracking) — persiste
-  aux redéploiements, contrairement à un SQLite local au conteneur.
-- `default_permission = READ` : par défaut, un compte authentifié peut lire mais pas écrire — seul
-  l'admin (ou un compte explicitement autorisé) peut enregistrer/promouvoir un modèle.
+1. D'abord `ModuleNotFoundError: flask_wtf` — dépendance absente de l'image officielle, ajoutée
+   (`Flask-WTF` au `pip install` du démarrage).
+2. Puis `MlflowException: A static secret key needs to be set for CSRF protection` — corrigé en
+   ajoutant `MLFLOW_FLASK_SERVER_SECRET_KEY`.
+3. Puis un crash silencieux sans traceback exploitable pendant la migration Alembic de la base
+   d'authentification (`INFO [alembic.runtime.migration] Will assume transactional DDL.` suivi
+   directement de `Worker failed to boot`, y compris avec un seul worker — donc pas un problème
+   de concurrence entre workers).
+
+Reverté à l'état sans authentification (ce fichier) le temps de reproduire et diagnostiquer dans un
+environnement où on peut itérer plus vite (Docker local, plutôt qu'un aller-retour SSH par test).
+Piste à creuser en priorité : lancer le serveur en foreground avec `--log-level debug` pour obtenir
+la vraie exception de la migration auth, ou tester si la version d'Alembic embarquée dans l'image
+a un bug connu avec le schéma du plugin basic-auth de MLflow 2.22.0.
 
 ### 4. Configuration clients (ml/*, api/*, front/*)
 
 Les clients parlent à MLflow via `MLFLOW_TRACKING_URI` (voir `ml/.env`) :
 
 ```bash
-# En local (dev) — sqlite, pas de dépendance à un serveur, pas d'auth
+# En local (dev) — sqlite, pas de dépendance à un serveur
 MLFLOW_TRACKING_URI=sqlite:///mlflow.db
 
-# En prod (une fois le profile "mlflow" déployé) — auth requise
+# En prod (une fois le profile "mlflow" déployé)
 MLFLOW_TRACKING_URI=http://10.105.200.44:5000
-MLFLOW_TRACKING_USERNAME=admin
-MLFLOW_TRACKING_PASSWORD=<MLFLOW_ADMIN_PASSWORD>
 ```
 
-`MLFLOW_TRACKING_USERNAME`/`MLFLOW_TRACKING_PASSWORD` sont lues automatiquement par le client
-Python `mlflow` (convention native de la librairie) : aucun code à changer dans `ml/`, seulement
-les définir dans l'environnement avant de lancer un script qui cible le serveur prod. Sans elles,
-n'importe quel appel (`train_v1_csv.py`, `predict.py`...) échoue avec une 401.
+Pas d'identifiants nécessaires tant que l'authentification reste revertie (section précédente).
+Si elle est un jour réactivée, `MLFLOW_TRACKING_USERNAME`/`MLFLOW_TRACKING_PASSWORD` sont lues
+automatiquement par le client Python `mlflow` (convention native) : aucun code à changer dans `ml/`,
+seulement les définir dans l'environnement — sans elles, n'importe quel appel (`train_v1_csv.py`,
+`predict.py`...) échouerait avec une 401.
 
 ### 5. Pérennité des données
 

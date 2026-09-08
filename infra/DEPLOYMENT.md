@@ -133,11 +133,10 @@ déploiement par le step *Restore production env file* du workflow, à partir de
    | `JWT_SECRET_KEY`              | `api.env` → `JWT_SECRET_KEY`                    |
    | `INGEST_API_KEY`              | `api.env` → `INGEST_API_KEY`                    |
    | `MINIO_ROOT_PASSWORD`         | `minio.env` → `MINIO_ROOT_PASSWORD`             |
-   | `MLFLOW_ADMIN_PASSWORD`       | nouveau (EV-064, auth basique MLflow)           |
    | `AZURE_STORAGE_KEY`           | `audit-sync.env` → `AZURE_STORAGE_KEY`          |
    | `RCLONE_CRYPT_PASSWORD_RAW`   | `audit-sync.env` → `RCLONE_CRYPT_PASSWORD_RAW`  |
 
-Le step concatène `infra/env/production.env` puis ces 7 secrets pour former le `.env` racine, avant
+Le step concatène `infra/env/production.env` puis ces 6 secrets pour former le `.env` racine, avant
 `docker compose up`.
 
 Première mise en place, depuis un poste avec [`gh`](https://cli.github.com/) authentifié sur le dépôt et un
