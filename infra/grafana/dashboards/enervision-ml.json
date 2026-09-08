@@ -1,0 +1,784 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "name": "Changement de version de modèle",
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+        "enable": true,
+        "hide": false,
+        "iconColor": "purple",
+        "target": {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  d.premiere AS time,\n  d.site_id || ' → ' || coalesce(d.champion, '?') || ' v' || d.model_version AS text,\n  'modèle' AS tags\nFROM (\n  SELECT site_id, champion, model_version, min(predicted_at) AS premiere\n  FROM predictions_forecast\n  GROUP BY 1, 2, 3\n) d\nWHERE $__timeFilter(d.premiere)"
+        }
+      }
+    ]
+  },
+  "editable": true,
+  "graphTooltip": 1,
+  "time": { "from": "now-7d", "to": "now+24h" },
+  "refresh": "5m",
+  "timezone": "browser",
+  "title": "EnerVision — Modèles ML (prévision de consommation)",
+  "uid": "enervision-ml",
+  "schemaVersion": 39,
+  "tags": ["enervision", "ml"],
+  "description": "Supervision des modèles de prévision servis par ml/predict.py. Les métriques de qualité comparent predictions_forecast à aggregates_gold_hourly (consumption_kwh := avg_consumption_kw, la même équivalence qu'à l'entraînement) : elles n'existent donc que pour les heures déjà réalisées ET déjà agrégées par l'ETL.",
+  "templating": {
+    "list": [
+      {
+        "name": "site",
+        "label": "Site",
+        "type": "query",
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+        "query": "SELECT site_id FROM sites ORDER BY site_id",
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "sort": 1,
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "options": []
+      },
+      {
+        "name": "bucket",
+        "label": "Granularité",
+        "description": "Taille des paquets d'agrégation des courbes de qualité. Les prévisions sont horaires : en dessous de 1h les points seraient vides.",
+        "type": "custom",
+        "query": "1h,6h,1d",
+        "multi": false,
+        "includeAll": false,
+        "current": { "selected": true, "text": "6h", "value": "6h" },
+        "options": [
+          { "selected": false, "text": "1h", "value": "1h" },
+          { "selected": true, "text": "6h", "value": "6h" },
+          { "selected": false, "text": "1d", "value": "1d" }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Inférence — le job tourne-t-il ?",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "collapsed": false,
+      "panels": []
+    },
+
+    {
+      "type": "stat",
+      "title": "Dernière inférence",
+      "id": 1,
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Âge de la ligne la plus récemment écrite, tous sites confondus. Volontairement hors de la fenêtre du dashboard : la fraîcheur se lit par rapport à maintenant, pas à la plage affichée. PREDICT_CRON tourne à H+20 — au-delà de 1 h 20 le planificateur a sauté un cycle.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "noValue": "aucune prévision",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 4800 },
+            { "color": "red", "value": 9000 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value", "graphMode": "none", "textMode": "auto", "orientation": "auto", "justifyMode": "auto"
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT EXTRACT(EPOCH FROM (now() - max(predicted_at)))::float8 AS \"âge\"\nFROM predictions_forecast" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Sites couverts",
+      "id": 2,
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "« à jour » = une prévision écrite dans les 2 dernières heures. L'écart avec « en base » désigne les sites mis à l'écart par predict.py : pas de modèle promu, ou une feature que le gold ne fournit pas (les deux causes sont loggées par le job).",
+      "fieldConfig": {
+        "defaults": { "unit": "none", "decimals": 0, "noValue": "0" },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none", "graphMode": "none", "textMode": "value_and_name",
+        "orientation": "horizontal", "justifyMode": "auto"
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT\n  (count(*) FILTER (WHERE d.derniere > now() - interval '2 hours'))::int AS \"à jour\",\n  count(*)::int                                                         AS \"en base\"\nFROM (\n  SELECT s.site_id, max(f.predicted_at) AS derniere\n  FROM sites s\n  LEFT JOIN predictions_forecast f ON f.site_id = s.site_id\n  GROUP BY 1\n) d" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Horizon devant nous",
+      "id": 3,
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Heures encore prévues à partir de maintenant. Doit rester proche de PREDICT_HORIZON_HOURS (24 par défaut). Une valeur qui décroît heure après heure = le job n'écrit plus et la table se vide par l'avant.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "decimals": 1,
+          "noValue": "0",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "orange", "value": 6 },
+            { "color": "green", "value": 18 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value", "graphMode": "none", "textMode": "auto", "orientation": "auto", "justifyMode": "auto"
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT (EXTRACT(EPOCH FROM (max(target_ts) - now())) / 3600.0)::float8 AS \"heures\"\nFROM predictions_forecast" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Prévisions négatives à venir",
+      "id": 4,
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "predict.py ne borne pas ses sorties à zéro (choix assumé : écraser silencieusement ferait passer un modèle cassé pour un modèle prudent). Une consommation négative est donc un signal d'extrapolation hors du domaine d'entraînement, pas un défaut d'affichage.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value", "graphMode": "none", "textMode": "auto", "orientation": "auto", "justifyMode": "auto"
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT count(*)::int AS \"heures < 0\"\nFROM predictions_forecast\nWHERE predicted_kwh < 0 AND target_ts >= now()" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Retard du gold",
+      "id": 5,
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Âge de la dernière heure agrégée. À lire avant tout panneau de qualité : sans gold frais il n'y a pas de réalisé à comparer, et un MAPE vide veut alors dire ETL en retard — pas modèle cassé.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "decimals": 1,
+          "noValue": "aucun gold",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 3 },
+            { "color": "red", "value": 6 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value", "graphMode": "none", "textMode": "auto", "orientation": "auto", "justifyMode": "auto"
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT (EXTRACT(EPOCH FROM (now() - max(record_hour))) / 3600.0)::float8 AS \"retard\"\nFROM aggregates_gold_hourly" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Météo en repli (7 j)",
+      "id": 6,
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Part des heures prédites dont la température n'a pas pu venir du créneau observé du site (temperature_source ≠ climatology_gold). La température est la seule entrée non calendaire des modèles : en repli, la prévision retombe sur une moyenne toutes heures confondues et perd son profil journalier.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "noValue": "0",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 5 },
+            { "color": "red", "value": 25 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value", "graphMode": "none", "textMode": "auto", "orientation": "auto", "justifyMode": "auto"
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT (100.0 * count(*) FILTER (WHERE temperature_source IS DISTINCT FROM 'climatology_gold')\n        / NULLIF(count(*), 0))::float8 AS \"repli\"\nFROM predictions_forecast\nWHERE predicted_at > now() - interval '7 days'" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Lignes écrites par cycle d'inférence",
+      "id": 7,
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Battement du planificateur, vu depuis la base : une barre par heure de predicted_at. Un trou = un cycle perdu (MLflow injoignable, Postgres redémarré). predict.py rattrape au déclenchement suivant sans tuer le service, donc c'est le seul endroit où ces cycles perdus se voient.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": { "drawStyle": "bars", "fillOpacity": 70, "lineWidth": 0, "showPoints": "never", "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "time_series", "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(p.predicted_at, '1h'),\n  p.site_id     AS metric,\n  count(*)::int AS \"lignes\"\nFROM predictions_forecast p\nWHERE $__timeFilter(p.predicted_at)\n  AND p.site_id IN (${site:sqlstring})\nGROUP BY 1, 2\nORDER BY 1" }
+      ]
+    },
+
+    {
+      "type": "bargauge",
+      "title": "Ancienneté de la dernière inférence, par site",
+      "id": 8,
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Le stat global ne voit que le site le plus frais. Ici un site bloqué seul (modèle dépromu, feature manquante) sort du lot au lieu d'être masqué par les six autres.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "jamais prédit",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 4800 },
+            { "color": "red", "value": 9000 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient", "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": true },
+        "showUnfilled": true, "minVizHeight": 12, "minVizWidth": 0, "valueMode": "color"
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT\n  s.site_id                                                 AS \"site\",\n  EXTRACT(EPOCH FROM (now() - max(f.predicted_at)))::float8 AS \"âge\"\nFROM sites s\nLEFT JOIN predictions_forecast f ON f.site_id = s.site_id\nWHERE s.site_id IN (${site:sqlstring})\nGROUP BY 1\nORDER BY 2 DESC NULLS FIRST" }
+      ]
+    },
+
+    {
+      "type": "row",
+      "title": "Modèles en service",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 12 },
+      "id": 200,
+      "collapsed": false,
+      "panels": []
+    },
+
+    {
+      "type": "table",
+      "title": "Modèle promu par site",
+      "id": 9,
+      "gridPos": { "h": 8, "w": 15, "x": 0, "y": 13 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Ce que chaque ligne de prévision déclare porter — les métadonnées sont écrites sur la ligne, pas déduites ailleurs. Colonne « entraîné sur » : csv_synthetic signale un modèle appris sur le CSV synthétique 2023-2024 (MAPE 7-44 % contre le réel), à ne pas lire comme une prévision validée.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "filterable": false, "inspect": false }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "entraîné sur" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "mappings", "value": [
+                { "type": "value", "options": { "csv_synthetic": { "text": "csv_synthetic ⚠", "color": "orange", "index": 0 } } }
+              ] }
+            ] },
+          { "matcher": { "id": "byName", "options": "marge ±90 %" },
+            "properties": [ { "id": "unit", "value": "kwatt" }, { "id": "decimals", "value": 1 }, { "id": "noValue", "value": "absente du run" } ] },
+          { "matcher": { "id": "byName", "options": "dernière inférence" },
+            "properties": [ { "id": "unit", "value": "dateTimeAsLocal" } ] },
+          { "matcher": { "id": "byName", "options": "run MLflow" },
+            "properties": [ { "id": "custom.width", "value": 130 } ] }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": { "show": false, "reducer": ["sum"], "countRows": false, "fields": "" },
+        "sortBy": [ { "displayName": "site", "desc": false } ]
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT DISTINCT ON (p.site_id)\n  p.site_id                              AS \"site\",\n  p.champion                             AS \"algorithme\",\n  p.model_version                        AS \"version\",\n  p.model_stage                          AS \"stage\",\n  p.data_source                          AS \"entraîné sur\",\n  p.horizon_h                            AS \"horizon (h)\",\n  p.step_minutes                         AS \"pas (min)\",\n  (p.upper_90 - p.predicted_kwh)::float8 AS \"marge ±90 %\",\n  p.run_id                               AS \"run MLflow\",\n  p.predicted_at                         AS \"dernière inférence\"\nFROM predictions_forecast p\nWHERE p.site_id IN (${site:sqlstring})\nORDER BY p.site_id, p.predicted_at DESC" }
+      ]
+    },
+
+    {
+      "type": "bargauge",
+      "title": "Incertitude relative de l'intervalle 90 %",
+      "id": 10,
+      "gridPos": { "h": 8, "w": 9, "x": 15, "y": 13 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Marge conforme du run (calibrée sur un jeu jamais vu à l'entraînement) rapportée au niveau moyen prévu du site. En kW bruts les sites ne sont pas comparables ; en pourcentage ils le sont, et un site dont la marge approche son propre niveau annonce un modèle qui ne sait presque rien.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "noValue": "marge absente du run",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 40 },
+            { "color": "red", "value": 80 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient", "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": true },
+        "showUnfilled": true, "minVizHeight": 12, "minVizWidth": 0, "valueMode": "color"
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "WITH derniere AS (\n  SELECT DISTINCT ON (site_id)\n    site_id, (upper_90 - predicted_kwh) AS marge\n  FROM predictions_forecast\n  WHERE site_id IN (${site:sqlstring})\n  ORDER BY site_id, predicted_at DESC\n),\nniveau AS (\n  SELECT site_id, avg(predicted_kwh) AS moyenne\n  FROM predictions_forecast\n  WHERE target_ts >= now() AND site_id IN (${site:sqlstring})\n  GROUP BY 1\n)\nSELECT\n  d.site_id                                        AS \"site\",\n  (100.0 * d.marge / NULLIF(n.moyenne, 0))::float8 AS \"incertitude\"\nFROM derniere d\nJOIN niveau n USING (site_id)\nORDER BY 2 DESC NULLS LAST" }
+      ]
+    },
+
+    {
+      "type": "row",
+      "title": "Qualité — prévu contre réalisé",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 },
+      "id": 300,
+      "collapsed": false,
+      "panels": []
+    },
+
+    {
+      "type": "table",
+      "title": "Performance par site sur la fenêtre affichée",
+      "id": 11,
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 22 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Backtest continu : chaque heure passée est comparée au gold de la même heure. « heures comparées » est le dénominateur — un chiffre bas rend les autres colonnes non significatives, et il dépend du gold, pas du modèle. La couverture 90 % est le contrôle de calibration : elle devrait valoir ~90 %, franchement moins signifie que l'intervalle ment.",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "filterable": false, "inspect": false }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "heures comparées" },
+            "properties": [ { "id": "decimals", "value": 0 } ] },
+          { "matcher": { "id": "byName", "options": "MAE" },
+            "properties": [ { "id": "unit", "value": "kwatt" }, { "id": "decimals", "value": 1 } ] },
+          { "matcher": { "id": "byName", "options": "biais" },
+            "properties": [
+              { "id": "unit", "value": "kwatt" },
+              { "id": "decimals", "value": 1 },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "color", "value": { "mode": "continuous-BlYlRd" } }
+            ] },
+          { "matcher": { "id": "byName", "options": "MAPE %" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              { "id": "decimals", "value": 1 },
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null },
+                { "color": "orange", "value": 15 },
+                { "color": "red", "value": 30 }
+              ] } }
+            ] },
+          { "matcher": { "id": "byName", "options": "couverture 90 %" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              { "id": "decimals", "value": 1 },
+              { "id": "noValue", "value": "pas d'intervalle" },
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "red", "value": null },
+                { "color": "orange", "value": 70 },
+                { "color": "green", "value": 85 }
+              ] } }
+            ] }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": { "show": false, "reducer": ["sum"], "countRows": false, "fields": "" },
+        "sortBy": [ { "displayName": "MAPE %", "desc": true } ]
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT\n  p.site_id                                                    AS \"site\",\n  max(p.champion)                                              AS \"algorithme\",\n  max(p.model_version)                                         AS \"version\",\n  count(*)::int                                                AS \"heures comparées\",\n  avg(abs(p.predicted_kwh - g.avg_consumption_kw))::float8     AS \"MAE\",\n  (100.0 * avg(abs(p.predicted_kwh - g.avg_consumption_kw)\n               / abs(NULLIF(g.avg_consumption_kw, 0))))::float8 AS \"MAPE %\",\n  avg(p.predicted_kwh - g.avg_consumption_kw)::float8          AS \"biais\",\n  (100.0 * avg(CASE\n                 WHEN p.lower_90 IS NULL OR p.upper_90 IS NULL THEN NULL\n                 WHEN g.avg_consumption_kw BETWEEN p.lower_90 AND p.upper_90 THEN 1\n                 ELSE 0\n               END))::float8                                    AS \"couverture 90 %\"\nFROM predictions_forecast p\nJOIN aggregates_gold_hourly g\n  ON g.site_id = p.site_id AND g.record_hour = p.target_ts\nWHERE $__timeFilter(p.target_ts)\n  AND g.avg_consumption_kw IS NOT NULL\n  AND p.site_id IN (${site:sqlstring})\nGROUP BY 1\nORDER BY 6 DESC NULLS LAST" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "MAPE glissant par site",
+      "id": 12,
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 30 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Erreur relative moyenne, par paquets de $bucket. C'est la courbe qui dit si un modèle se dégrade : une pente montante sans changement de version (annotations violettes) est une dérive des données, pas du modèle.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "decimals": 1,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "auto", "spanNulls": true }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "time_series", "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(p.target_ts, '$bucket'),\n  p.site_id AS metric,\n  (100.0 * avg(abs(p.predicted_kwh - g.avg_consumption_kw)\n               / abs(NULLIF(g.avg_consumption_kw, 0))))::float8 AS \"MAPE\"\nFROM predictions_forecast p\nJOIN aggregates_gold_hourly g\n  ON g.site_id = p.site_id AND g.record_hour = p.target_ts\nWHERE $__timeFilter(p.target_ts)\n  AND g.avg_consumption_kw IS NOT NULL\n  AND p.site_id IN (${site:sqlstring})\nGROUP BY 1, 2\nORDER BY 1" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Biais glissant par site",
+      "id": 13,
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 30 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Moyenne de (prévu − réalisé). Le MAE ne distingue pas surestimation et sous-estimation ; ici un décrochage durable d'un côté de zéro est la signature d'un modèle calé sur un régime de consommation qui n'existe plus.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatt",
+          "decimals": 1,
+          "custom": {
+            "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "auto", "spanNulls": true,
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "transparent", "value": null },
+            { "color": "text", "value": 0 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "time_series", "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(p.target_ts, '$bucket'),\n  p.site_id AS metric,\n  avg(p.predicted_kwh - g.avg_consumption_kw)::float8 AS \"biais\"\nFROM predictions_forecast p\nJOIN aggregates_gold_hourly g\n  ON g.site_id = p.site_id AND g.record_hour = p.target_ts\nWHERE $__timeFilter(p.target_ts)\n  AND g.avg_consumption_kw IS NOT NULL\n  AND p.site_id IN (${site:sqlstring})\nGROUP BY 1, 2\nORDER BY 1" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Couverture de l'intervalle 90 %",
+      "id": 14,
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 30 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Part des heures réalisées tombées dans [lower_90, upper_90]. La ligne pointillée à 90 % est la valeur promise par la calibration conforme. Durablement en dessous : l'intervalle est trop étroit et personne ne devrait s'y fier ; collé à 100 % : il est si large qu'il ne dit rien.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "custom": {
+            "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "auto", "spanNulls": true,
+            "thresholdsStyle": { "mode": "dashed" }
+          },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "transparent", "value": null },
+            { "color": "text", "value": 90 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "time_series", "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(p.target_ts, '$bucket'),\n  p.site_id AS metric,\n  (100.0 * avg(CASE\n                 WHEN p.lower_90 IS NULL OR p.upper_90 IS NULL THEN NULL\n                 WHEN g.avg_consumption_kw BETWEEN p.lower_90 AND p.upper_90 THEN 1\n                 ELSE 0\n               END))::float8 AS \"couverture\"\nFROM predictions_forecast p\nJOIN aggregates_gold_hourly g\n  ON g.site_id = p.site_id AND g.record_hour = p.target_ts\nWHERE $__timeFilter(p.target_ts)\n  AND g.avg_consumption_kw IS NOT NULL\n  AND p.site_id IN (${site:sqlstring})\nGROUP BY 1, 2\nORDER BY 1" }
+      ]
+    },
+
+    {
+      "type": "row",
+      "title": "Dérive des entrées & couverture de la mesure",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 },
+      "id": 400,
+      "collapsed": false,
+      "panels": []
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Température : climatologie utilisée contre mesurée",
+      "id": 16,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 39 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Faute de prévision météo dans le projet, predict.py rejoue le climat des PREDICT_CLIMATOLOGY_DAYS derniers jours. L'écart entre les deux courbes sur le passé est l'erreur d'entrée : une partie du MAPE vient de là, et non du modèle.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "decimals": 1,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never", "spanNulls": true }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "mesurée (gold)" },
+            "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] },
+          { "matcher": { "id": "byName", "options": "climatologie utilisée" },
+            "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "time_series", "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(p.target_ts, '$bucket'),\n  avg(p.temperature_celsius)::float8     AS \"climatologie utilisée\",\n  avg(g.avg_temperature_celsius)::float8 AS \"mesurée (gold)\"\nFROM predictions_forecast p\nLEFT JOIN aggregates_gold_hourly g\n  ON g.site_id = p.site_id AND g.record_hour = p.target_ts\nWHERE $__timeFilter(p.target_ts)\n  AND p.site_id IN (${site:sqlstring})\nGROUP BY 1\nORDER BY 1" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Provenance de la température injectée",
+      "id": 17,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 39 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "climatology_gold = créneau (jour, heure) réellement observé sur le site. Toute autre valeur est un repli : le gold ne couvrait pas ce créneau, la moyenne toutes heures confondues a servi. Le repli monte quand l'ETL décroche, et le MAPE suit quelques heures plus tard.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": { "drawStyle": "bars", "fillOpacity": 70, "lineWidth": 0, "showPoints": "never", "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "climatology_gold" },
+            "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "time_series", "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(p.target_ts, '$bucket'),\n  coalesce(p.temperature_source, 'inconnue') AS metric,\n  count(*)::int                              AS \"heures\"\nFROM predictions_forecast p\nWHERE $__timeFilter(p.target_ts)\n  AND p.site_id IN (${site:sqlstring})\nGROUP BY 1, 2\nORDER BY 1" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Heures évaluables (le gold suit-il la prévision ?)",
+      "id": 18,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 47 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Dénominateur de tous les panneaux de qualité. Les heures futures sont légitimement « sans réalisé » ; sur le passé, une bande grise qui persiste veut dire que le MAPE affiché ne porte que sur une fraction des heures prévues.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": { "drawStyle": "bars", "fillOpacity": 70, "lineWidth": 0, "showPoints": "never", "stacking": { "mode": "normal", "group": "A" } }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "avec réalisé" },
+            "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] },
+          { "matcher": { "id": "byName", "options": "sans réalisé" },
+            "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "text" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "time_series", "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(p.target_ts, '$bucket'),\n  (count(*) FILTER (WHERE g.avg_consumption_kw IS NOT NULL))::int AS \"avec réalisé\",\n  (count(*) FILTER (WHERE g.avg_consumption_kw IS NULL))::int     AS \"sans réalisé\"\nFROM predictions_forecast p\nLEFT JOIN aggregates_gold_hourly g\n  ON g.site_id = p.site_id AND g.record_hour = p.target_ts\nWHERE $__timeFilter(p.target_ts)\n  AND p.site_id IN (${site:sqlstring})\nGROUP BY 1\nORDER BY 1" }
+      ]
+    },
+
+    {
+      "type": "histogram",
+      "title": "Distribution de l'erreur (prévu − réalisé)",
+      "id": 15,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 47 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+      "description": "Ce que les moyennes cachent. Une distribution centrée et resserrée est un bon modèle ; deux bosses trahissent deux régimes que le modèle traite pareil (jour ouvré / week-end mal séparés, par exemple), une longue traîne d'un seul côté un biais sur quelques heures extrêmes.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatt",
+          "custom": { "fillOpacity": 70, "lineWidth": 1 }
+        },
+        "overrides": []
+      },
+      "options": { "bucketOffset": 0, "combine": false, "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT (p.predicted_kwh - g.avg_consumption_kw)::float8 AS \"erreur\"\nFROM predictions_forecast p\nJOIN aggregates_gold_hourly g\n  ON g.site_id = p.site_id AND g.record_hour = p.target_ts\nWHERE $__timeFilter(p.target_ts)\n  AND g.avg_consumption_kw IS NOT NULL\n  AND p.site_id IN (${site:sqlstring})" }
+      ]
+    },
+
+    {
+      "type": "row",
+      "title": "Détail par site (prévu, intervalle, réalisé)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 55 },
+      "id": 500,
+      "collapsed": true,
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "$site — prévu, intervalle 90 % et réalisé",
+          "id": 19,
+          "gridPos": { "h": 9, "w": 12, "x": 0, "y": 56 },
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+          "repeat": "site",
+          "repeatDirection": "h",
+          "description": "Un panneau par site sélectionné. La bande est l'intervalle conforme 90 % ; le réalisé s'arrête où s'arrête le gold, la prévision continue sur tout l'horizon.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "kwatt",
+              "decimals": 1,
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never", "spanNulls": true }
+            },
+            "overrides": [
+              { "matcher": { "id": "byName", "options": "réalisé" },
+                "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] },
+              { "matcher": { "id": "byName", "options": "prévu" },
+                "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } } ] },
+              { "matcher": { "id": "byName", "options": "borne haute 90 %" },
+                "properties": [
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "super-light-blue" } },
+                  { "id": "custom.lineWidth", "value": 0 },
+                  { "id": "custom.fillOpacity", "value": 12 },
+                  { "id": "custom.fillBelowTo", "value": "borne basse 90 %" }
+                ] },
+              { "matcher": { "id": "byName", "options": "borne basse 90 %" },
+                "properties": [
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "super-light-blue" } },
+                  { "id": "custom.lineWidth", "value": 0 },
+                  { "id": "custom.hideFrom", "value": { "legend": true, "tooltip": false, "viz": false } }
+                ] }
+            ]
+          },
+          "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+          "targets": [
+            { "refId": "A", "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgres-ev" },
+              "editorMode": "code", "format": "time_series", "rawQuery": true,
+              "rawSql": "SELECT\n  p.target_ts                  AS time,\n  p.predicted_kwh::float8      AS \"prévu\",\n  p.lower_90::float8           AS \"borne basse 90 %\",\n  p.upper_90::float8           AS \"borne haute 90 %\",\n  g.avg_consumption_kw::float8 AS \"réalisé\"\nFROM predictions_forecast p\nLEFT JOIN aggregates_gold_hourly g\n  ON g.site_id = p.site_id AND g.record_hour = p.target_ts\nWHERE p.site_id = '$site'\n  AND p.step_minutes = 60\n  AND $__timeFilter(p.target_ts)\nORDER BY 1" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "type": "row",
+      "title": "Ressources des services ML",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 56 },
+      "id": 600,
+      "collapsed": false,
+      "panels": []
+    },
+
+    {
+      "type": "stat",
+      "title": "Uptime du planificateur",
+      "id": 22,
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 57 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Temps depuis le dernier démarrage du conteneur enervision-ml-predict (cAdvisor). Une valeur qui retombe à zéro régulièrement = redémarrages en boucle, alors même que les prévisions peuvent sembler à jour.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "noValue": "conteneur absent",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "orange", "value": 900 },
+            { "color": "green", "value": 3600 }
+          ] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value", "graphMode": "none", "textMode": "auto", "orientation": "auto", "justifyMode": "auto"
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "instant": true,
+          "expr": "time() - container_start_time_seconds{name=\"enervision-ml-predict\"}" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "CPU des conteneurs ML",
+      "id": 20,
+      "gridPos": { "h": 7, "w": 9, "x": 6, "y": 57 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Pics horaires attendus sur ml-predict (un cycle par heure, à H+20). Un plateau continu signale un cycle qui n'en finit pas — max_instances=1 fait alors sauter les déclenchements suivants au lieu de les empiler.",
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "custom": { "fillOpacity": 15, "showPoints": "never", "spanNulls": true } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name=~\"enervision-ml.*\"}[5m])) * 100", "legendFormat": "{{name}}" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Mémoire des conteneurs ML",
+      "id": 21,
+      "gridPos": { "h": 7, "w": 9, "x": 15, "y": 57 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "LightGBM et statsmodels rechargent leurs artefacts par site à chaque cycle. Une mémoire qui monte sans redescendre entre deux cycles est le symptôme à surveiller quand le nombre de sites grandit.",
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "min": 0, "custom": { "fillOpacity": 15, "showPoints": "never", "spanNulls": true } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "container_memory_working_set_bytes{name=~\"enervision-ml.*\"}", "legendFormat": "{{name}}" }
+      ]
+    }
+  ]
+}

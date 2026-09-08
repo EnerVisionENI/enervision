@@ -14,3 +14,40 @@ datasources:
     editable: false
     jsonData:
       timeInterval: 15s
+
+  # Postgres en lecture : les métriques des modèles ML ne sont pas des séries
+  # Prometheus mais des lignes de predictions_forecast comparées à
+  # aggregates_gold_hourly (voir le dashboard enervision-ml). Passer par un
+  # exporter ferait perdre les métadonnées portées ligne à ligne — version de
+  # modèle, run MLflow, provenance des données — qui sont justement ce qu'on
+  # veut lire ici.
+  #
+  # Les variables viennent de l'environnement du conteneur Grafana (compose.yaml),
+  # jamais du .env lu directement : Grafana interpole les fichiers de provisioning
+  # à son démarrage. Forme $VAR sans accolades — c'est celle que reconnaît son
+  # expanseur ; ${VAR} serait recopié tel quel dans le nom d'utilisateur, et
+  # l'erreur de connexion ne dirait pas pourquoi.
+  - name: PostgreSQL
+    uid: postgres-ev
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: $GRAFANA_DB_USER
+    # Renseigné aux deux emplacements : jsonData.database est la forme courante
+    # depuis Grafana 10.4, le champ racine reste lu par le loader de provisioning.
+    database: $GRAFANA_DB_NAME
+    isDefault: false
+    editable: false
+    jsonData:
+      database: $GRAFANA_DB_NAME
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+      # Le dashboard ML tire une douzaine de requêtes par rafraîchissement (5 min) :
+      # un petit pool suffit et borne ce que Grafana peut prendre à Postgres, que
+      # l'API et l'ETL partagent.
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+    secureJsonData:
+      password: $GRAFANA_DB_PASSWORD

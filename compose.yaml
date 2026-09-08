@@ -22,6 +22,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      # Lus par init/07_grafana_readonly.sh, qui crée le rôle SELECT-only de la
+      # datasource Grafana. Absents, le script se contente de le dire et n'échoue pas.
+      GRAFANA_DB_USER: ${GRAFANA_DB_USER:-grafana_ro}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-}
     ports:
       - "5433:5432"
     volumes:
@@ -518,6 +522,13 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Interpolées par Grafana dans provisioning/datasources/datasource.yml au
+      # démarrage. Le rôle est en lecture seule (init/07_grafana_readonly.sh) :
+      # les dashboards restent éditables depuis l'interface sans que le SQL
+      # qu'on y colle puisse écrire dans la base.
+      GRAFANA_DB_NAME: ${POSTGRES_DB}
+      GRAFANA_DB_USER: ${GRAFANA_DB_USER:-grafana_ro}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-}
     ports:
       # 3000 côté hôte est pris par le front.
       - "3001:3000"
@@ -526,7 +537,13 @@ services:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_started
+      # La datasource PostgreSQL est provisionnée au démarrage : sans la base, le
+      # dashboard ML s'ouvre sur des panneaux en erreur jusqu'au rafraîchissement suivant.
+      # Forme longue pour les deux : depends_on n'accepte pas liste et map mélangées.
+      postgres:
+        condition: service_healthy
     networks:
       - enervision-network
 
