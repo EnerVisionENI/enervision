@@ -5,6 +5,23 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>EnerVision - Plateforme de suivi énergétique</title>
+    <!-- Pose le thème avant le premier rendu pour éviter un flash du mauvais
+         thème : logique dupliquée en JS pur ici, et dans src/theme.js pour la
+         bascule/le suivi système une fois l'application démarrée. -->
+    <script>
+      (function () {
+        try {
+          var stocke = localStorage.getItem("ev-theme");
+          var theme =
+            stocke === "light" || stocke === "dark"
+              ? stocke
+              : window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light";
+          document.documentElement.dataset.theme = theme;
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

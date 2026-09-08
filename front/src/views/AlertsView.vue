@@ -186,15 +186,15 @@ onMounted(chargerAlertes);
 /* Même langage « console » que le Dashboard et les Capteurs : fond sombre,
    filets, monospace pour les libellés techniques, angles à 3px, accent teal. */
 .alerts {
-  --bg: #0b1220;
-  --panel: #121a2b;
-  --panel-2: #0e1728;
-  --border: #1f2b42;
-  --text: #e5e9f0;
-  --text-muted: #6b7a99;
-  --ok: #2dd4bf;
-  --alerte: #f59e0b;
-  --danger: #ef4444;
+  --bg: var(--shell-bg);
+  --panel: var(--shell-panel);
+  --panel-2: var(--shell-panel-2);
+  --border: var(--shell-border);
+  --text: var(--shell-text);
+  --text-muted: var(--shell-muted);
+  --ok: var(--shell-accent);
+  --alerte: var(--shell-warning);
+  --danger: var(--shell-danger);
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 
   background: var(--bg);
@@ -406,7 +406,7 @@ td.numerique {
 }
 
 .error {
-  color: #fca5a5;
+  color: var(--shell-danger-text);
   background: var(--panel-2);
   border-left: 2px solid var(--danger);
 }

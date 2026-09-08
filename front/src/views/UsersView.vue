@@ -368,15 +368,15 @@ onMounted(chargerUtilisateurs);
    utilitaires globales (.btn, .field, .alert) sont réhabillées ici, sous la
    portée .users, sans toucher au thème clair du reste des utilitaires. */
 .users {
-  --bg: #0b1220;
-  --panel: #121a2b;
-  --panel-2: #0e1728;
-  --border: #1f2b42;
-  --text: #e5e9f0;
-  --text-muted: #6b7a99;
-  --ok: #2dd4bf;
-  --alerte: #f59e0b;
-  --danger: #ef4444;
+  --bg: var(--shell-bg);
+  --panel: var(--shell-panel);
+  --panel-2: var(--shell-panel-2);
+  --border: var(--shell-border);
+  --text: var(--shell-text);
+  --text-muted: var(--shell-muted);
+  --ok: var(--shell-accent);
+  --alerte: var(--shell-warning);
+  --danger: var(--shell-danger);
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 
   background: var(--bg);
@@ -459,7 +459,7 @@ onMounted(chargerUtilisateurs);
 .users .btn-danger {
   border-color: var(--danger);
   background: rgba(239, 68, 68, 0.08);
-  color: #fca5a5;
+  color: var(--shell-danger-text);
 }
 
 .users .btn-danger:not(:disabled):hover {
@@ -552,7 +552,7 @@ onMounted(chargerUtilisateurs);
 
 .users .alert-error {
   border-color: var(--danger);
-  color: #fca5a5;
+  color: var(--shell-danger-text);
 }
 
 .users .alert-success {
@@ -684,7 +684,7 @@ td.date {
 }
 
 .error {
-  color: #fca5a5;
+  color: var(--shell-danger-text);
   background: var(--panel-2);
   border-left: 2px solid var(--danger);
 }
