@@ -124,6 +124,7 @@ flowchart TB
     api -->|"prévisions"| postgres
 
     prom --> grafana
+    postgres -->|"prévu / réalisé (lecture seule)"| grafana
     minio -->|bucket audit| auditsync
     auditsync -->|chiffré| azure
 ```
@@ -232,7 +233,7 @@ docker compose --profile etl --profile observability --profile mlflow \
 | Profil | Ce qu'il ajoute |
 |---|---|
 | `etl` | La donnée commence à arriver : sans lui, la base reste vide |
-| `observability` | Grafana sur http://localhost:3001 (`admin`/`admin`), datasource et dashboard provisionnés |
+| `observability` | Grafana sur http://localhost:3001 (`admin`/`admin`), datasources et dashboards provisionnés : « Serveur » (hôte et conteneurs, via Prometheus) et « Modèles ML » (qualité des prévisions, via Postgres — demande `GRAFANA_DB_*`, cf. [`.env.example`](.env.example)) |
 | `mlflow` | MLflow sur http://localhost:5000 + prévisions horaires |
 | `audit` | Réplication chiffrée vers Azure — demande les secrets `AZURE_*` |
 | `proxy` | Traefik + Let's Encrypt — pour un déploiement exposé, pas en local |
