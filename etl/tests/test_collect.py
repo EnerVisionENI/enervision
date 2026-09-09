@@ -47,11 +47,29 @@ def test_envoyer_mesure_ecrit_dans_bronze_et_audit(s3):
 
 def test_envoyer_mesure_cle_bronze_bien_formee(s3):
     """La clé bronze doit suivre site_id/date/heure.json."""
-    mesure = {"timestamp": "2026-09-01T09:57:43.123456", "site_id": "SITE001"}
+    # Timestamp déjà offset UTC : ce test porte sur le format de la clé, pas sur la
+    # conversion de fuseau (couverte par test_envoyer_mesure_convertit_l_heure_locale_du_mock_iot_en_utc).
+    mesure = {"timestamp": "2026-09-01T09:57:43.123456+00:00", "site_id": "SITE001"}
     collect.envoyer_mesure("SITE001", mesure)
 
     appel_bronze = next(a for a in s3.appels if a["Bucket"] == collect.MINIO_BUCKET_BRONZE)
     assert appel_bronze["Key"] == "SITE001/2026-09-01/095743.json"
+
+
+def test_envoyer_mesure_convertit_l_heure_locale_du_mock_iot_en_utc(s3):
+    """L'API Mock IoT renvoie un timestamp sans fuseau qui est en réalité de l'heure locale
+    Europe/Paris, pas de l'UTC (EV : l'horizon de fraîcheur du dashboard restait bloqué à 0
+    car les mesures semblaient dans le futur). Un timestamp naïf doit donc être réinterprété
+    comme Europe/Paris puis converti en UTC avant d'être persisté."""
+    mesure = {"timestamp": "2026-09-01T09:57:43.123456", "site_id": "SITE001"}
+    collect.envoyer_mesure("SITE001", mesure)
+
+    appel_bronze = next(a for a in s3.appels if a["Bucket"] == collect.MINIO_BUCKET_BRONZE)
+    # 1er septembre : CEST = UTC+2, donc 09:57:43 Europe/Paris -> 07:57:43 UTC.
+    assert appel_bronze["Key"] == "SITE001/2026-09-01/075743.json"
+
+    contenu = json.loads(appel_bronze["Body"])
+    assert contenu["timestamp"] == "2026-09-01T07:57:43.123456+00:00"
 
 
 def test_envoyer_mesure_hash_coherent_entre_bronze_et_audit(s3):
@@ -79,7 +97,7 @@ def test_envoyer_mesure_hash_coherent_entre_bronze_et_audit(s3):
 def test_envoyer_mesure_cle_audit_prefixee_par_bucket_source(s3):
     """La clé audit doit être préfixée par le nom du bucket bronze,
     pour éviter une collision future avec silver ou gold sur le même site/date."""
-    mesure = {"timestamp": "2026-09-01T09:57:43.123456", "site_id": "SITE001"}
+    mesure = {"timestamp": "2026-09-01T09:57:43.123456+00:00", "site_id": "SITE001"}
     collect.envoyer_mesure("SITE001", mesure)
 
     appel_audit = next(a for a in s3.appels if a["Bucket"] == collect.MINIO_BUCKET_AUDIT)
