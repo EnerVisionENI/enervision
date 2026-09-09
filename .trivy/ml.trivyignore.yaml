@@ -1,106 +1,13 @@
 # Exceptions Trivy de l'image ml — appliquées uniquement à l'étape de barrière du job
 # `build` (voir .github/workflows/ci-cd.yml). Le rapport JSON archivé en artefact, lui, est
-# produit SANS ce fichier : il continue de lister l'intégralité des vulnérabilités, pour que
-# la trace d'audit ne soit pas amputée par la décision d'exploitation prise ici.
+# produit SANS ce fichier : il continue de lister l'intégralité des vulnérabilités.
 #
-# Pourquoi ces exceptions existent
-# --------------------------------
-# ml/requirements.txt épingle `mlflow>=2.14,<3.0`, et le correctif de CHACUNE de ces CVE est
-# publié en 3.x — aucun n'existe sous la 3.0. `pyarrow` est dans le même cas par ricochet :
-# mlflow 2.x exige `pyarrow<20`, alors que le correctif est en 23.0.1. Il n'existe donc aucune
-# combinaison de versions qui satisfasse à la fois le pin et le scanner.
+# Vide depuis le passage de ml/requirements.txt à `mlflow-skinny` (ni serveur ni UI mlflow
+# embarqués dans l'image) : les CVE du serveur mlflow ne s'appliquent plus, et `pyarrow` n'est
+# plus plafonné à <20 par mlflow, ce qui laisse passer le correctif 23.0.1+. Voir l'historique
+# git de ce fichier pour le détail des CVE précédemment exceptées et le raisonnement complet.
 #
-# Le pin n'est pas arbitraire : mlflow 3.x supprime les stages du Model Registry, dont
-# dépendent scripts/train_v1_csv.py (transition_model_version_stage) et predict.py
-# (get_latest_versions(stages=...)), et le serveur de prod est lui-même épinglé en v2.22.0.
-#
-# Comment s'en débarrasser
-# ------------------------
-# Remplacer `mlflow` par `mlflow-skinny` dans ml/requirements.txt (+ déclarer `scikit-learn`,
-# aujourd'hui tiré implicitement par mlflow) : la distribution skinny n'embarque ni serveur ni
-# UI, `predict.py` n'utilise que le client REST, et le scan passe alors à zéro vulnérabilité —
-# vérifié en rejouant la commande de la CI. `pyarrow` remonte au passage à 25.0.1, le plafond
-# `<20` venant de mlflow complet. Reste à valider que les flavors statsmodels/lightgbm
-# chargent les modèles à l'identique, et que le workflow dev sqlite:/// documenté dans
-# ml/README.md survit (skinny n'embarque pas sqlalchemy).
-#
-# expired_at rend la dette visible : passé cette date, la barrière redevient rouge d'elle-même
-# plutôt que de laisser ces exceptions s'installer en silence.
+# A garder vide : toute nouvelle exception doit être justifiée au cas par cas, avec une
+# `expired_at`, comme précédemment.
 
-vulnerabilities:
-  - id: CVE-2025-10279
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2025-14279
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2025-14287
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2025-15031
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2025-15036
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2025-15379
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2026-0596
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2026-2033
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2026-2393
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2026-2614
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2026-2635
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2026-2651
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2026-2652
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2026-4035
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2026-4137
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2026-64849
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: CVE-2026-8147
-    statement: >-
-      Vulnerabilite du SERVEUR mlflow (SSRF, contournement d'authentification, acces non autorise aux traces, execution de code cote serveur). Le conteneur ml-predict ne lance aucun serveur mlflow : il n'execute que le client, qui parle en REST au service mlflow de la stack. Correctif disponible seulement en mlflow 3.x, incompatible avec le pin <3.0 (voir l'entete de ce fichier).
-    expired_at: 2026-12-01
-  - id: GHSA-gqvg-gmmx-x4hm
-    statement: >-
-      ATTENTION, celle-ci est cote client et nous concerne directement : le controle MLFLOW_ALLOW_PICKLE_DESERIALIZATION=False est contournable via le flavor statsmodels, soit exactement le chemin qu'emprunte predict.py pour charger les modeles TOWT. Un modele pickle piege depose dans le bucket mlflow-artifacts donne une execution de code dans le conteneur d'inference. Risque accepte parce que deposer un objet dans ce bucket suppose deja les credentials root MinIO, qui ouvrent bien plus large ; mais c'est une escalade reelle, et c'est la raison la plus forte de passer a mlflow-skinny ou 3.x.
-    expired_at: 2026-12-01
-  - id: CVE-2026-25087
-    statement: >-
-      Deni de service (use-after-free) dans Apache Arrow C++. Correctif en pyarrow 23.0.1, inatteignable tant que mlflow 2.x impose pyarrow<20. pyarrow n'est utilise ici que pour lire des Parquet du gold, jamais sur une entree fournie par un tiers.
-    expired_at: 2026-12-01
+vulnerabilities: []

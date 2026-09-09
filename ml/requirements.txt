@@ -2,7 +2,10 @@ pandas>=2.2
 numpy>=1.26
 statsmodels>=0.14
 lightgbm>=4.3
-mlflow>=2.14,<3.0  # MLflow 3.x casse le serveur UI sur Windows (500 sur tous les endpoints, cf. incident local)
+scikit-learn>=1.4  # requis par lightgbm.LGBMRegressor (l'API sklearn utilisee dans models/challenger.py) ; avec mlflow full ce paquet arrivait implicitement, mlflow-skinny ne le tire plus
+mlflow-skinny>=2.14,<3.0  # skinny : ni serveur ni UI embarques (voir .trivy/ml.trivyignore.yaml pour l'historique). Le plafond <3.0 reste necessaire : mlflow 3.x supprime les stages du Model Registry (transition_model_version_stage, get_latest_versions(stages=...)) dont dependent scripts/train_v1_csv.py et predict.py, et le serveur de prod est lui-meme epingle en v2.22.0 (compose.yaml)
+sqlalchemy>=2.0  # backend sqlite:///mlflow.db du run local (README, scripts/train_v1_csv.py) ; mlflow-skinny ne l'embarque pas, train.py/predict.py (URI http(s)://) ne l'utilisent pas
+alembic>=1.13  # migrations de schema du meme backend sqlite:///mlflow.db, invoquees automatiquement par mlflow au premier run
 boto3>=1.34
 python-dotenv>=1.0
 pyarrow>=16.0
