@@ -13,8 +13,8 @@
 #   docker compose up -d
 #
 # Exposé directement sur des ports hôte, comme les autres services du projet
-# (api :8000, front :3000, grafana :3001…). Traefik n'est branché sur aucun
-# service ici : accès HTTPS externe = proxy TLS en amont (voir DEPLOYMENT.md).
+# (api :8000, front :3000, grafana :3001…). Pas de reverse proxy devant : accès
+# HTTPS externe = proxy TLS en amont, à ajouter séparément si besoin.
 # ---------------------------------------------------------------------------
 
 name: outline

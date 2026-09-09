@@ -118,5 +118,5 @@ docker compose exec postgres psql -U ev_admin -d ev_monitoring -c "DROP DATABASE
 - Image épinglée `v2.22.0` (pas `latest`) — **MLflow 3.x casse le serveur UI sur Windows en local**
   (500 sur tous les endpoints), pas testé sur l'image Linux du serveur mais on reste sur la 2.x
   pour rester cohérent entre dev et prod.
-- Pas de proxy/TLS ici — réseau interne (10.105.200.44). Ajouter une route Traefik si accès externe
-  souhaité un jour (profile `"proxy"`, déjà dans la stack).
+- Pas de proxy/TLS ici — réseau interne (10.105.200.44). Ajouter un reverse proxy TLS devant si
+  accès externe souhaité un jour (rien de tel n'existe encore dans la stack).

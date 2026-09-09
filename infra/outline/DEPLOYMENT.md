@@ -16,8 +16,7 @@ et **100 % on-premise** : aucun appel vers l'extérieur.
 Réseau `outline-net` propre, pièces jointes stockées en local (`FILE_STORAGE=local`,
 volume `outline_outline-data`). **Aucun partage** avec la base applicative ni avec MinIO.
 
-Pas de route Traefik : dans ce projet Traefik n'est branché sur aucun service
-(`traefik.yml` en `exposedByDefault: false`, zéro label). Outline et Dex sont joignables
+Pas de reverse proxy devant : le projet n'en a pas. Outline et Dex sont joignables
 directement sur leurs ports hôte, comme `api`, `front`, `grafana`, `mlflow`.
 
 ## Authentification — pourquoi Dex

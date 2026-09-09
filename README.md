@@ -57,7 +57,6 @@ Application multi-services conteneurisée, orchestrée par un unique
 | **ml** | [`ml/`](ml/) | Réentraînement (à la demande) | LightGBM, statsmodels | `mlflow` |
 | **ml-predict** | [`ml/`](ml/) | Inférence batch horaire | MLflow, pandas | `mlflow` |
 | **audit-sync** | [`infra/audit-sync/`](infra/audit-sync/) | Réplication chiffrée → Azure Blob | rclone | `audit` |
-| **traefik** | [`infra/traefik/`](infra/traefik/) | Reverse proxy TLS | Traefik v2 | `proxy` |
 | **prometheus**, **grafana**, **node-exporter**, **cadvisor** | [`infra/`](infra/) | Observabilité | — | `observability` |
 
 ### Vue d'ensemble
@@ -95,16 +94,10 @@ flowchart TB
         subgraph pAudit["profil audit"]
             auditsync["audit-sync<br/>rclone"]
         end
-
-        subgraph pProxy["profil proxy"]
-            traefik["traefik<br/>:80 / :443"]
-        end
     end
 
     azure[("Azure Blob<br/>(externe)")]
 
-    traefik -.->|TLS| front
-    traefik -.->|TLS| api
     front -->|"/api/v1 (JWT)"| api
     api --> postgres
     api -->|"GET /sites/{id}/current<br/>(relais direct, sans stockage)"| iot
@@ -222,12 +215,11 @@ choisir un vrai mot de passe.
 docker compose --profile etl up -d --build              # pipeline ETL
 docker compose --profile observability up -d --build    # Prometheus / Grafana / exporters
 docker compose --profile mlflow up -d --build           # MLflow + inférence
-docker compose --profile proxy up -d --build            # Traefik (TLS)
 docker compose --profile audit up -d --build            # réplication chiffrée vers Azure
 
 # Tout à la fois
 docker compose --profile etl --profile observability --profile mlflow \
-               --profile audit --profile proxy up -d --build
+               --profile audit up -d --build
 ```
 
 | Profil | Ce qu'il ajoute |
@@ -236,7 +228,6 @@ docker compose --profile etl --profile observability --profile mlflow \
 | `observability` | Grafana sur http://localhost:3001 (`admin`/`admin`), datasources et dashboards provisionnés : « Serveur » (hôte et conteneurs, via Prometheus) et « Modèles ML » (qualité des prévisions, via Postgres — demande `GRAFANA_DB_*`, cf. [`.env.example`](.env.example)) |
 | `mlflow` | MLflow sur http://localhost:5000 + prévisions horaires |
 | `audit` | Réplication chiffrée vers Azure — demande les secrets `AZURE_*` |
-| `proxy` | Traefik + Let's Encrypt — pour un déploiement exposé, pas en local |
 
 > VS Code : les tâches Docker les plus courantes sont disponibles via
 > *Terminal → Exécuter la tâche…* ([`.vscode/tasks.json`](.vscode/tasks.json)).

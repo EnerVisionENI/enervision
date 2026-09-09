@@ -12,9 +12,9 @@
 #   docker compose -f compose.yaml -f compose.ci.yml -p enervision-ci --profile etl \
 #     down -v --remove-orphans
 #
-# front / audit-sync / traefik ne sont pas nécessaires aux tests e2e (API + ETL
-# uniquement) : ne pas les lister dans la commande up évite de les construire pour
-# rien et raccourcit le job.
+# front / audit-sync ne sont pas nécessaires aux tests e2e (API + ETL uniquement) :
+# ne pas les lister dans la commande up évite de les construire pour rien et
+# raccourcit le job.
 
 services:
   postgres:

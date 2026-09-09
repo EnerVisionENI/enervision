@@ -21,10 +21,10 @@
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
     },
     {
-      "label": "Docker: démarrer absolument tout (+ audit, proxy)",
-      "detail": "Ajoute audit-sync et traefik. Demande les secrets AZURE_* dans .env et infra/traefik/acme.json, sinon ces deux services échouent.",
+      "label": "Docker: démarrer absolument tout (+ audit)",
+      "detail": "Ajoute audit-sync. Demande les secrets AZURE_* dans .env, sinon ce service échoue.",
       "type": "shell",
-      "command": "docker compose --profile etl --profile audit --profile proxy up -d --build",
+      "command": "docker compose --profile etl --profile audit up -d --build",
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
     },
@@ -39,7 +39,7 @@
     {
       "label": "Docker: état des services",
       "type": "shell",
-      "command": "docker compose --profile etl --profile audit --profile proxy ps",
+      "command": "docker compose --profile etl --profile audit ps",
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
     },
@@ -47,7 +47,7 @@
       "label": "Docker: logs (suivi)",
       "detail": "Suit les logs de tous les services démarrés. Ctrl+C pour quitter.",
       "type": "shell",
-      "command": "docker compose --profile etl --profile audit --profile proxy logs -f --tail=100",
+      "command": "docker compose --profile etl --profile audit logs -f --tail=100",
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "dedicated" }
     }

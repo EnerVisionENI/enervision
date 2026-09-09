@@ -12,7 +12,6 @@ configuration et leurs scripts.
 | [`postgres/`](postgres/README.md) | Schéma SQL, rejoué à la création du volume | `postgres` |
 | [`minio/`](minio/) | Script de création des buckets au démarrage | `minio-init` |
 | [`nginx.conf`](nginx.conf) | Config Nginx du front (sert le bundle, proxifie `/api`) | `front` |
-| [`traefik/`](traefik/) | Reverse proxy TLS, certificats Let's Encrypt | `traefik` (profil `proxy`) |
 | [`prometheus/`](prometheus/) | Cibles de scraping | `prometheus` (profil `observability`) |
 | [`grafana/`](grafana/) | Datasource et dashboard provisionnés | `grafana` (profil `observability`) |
 | [`audit-sync/`](audit-sync/) | Réplication chiffrée MinIO → Azure Blob (rclone) | `audit-sync` (profil `audit`) |
@@ -44,8 +43,7 @@ configuration et leurs scripts.
 Aucun secret n'est versionné. Deux fichiers sont explicitement ignorés par Git parce qu'ils
 en contiennent une fois remplis :
 
-- `infra/outline/dex-config.yaml` — hachages de mots de passe (le `.example` est versionné) ;
-- `infra/traefik/acme.json` — clés privées des certificats Let's Encrypt.
+- `infra/outline/dex-config.yaml` — hachages de mots de passe (le `.example` est versionné).
 
 Le reste passe par le `.env` de la racine, dont
 [`env/production.env`](env/production.env) est le gabarit serveur.

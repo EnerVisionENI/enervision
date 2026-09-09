@@ -84,7 +84,6 @@ derrière des profils Compose :
 | _(aucun)_ | `postgres`, `minio`, `minio-init`, `api`, `front` | toujours démarrés |
 | `etl`   | `etl-collect`, `etl-alerts` | collecte temps réel des mesures + des alertes |
 | `audit` | `audit-sync`  | synchro MinIO → Azure Blob |
-| `proxy` | `traefik`     | reverse proxy TLS |
 | `observability` | `prometheus`, `grafana`, `node-exporter`, `cadvisor` | métriques serveur (hôte + conteneurs) |
 | `mlflow` | `mlflow`     | tracking/registry des modèles ML (voir `infra/mlflow/DEPLOYMENT.md`) |
 
@@ -353,8 +352,8 @@ par défaut. Pour l'ajouter :
 3. Ajouter `--profile observability` à la commande `docker compose … up` du step
    *Deploy with docker compose*.
 4. Ne pas exposer les ports 9090 / 3001 / 8081 / 9100 sur Internet — soit les
-   laisser sur le réseau interne uniquement, soit les passer derrière Traefik
-   avec authentification.
+   laisser sur le réseau interne uniquement, soit les passer derrière un reverse
+   proxy avec authentification.
 
 ## Commandes de déploiement
 
@@ -386,8 +385,8 @@ cp .env.example .env && nano .env
 # Cœur de la stack
 docker compose up -d --build
 
-# Stack complète (ETL + synchro audit + proxy)
-docker compose --profile etl --profile audit --profile proxy up -d --build
+# Stack complète (ETL + synchro audit)
+docker compose --profile etl --profile audit up -d --build
 
 # Visualiser les logs
 docker compose logs -f front
@@ -398,7 +397,6 @@ docker compose logs -f api
 ```
 Frontend:  http://localhost:3000
 API:       http://localhost:8000
-Traefik:   http://localhost:8080
 ```
 
 ## Commandes utiles
@@ -407,7 +405,7 @@ Toutes depuis la racine du dépôt.
 
 ### Arrêter les services
 ```bash
-docker compose --profile etl --profile audit --profile proxy down
+docker compose --profile etl --profile audit down
 ```
 
 ### Redémarrer un service
@@ -418,7 +416,7 @@ docker compose restart api
 
 ### Supprimer tout (volumes inclus — DESTRUCTIF)
 ```bash
-docker compose --profile etl --profile audit --profile proxy down -v
+docker compose --profile etl --profile audit down -v
 ```
 
 ### Vérifier les services
@@ -455,8 +453,7 @@ infra/
 ├── audit-sync/           # Script de synchro Azure (bronze/silver/gold/audit)
 ├── backup/               # Sauvegarde chiffrée users/sites vers Azure, via cron (EV-040)
 ├── prometheus/           # Config de scrape Prometheus (profil "observability")
-├── grafana/              # Datasource + dashboards provisionnés (profil "observability")
-└── traefik/              # Reverse proxy (profil "proxy")
+└── grafana/              # Datasource + dashboards provisionnés (profil "observability")
 
 api/Dockerfile            # Image API (contexte de build = racine)
 front/Dockerfile          # Build Vue + Nginx (contexte de build = racine)
@@ -465,7 +462,7 @@ etl/Dockerfile            # Image ETL (contexte de build = etl/)
 
 ## Notes de production
 
-1. **HTTPS** : Configurer certains et Traefik pour SSL
+1. **HTTPS** : Configurer un reverse proxy TLS (certificats Let's Encrypt) en amont
 2. **Variables d'env** : Utiliser des fichiers `.env`
 3. **Logs** : Configurer ELK ou autre solution de logging
 4. **Backup** : `users`/`sites` couverts par `infra/backup/backup.py` (EV-040, cron quotidien) ; le reste

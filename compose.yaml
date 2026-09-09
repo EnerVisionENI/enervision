@@ -416,25 +416,6 @@ services:
           memory: 1G
 
   # --------------------------------------------------------------------------
-  # Reverse proxy Traefik — profile "proxy"
-  # --------------------------------------------------------------------------
-  traefik:
-    image: traefik:v2.10
-    container_name: enervision-traefik
-    profiles: ["proxy"]
-    ports:
-      - "80:80"
-      - "443:443"
-      - "8080:8080"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./infra/traefik/traefik.yml:/traefik.yml:ro
-      - ./infra/traefik/acme.json:/acme.json
-    networks:
-      - enervision-network
-    restart: unless-stopped
-
-  # --------------------------------------------------------------------------
   # Observabilité — profile "observability"
   # --------------------------------------------------------------------------
   # Métriques serveur : node-exporter (hôte : CPU / RAM / disque / réseau de la
@@ -503,7 +484,6 @@ services:
       - "--housekeeping_interval=10s"
       - "--store_container_labels=false"
     ports:
-      # 8080 côté hôte est pris par le dashboard Traefik (profile proxy).
       - "8081:8080"
     volumes:
       - /:/rootfs:ro

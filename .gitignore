@@ -8,8 +8,6 @@
 *.key
 # Outline : config Dex, contient des hash de mots de passe (le .example est versionné)
 infra/outline/dex-config.yaml
-# Certificats Let's Encrypt générés par Traefik (clés privées une fois peuplé)
-infra/traefik/acme.json
 
 # ==============================================================================
 # Python (api, etl, ml, infra/backup, e2e)
