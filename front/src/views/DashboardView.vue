@@ -124,7 +124,17 @@
             <p v-else class="pas-de-donnee">Pas de mesure récente</p>
 
             <div class="graphique-grand">
-              <p class="graphique-grand-titre">{{ titreMetriqueFocus }}</p>
+              <div class="graphique-grand-entete">
+                <p class="graphique-grand-titre">{{ titreMetriqueFocus }}</p>
+                <button
+                  v-if="grandGraphiqueEstZoome"
+                  type="button"
+                  class="bouton-reinitialiser-zoom"
+                  @click="reinitialiserZoomGraphiqueGrand"
+                >
+                  réinitialiser le zoom
+                </button>
+              </div>
               <div class="chart-wrapper-grand">
                 <canvas ref="canvasGrandRef"></canvas>
               </div>
@@ -347,10 +357,15 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Chart, Interaction } from "chart.js/auto";
+import zoomPlugin from "chartjs-plugin-zoom";
 import { getRelativePosition } from "chart.js/helpers";
 // Enregistre l'adaptateur de dates auprès de Chart.js (effet de bord, pas d'export) : sans lui
 // l'échelle de type "time" du grand graphique lève au premier rendu.
 import "chartjs-adapter-date-fns";
+// Le bundle "auto" enregistre déjà tous les contrôleurs/éléments/échelles, mais pas ce plugin :
+// c'est le seul qui reste à déclarer explicitement pour que `plugins.zoom` du grand graphique
+// soit reconnu.
+Chart.register(zoomPlugin);
 import api from "../api/client";
 import { theme } from "../theme";
 
@@ -768,6 +783,14 @@ function formatInstant(timestamp) {
 
 const canvasGrandRef = ref(null);
 let chartGrand = null;
+// Reflète l'état du plugin zoom (lui-même hors de la réactivité Vue) : sert uniquement à
+// afficher ou non le bouton de réinitialisation, pas de logique de zoom ici.
+const grandGraphiqueEstZoome = ref(false);
+
+function reinitialiserZoomGraphiqueGrand() {
+  chartGrand?.resetZoom();
+  grandGraphiqueEstZoome.value = false;
+}
 // Instant porté par le titre de l'infobulle, retenu par le callback `title` pour les callbacks
 // `label` qui le suivent — Chart.js construit toujours le titre avant le corps. Sans lui, une
 // ligne ne saurait pas si elle tombe sur l'instant lu ou sur un autre.
@@ -1034,6 +1057,7 @@ function creerGraphiqueGrand() {
   const m = metriqueFocusInfo.value;
 
   chartGrand?.destroy();
+  grandGraphiqueEstZoome.value = false;
   chartGrand = new Chart(canvasGrandRef.value, {
     type: "line",
     data: { labels: [], datasets: construireDatasets(m, { avecPrediction: true }) },
@@ -1120,6 +1144,23 @@ function creerGraphiqueGrand() {
                 ? `${ctx.dataset.label} (${formatHeure(ctx.parsed.x)})`
                 : ctx.dataset.label;
               return `${serie}: ${valeur}`;
+            },
+          },
+        },
+        // Sélectionner une zone à la souris (ex. 1 h → 19 h) zoome dessus ; le bouton "réinitialiser
+        // le zoom" du template appelle chart.resetZoom(). Ni molette ni pincement : ce sont des
+        // gestes qu'on ne veut pas voler à la page (défilement) sans que l'utilisateur l'ait demandé.
+        zoom: {
+          zoom: {
+            drag: {
+              enabled: true,
+              backgroundColor: "rgba(45, 212, 191, 0.15)",
+              borderColor: "rgba(45, 212, 191, 0.6)",
+              borderWidth: 1,
+            },
+            mode: "x",
+            onZoomComplete: () => {
+              grandGraphiqueEstZoome.value = true;
             },
           },
         },
@@ -1461,6 +1502,9 @@ function demarrerSondage() {
 function selectionnerSite(siteId) {
   if (siteId === siteSelectionne.value) return;
   siteSelectionne.value = siteId;
+  // Un zoom manuel n'a de sens que pour les données qui l'ont provoqué : passer à un autre
+  // site sans le lever appliquerait la même fenêtre d'axe à une tout autre courbe.
+  reinitialiserZoomGraphiqueGrand();
   afficherSiteSelectionne();
   // Résumé du jour propre au site : reset immédiat (pas les chiffres de
   // l'ancien site le temps que la requête réponde), puis rechargement du bon.
@@ -1478,6 +1522,9 @@ function selectionnerSite(siteId) {
 
 async function changerFenetre(ms) {
   fenetreMs.value = Number(ms);
+  // Même raison que dans selectionnerSite : la période affichée change, un zoom pris sur
+  // l'ancienne fenêtre n'aurait plus de sens sur la nouvelle.
+  reinitialiserZoomGraphiqueGrand();
   // chargerHistorique() reconstruit chaque buffer à neuf : pas besoin de les
   // vider explicitement avant de relancer le chargement avec la nouvelle fenêtre.
   await actualiserToutesLesMesures();
@@ -1904,12 +1951,42 @@ onBeforeUnmount(() => {
   margin-bottom: 12px;
 }
 
+.graphique-grand-entete {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px 0;
+}
+
 .graphique-grand-titre {
   font-size: 0.72em;
   color: var(--text-muted);
-  margin: 0 0 8px 0;
+  margin: 0;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+.bouton-reinitialiser-zoom {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.72em;
+  cursor: pointer;
+}
+
+.bouton-reinitialiser-zoom:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+.bouton-reinitialiser-zoom:focus-visible {
+  outline: 1px solid var(--text);
+  outline-offset: 1px;
 }
 
 .chart-wrapper-grand {

@@ -31,10 +31,16 @@ vi.mock("chart.js/auto", () => {
     destroy() {
       this.destroyed = true;
     }
+    // Fourni par chartjs-plugin-zoom sur une vraie instance ; les tests n'ont jamais
+    // vraiment zoomé (pas de souris ni de canvas), donc rien à réinitialiser.
+    resetZoom() {}
   }
   // `Interaction.modes` est le registre des modes de survol de Chart.js : la vue y inscrit le
   // sien au chargement du module, les tests le relisent par l'import ci-dessus pour l'appeler
   // directement, sans canvas ni souris.
+  // `register` n'a rien à faire ici : la vue y déclare chartjs-plugin-zoom au chargement du
+  // module, mais aucun test ne passe par le vrai moteur de rendu qui en aurait besoin.
+  FakeChart.register = vi.fn();
   return { Chart: FakeChart, Interaction: { modes: {} } };
 });
 
