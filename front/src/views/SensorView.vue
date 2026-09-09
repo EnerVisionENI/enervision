@@ -8,6 +8,21 @@
       <p class="status-label">
         {{ sitesEnAlerte === 0 ? 'sites opérationnels' : 'sites en alerte capteur' }}
       </p>
+
+      <button
+        type="button"
+        class="bouton-refresh"
+        :disabled="actualisation"
+        :class="{ 'bouton-refresh--actif': actualisation }"
+        @click="rafraichirManuellement"
+      >
+        <span class="refresh-icone" aria-hidden="true">↻</span>
+        {{ actualisation ? 'Actualisation…' : 'Actualiser' }}
+      </button>
+
+      <span v-if="derniereActualisation" class="derniere-actualisation">
+        maj {{ formatHeure(derniereActualisation) }}
+      </span>
     </div>
 
     <p v-if="chargement" class="etat-message">Lecture des capteurs en cours</p>
@@ -55,6 +70,8 @@ export default {
       chargement: true,
       erreur: null,
       intervalleId: null,
+      actualisation: false,
+      derniereActualisation: null,
     };
   },
   computed: {
@@ -73,22 +90,40 @@ export default {
     clearInterval(this.intervalleId);
   },
   methods: {
-    async chargerCapteurs({ silencieux = false } = {}) {
+    // `manuel` distingue le clic sur le bouton du polling silencieux de fond :
+    // même requête, mais un clic doit remonter une erreur et piloter le spinner
+    // du bouton — un poll raté toutes les 60s ne doit pas, lui, faire clignoter
+    // un bandeau d'erreur pour un aléa réseau transitoire.
+    async chargerCapteurs({ silencieux = false, manuel = false } = {}) {
       if (!silencieux) {
         this.chargement = true;
+        this.erreur = null;
+      }
+      if (manuel) {
+        this.actualisation = true;
         this.erreur = null;
       }
       try {
         const reponse = await api.get("/sensors/failing");
         this.sites = reponse.data;
+        this.derniereActualisation = new Date();
         if (silencieux) this.erreur = null;
       } catch {
-        if (!silencieux) {
+        if (!silencieux || manuel) {
           this.erreur = "Lecture des capteurs impossible pour le moment.";
         }
       } finally {
         if (!silencieux) this.chargement = false;
+        if (manuel) this.actualisation = false;
       }
+    },
+    rafraichirManuellement() {
+      // silencieux: true pour garder les panneaux affichés pendant la requête
+      // (pas de retour à l'écran "Lecture des capteurs en cours").
+      this.chargerCapteurs({ silencieux: true, manuel: true });
+    },
+    formatHeure(date) {
+      return date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     },
     formatDate(valeur) {
       if (!valeur) return "";
@@ -127,11 +162,16 @@ export default {
 
 .status-bar {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 14px;
   margin-bottom: 32px;
   padding-bottom: 20px;
   border-bottom: 1px solid var(--panel-border);
+}
+
+.status-count,
+.status-label {
+  align-self: baseline;
 }
 
 .status-count {
@@ -161,6 +201,59 @@ export default {
   margin: 0;
   color: var(--text-muted);
   font-size: 0.95em;
+}
+
+.bouton-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 7px 14px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 2px;
+  font-family: var(--mono);
+  font-size: 0.82em;
+  cursor: pointer;
+}
+
+.bouton-refresh:hover:not(:disabled) {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.bouton-refresh:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.refresh-icone {
+  display: inline-block;
+  font-size: 1.05em;
+}
+
+.bouton-refresh--actif .refresh-icone {
+  animation: spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bouton-refresh--actif .refresh-icone {
+    animation: none;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.derniere-actualisation {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.76em;
+  white-space: nowrap;
 }
 
 .etat-message {
