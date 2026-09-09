@@ -1,5 +1,5 @@
 """
-Entrainement et reentrainement quotidien du modele enervision-sensor-failure-forecast.
+Entrainement et reentrainement hebdomadaire du modele enervision-sensor-failure-forecast.
 
 Combine deux signaux trouves separement (voir historique du repo, experiments
 sensor-failure-prediction et sensor-failure-trend, tous les deux insuffisants seuls) : la
@@ -18,15 +18,18 @@ Donnee vivante, pas un snapshot fige : lit measurements_silver sur une fenetre g
 - sinon chaque reentrainement recalculerait un day_index different pour la meme date, et
 predict_sensor_failure.py divergerait silencieusement.
 
---schedule reentraine chaque jour et ne promeut la nouvelle version en Staging QUE si son
+--schedule reentraine chaque semaine et ne promeut la nouvelle version en Staging QUE si son
 AUC de test egale ou depasse celle de la version actuellement en Staging - sinon elle reste
 enregistree (tracable) mais non promue, et l'ancienne version continue de servir les
 predictions. Reponse au risque de day_index qui derive sans reentrainement (voir tag
-"caveat" du run) : ~15 j suffisent pour saturer la courbe vers 100% sans ce mecanisme.
+"caveat" du run) : ~15 j suffisent pour saturer la courbe vers 100% sans ce mecanisme -
+un cycle hebdomadaire garde une marge x2, pour un cout en calcul negligeable (regression
+logistique a ~25 parametres, quelques secondes) mais sans encombrer le registre MLflow
+d'une version par nuit la plupart du temps sans rien a promouvoir.
 
 Usage :
     cd ml && python scripts/train_sensor_failure_forecast.py              # un cycle
-    cd ml && python scripts/train_sensor_failure_forecast.py --schedule   # mode service, cron quotidien
+    cd ml && python scripts/train_sensor_failure_forecast.py --schedule   # mode service, cron hebdomadaire
 """
 
 import argparse
@@ -61,7 +64,7 @@ MODEL_STAGE = os.environ.get("SENSOR_FAILURE_MODEL_STAGE", "Staging")
 
 TEST_DAYS = 2
 LOOKBACK_DAYS = int(os.environ.get("SENSOR_FAILURE_TRAIN_LOOKBACK_DAYS", "30"))
-TRAIN_CRON = os.environ.get("SENSOR_FAILURE_TRAIN_CRON", "30 2 * * *")
+TRAIN_CRON = os.environ.get("SENSOR_FAILURE_TRAIN_CRON", "30 2 * * 0")
 
 
 def load_data(conn) -> pd.DataFrame:
@@ -111,7 +114,7 @@ def cycle(args) -> int:
         model = smf.logit(formula, data=train).fit(disp=0)
         auc = roc_auc_score(test["is_failure"], model.predict(test))
 
-        with mlflow.start_run(run_name="reentrainement_quotidien" if args.schedule else "v1_forecast") as run:
+        with mlflow.start_run(run_name="reentrainement_hebdomadaire" if args.schedule else "v1_forecast") as run:
             mlflow.log_param("formula", formula)
             mlflow.log_param("n_train", len(train))
             mlflow.log_param("n_test", len(test))
@@ -161,7 +164,7 @@ def cycle(args) -> int:
 
 def run_scheduled(args) -> int:
     """Mode service : un premier cycle une minute apres le demarrage, puis a chaque
-    declenchement de SENSOR_FAILURE_TRAIN_CRON (quotidien par defaut)."""
+    declenchement de SENSOR_FAILURE_TRAIN_CRON (hebdomadaire par defaut)."""
     print(f"Planificateur : cron '{TRAIN_CRON}' (UTC), fenetre {LOOKBACK_DAYS} j, stage cible {MODEL_STAGE}")
     scheduler = BlockingScheduler(timezone="UTC")
     scheduler.add_job(
@@ -184,7 +187,7 @@ def main() -> int:
     mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
     parser = argparse.ArgumentParser(description="Entrainement du risque de panne capteur.")
-    parser.add_argument("--schedule", action="store_true", help="mode service : reentraine chaque jour selon SENSOR_FAILURE_TRAIN_CRON")
+    parser.add_argument("--schedule", action="store_true", help="mode service : reentraine chaque semaine selon SENSOR_FAILURE_TRAIN_CRON")
     args = parser.parse_args()
 
     if args.schedule:

@@ -467,13 +467,15 @@ services:
           memory: 1G
 
   # --------------------------------------------------------------------------
-  # Risque de panne capteur — réentraînement quotidien, profile "mlflow"
+  # Risque de panne capteur — réentraînement hebdomadaire, profile "mlflow"
   #
   # Lit measurements_silver en direct (fenêtre glissante, voir core/postgres_store.py), pas un
   # snapshot figé. Ne promeut la nouvelle version en Staging que si son AUC de test égale ou
   # dépasse celle de la version en service — sinon elle reste enregistrée mais non promue, et
   # ml-predict-sensor-failure continue de servir l'ancienne (voir train_sensor_failure_
-  # forecast.py). Sans ce cycle, day_index dérive et sature la courbe vers 100% en ~15 j.
+  # forecast.py). Sans ce cycle, day_index dérive et sature la courbe vers 100% en ~15 j —
+  # un cycle hebdomadaire garde une marge x2 pour un coût de calcul négligeable (régression
+  # logistique à ~25 paramètres), sans empiler une version MLflow par nuit pour rien.
   # --------------------------------------------------------------------------
   ml-train-sensor-failure:
     build:
@@ -489,7 +491,9 @@ services:
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       MLFLOW_HTTP_REQUEST_MAX_RETRIES: "2"
       MLFLOW_HTTP_REQUEST_TIMEOUT: "20"
-      SENSOR_FAILURE_TRAIN_CRON: ${SENSOR_FAILURE_TRAIN_CRON:-30 2 * * *}
+      # Dimanche 2h30 UTC : dephase du backup et du recalcul gold, meme logique que le
+      # commentaire sur le reentrainement de conso plus haut (ml/README.md).
+      SENSOR_FAILURE_TRAIN_CRON: ${SENSOR_FAILURE_TRAIN_CRON:-30 2 * * 0}
       SENSOR_FAILURE_TRAIN_LOOKBACK_DAYS: ${SENSOR_FAILURE_TRAIN_LOOKBACK_DAYS:-30}
       SENSOR_FAILURE_MODEL_STAGE: ${SENSOR_FAILURE_MODEL_STAGE:-Staging}
       PYTHONUNBUFFERED: "1"
