@@ -12,3 +12,8 @@ pyarrow>=16.0
 psycopg2-binary>=2.9  # predict.py : ecriture des previsions dans Postgres (predictions_forecast)
 tzdata>=2024.1  # zoneinfo n'a pas de base de fuseaux garantie sur python:slim (PREDICT_TZ)
 apscheduler>=3.11  # predict.py --schedule : meme planificateur que etl/collect.py
+pytz>=2024.1  # statsmodels pickle des objets pandas tz-aware qui referencent pytz.UTC a la
+              # deserialisation (mlflow.statsmodels.load_model) ; avec mlflow full ce paquet
+              # arrivait implicitement, mlflow-skinny ne le tire plus (meme cas que
+              # scikit-learn ci-dessus) - sans lui, predict_sensor_failure.py leve
+              # ModuleNotFoundError des le chargement du modele

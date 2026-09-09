@@ -115,3 +115,23 @@ class PredictionForecast(Base):
     temperature_celsius: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     temperature_source: Mapped[str | None] = mapped_column(String(30), nullable=True)
     predicted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SensorFailureForecast(Base):
+    __tablename__ = "sensor_failure_forecast"
+
+    # Lecture seule, alimenté par ml/scripts/predict_sensor_failure.py (modèle
+    # enervision-sensor-failure-forecast, registry MLflow). Voir
+    # infra/postgres/init/08_sensor_failure_forecast.sql.
+    #
+    # Pas de site_id : modèle global, motif horaire et tendance confirmés identiques
+    # sur les 7 sites (à moins de 2 % d'écart), voir le tag "caveat" du run MLflow.
+    target_hour: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    risk: Mapped[float] = mapped_column(Numeric, nullable=False)
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(10), nullable=False)
+    model_stage: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    auc_test: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    n_train_days: Mapped[int | None] = mapped_column(nullable=True)
+    predicted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

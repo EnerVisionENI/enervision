@@ -134,6 +134,35 @@ def load_gold_actuals(conn: Any, site_id: str, start: pd.Timestamp, end: pd.Time
     return df
 
 
+# Ancre fixe du modèle enervision-sensor-failure-forecast : le premier jour observé lors de
+# l'extraction MinIO prod du 2026-09-09, qui a servi au tout premier entraînement. day_index
+# se compte depuis cette date pour toujours, même une fois l'entraînement passé sur une fenêtre
+# glissante de measurements_silver — sinon chaque réentraînement recalculerait un day_index
+# différent pour la même date calendaire, et predict.py (qui doit utiliser la même ancre)
+# divergerait silencieusement du modèle qu'il sert.
+SENSOR_FAILURE_DAY0 = pd.Timestamp("2026-09-01")
+
+
+def load_failure_training_data(conn: Any, lookback_days: int) -> pd.DataFrame:
+    """Lectures brutes (pas d'agrégat horaire) des `lookback_days` derniers jours de
+    measurements_silver, pour (ré)entraîner enervision-sensor-failure-forecast sur de la
+    donnée vivante — remplace le snapshot MinIO figé du 2026-09-09 utilisé par le tout premier
+    entraînement (voir ml/scripts/train_sensor_failure_forecast.py)."""
+    query = """
+        SELECT timestamp, data_quality
+        FROM measurements_silver
+        WHERE timestamp >= now() - make_interval(days => %(lookback_days)s)
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, {"lookback_days": lookback_days})
+        rows = cur.fetchall()
+    df = pd.DataFrame(rows, columns=["timestamp", "data_quality"])
+    if df.empty:
+        return df
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    return df
+
+
 def write_predictions(
     conn: Any,
     df: pd.DataFrame,

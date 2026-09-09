@@ -1,10 +1,15 @@
 import os
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import asc
+from sqlalchemy.orm import Session
 
 from api.auth import get_active_user
-from api.models import User
+from api.database import get_db
+from api.models import SensorFailureForecast, User
+from api.schemas import SensorFailureForecastOut
 
 router = APIRouter(prefix="/sensors", tags=["Sensors"])
 
@@ -48,3 +53,27 @@ async def get_all_sites_failing_sensors(current_user: User = Depends(get_active_
         }
 
     return resultat
+
+
+@router.get("/failure-forecast", response_model=list[SensorFailureForecastOut])
+def get_sensor_failure_forecast(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_active_user),
+) -> list[SensorFailureForecast]:
+    """Risque de panne capteur heure par heure (table sensor_failure_forecast, réécrite à
+    chaque cycle de ml/scripts/predict_sensor_failure.py) : modèle global, pas un par site,
+    voir infra/postgres/init/08_sensor_failure_forecast.sql pour la justification.
+
+    Renvoie uniquement les prochaines 24h, ancrées sur l'heure courante et non sur les
+    extrêmes de la table, pour garder le même sens d'un appel au suivant."""
+    maintenant = datetime.now(UTC)
+    jusqua = maintenant + timedelta(hours=24)
+    return (
+        db.query(SensorFailureForecast)
+        .filter(
+            SensorFailureForecast.target_hour >= maintenant,
+            SensorFailureForecast.target_hour < jusqua,
+        )
+        .order_by(asc(SensorFailureForecast.target_hour))
+        .all()
+    )

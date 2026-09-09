@@ -416,6 +416,112 @@ services:
           memory: 1G
 
   # --------------------------------------------------------------------------
+  # Risque de panne capteur — inférence, profile "mlflow"
+  #
+  # Même mécanique que ml-predict (consommation), pour le modèle enervision-sensor-failure-
+  # forecast. Écrit dans sensor_failure_forecast (voir infra/postgres/init/08_sensor_failure_
+  # forecast.sql, à appliquer à la main sur un volume déjà initialisé, même remarque que
+  # 06_predictions.sql ci-dessus).
+  # --------------------------------------------------------------------------
+  ml-predict-sensor-failure:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    image: ${ML_IMAGE:-enervision-ml:local}
+    container_name: enervision-ml-predict-sensor-failure
+    profiles: ["mlflow"]
+    command: ["python", "scripts/predict_sensor_failure.py", "--schedule"]
+    env_file:
+      - .env
+    environment:
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+      MLFLOW_HTTP_REQUEST_MAX_RETRIES: "2"
+      MLFLOW_HTTP_REQUEST_TIMEOUT: "20"
+      # Pas d'attente sur un cron ETL/gold : hour/day_index ne dépendent d'aucune nouvelle
+      # lecture, seule la fenêtre glissante (ancrée sur "maintenant") justifie de rejouer.
+      SENSOR_FAILURE_PREDICT_CRON: ${SENSOR_FAILURE_PREDICT_CRON:-5 * * * *}
+      SENSOR_FAILURE_MODEL_STAGE: ${SENSOR_FAILURE_MODEL_STAGE:-Staging}
+      PYTHONUNBUFFERED: "1"
+      MINIO_ENDPOINT: ${ML_MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: ${ML_MINIO_ACCESS_KEY:-ev_admin}
+      MINIO_SECRET_KEY: ${ML_MINIO_SECRET_KEY:-change_me_avant_le_deploiement}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - enervision-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  # --------------------------------------------------------------------------
+  # Risque de panne capteur — réentraînement hebdomadaire, profile "mlflow"
+  #
+  # Lit measurements_silver en direct (fenêtre glissante, voir core/postgres_store.py), pas un
+  # snapshot figé. Ne promeut la nouvelle version en Staging que si son AUC de test égale ou
+  # dépasse celle de la version en service — sinon elle reste enregistrée mais non promue, et
+  # ml-predict-sensor-failure continue de servir l'ancienne (voir train_sensor_failure_
+  # forecast.py). Sans ce cycle, day_index dérive et sature la courbe vers 100% en ~15 j —
+  # un cycle hebdomadaire garde une marge x2 pour un coût de calcul négligeable (régression
+  # logistique à ~25 paramètres), sans empiler une version MLflow par nuit pour rien.
+  # --------------------------------------------------------------------------
+  ml-train-sensor-failure:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    image: ${ML_IMAGE:-enervision-ml:local}
+    container_name: enervision-ml-train-sensor-failure
+    profiles: ["mlflow"]
+    command: ["python", "scripts/train_sensor_failure_forecast.py", "--schedule"]
+    env_file:
+      - .env
+    environment:
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+      MLFLOW_HTTP_REQUEST_MAX_RETRIES: "2"
+      MLFLOW_HTTP_REQUEST_TIMEOUT: "20"
+      # Dimanche 2h30 UTC : dephase du backup et du recalcul gold, meme logique que le
+      # commentaire sur le reentrainement de conso plus haut (ml/README.md).
+      SENSOR_FAILURE_TRAIN_CRON: ${SENSOR_FAILURE_TRAIN_CRON:-30 2 * * 0}
+      SENSOR_FAILURE_TRAIN_LOOKBACK_DAYS: ${SENSOR_FAILURE_TRAIN_LOOKBACK_DAYS:-30}
+      SENSOR_FAILURE_MODEL_STAGE: ${SENSOR_FAILURE_MODEL_STAGE:-Staging}
+      PYTHONUNBUFFERED: "1"
+      MINIO_ENDPOINT: ${ML_MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: ${ML_MINIO_ACCESS_KEY:-ev_admin}
+      MINIO_SECRET_KEY: ${ML_MINIO_SECRET_KEY:-change_me_avant_le_deploiement}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - enervision-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  # --------------------------------------------------------------------------
   # Observabilité — profile "observability"
   # --------------------------------------------------------------------------
   # Métriques serveur : node-exporter (hôte : CPU / RAM / disque / réseau de la
