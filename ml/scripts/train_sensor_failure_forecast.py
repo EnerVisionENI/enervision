@@ -69,7 +69,9 @@ TRAIN_CRON = os.environ.get("SENSOR_FAILURE_TRAIN_CRON", "30 2 * * 0")
 def load_data(conn) -> pd.DataFrame:
     df = load_failure_training_data(conn, LOOKBACK_DAYS)
     if df.empty:
-        raise SystemExit(f"measurements_silver ne renvoie rien sur les {LOOKBACK_DAYS} derniers jours, rien a entrainer")
+        raise SystemExit(
+            f"measurements_silver ne renvoie rien sur les {LOOKBACK_DAYS} derniers jours, rien a entrainer"
+        )
     df["hour"] = df["timestamp"].dt.hour
     df["is_failure"] = (df["data_quality"] != "good").astype(int)
     df["day_index"] = (df["timestamp"].dt.normalize().dt.tz_localize(None) - SENSOR_FAILURE_DAY0).dt.days
@@ -153,7 +155,9 @@ def cycle(args) -> int:
                 reference = f"{auc_en_service:.3f}" if auc_en_service is not None else "aucune version precedente"
                 print(f">>> v{mv.version} promu {MODEL_STAGE} (AUC {auc:.3f} >= {reference})")
             else:
-                print(f">>> v{mv.version} enregistre mais NON promu : AUC {auc:.3f} < {MODEL_STAGE} actuel ({auc_en_service:.3f})")
+                print(
+                    f">>> v{mv.version} enregistre mais NON promu : AUC {auc:.3f} < {MODEL_STAGE} actuel ({auc_en_service:.3f})"
+                )
 
         return 0
     except Exception as erreur:
@@ -186,7 +190,11 @@ def main() -> int:
     mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
     parser = argparse.ArgumentParser(description="Entrainement du risque de panne capteur.")
-    parser.add_argument("--schedule", action="store_true", help="mode service : reentraine chaque semaine selon SENSOR_FAILURE_TRAIN_CRON")
+    parser.add_argument(
+        "--schedule",
+        action="store_true",
+        help="mode service : reentraine chaque semaine selon SENSOR_FAILURE_TRAIN_CRON",
+    )
     args = parser.parse_args()
 
     if args.schedule:

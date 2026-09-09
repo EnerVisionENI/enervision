@@ -209,7 +209,9 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="Inference du risque de panne capteur.")
     parser.add_argument("--dry-run", action="store_true", help="calcule et affiche, n'ecrit rien")
-    parser.add_argument("--schedule", action="store_true", help="mode service : rejoue selon SENSOR_FAILURE_PREDICT_CRON")
+    parser.add_argument(
+        "--schedule", action="store_true", help="mode service : rejoue selon SENSOR_FAILURE_PREDICT_CRON"
+    )
     args = parser.parse_args()
 
     if args.schedule:
