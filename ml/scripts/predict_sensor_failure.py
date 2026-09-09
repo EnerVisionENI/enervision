@@ -15,11 +15,9 @@ SENSOR_FAILURE_PREDICT_CRON (defaut : chaque heure) : c'est ce qui fait avancer 
 24h avec le temps, pas un rafraichissement des donnees d'entree (hour/day_index ne dependent
 d'aucune nouvelle lecture gold).
 
-FIXME : day0 est lu depuis le snapshot local (ml/data/silver_snapshot_local.parquet), une
-extraction ponctuelle de MinIO prod faite le 2026-09-09 pour l'experimentation locale. En
-production, day0 devra venir d'une vraie source vivante (silver Postgres, voir
-ml/core/postgres_store.py) plutot que d'un fichier fige, sinon day_index cesse d'avancer
-des que le snapshot local n'est plus mis a jour.
+day0 (SENSOR_FAILURE_DAY0, core/postgres_store.py) est une ancre fixe, pas relue depuis une
+source a chaque cycle : train_sensor_failure_forecast.py doit compter day_index depuis la
+meme date, sinon un reentrainement sur une fenetre glissante ferait diverger predict et train.
 
 Usage :
     cd ml && python scripts/predict_sensor_failure.py              # un cycle, ecrit en base
@@ -55,7 +53,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from psycopg2.extras import execute_values
 
-DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "silver_snapshot_local.parquet")
+from core.postgres_store import SENSOR_FAILURE_DAY0
 
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
 REGISTERED_NAME = "enervision-sensor-failure-forecast"
@@ -72,12 +70,6 @@ HEARTBEAT_PATH = os.environ.get(
 )
 
 
-def get_day0():
-    df = pd.read_parquet(DATA_PATH, columns=["timestamp"])
-    day0 = pd.to_datetime(df["timestamp"]).dt.normalize().min()
-    return day0.tz_localize(None) if day0.tzinfo is not None else day0
-
-
 def pg_connect():
     return psycopg2.connect(
         host=os.environ.get("POSTGRES_HOST", "localhost"),
@@ -88,13 +80,13 @@ def pg_connect():
     )
 
 
-def calculer_previsions(model, day0) -> pd.DataFrame:
+def calculer_previsions(model) -> pd.DataFrame:
     now = pd.Timestamp.now(tz="UTC").floor("h")
     hours = pd.date_range(now, periods=HORIZON_HOURS, freq="1h", tz="UTC")
 
     # Fige, pas recalcule par heure (voir le module docstring) : la fenetre de 24h peut
     # traverser minuit sans que la prevision ne saute au niveau de tendance du lendemain.
-    day_index_aujourdhui = (now.normalize().tz_localize(None) - day0).days
+    day_index_aujourdhui = (now.normalize().tz_localize(None) - SENSOR_FAILURE_DAY0).days
 
     future = pd.DataFrame({"target_hour": hours})
     future["hour"] = future["target_hour"].dt.hour
@@ -166,8 +158,7 @@ def cycle(args) -> int:
     indisponible doit se rattraper au declenchement suivant, pas arreter le service."""
     try:
         model, version, auc_test = charger_modele()
-        day0 = get_day0()
-        future = calculer_previsions(model, day0)
+        future = calculer_previsions(model)
 
         if args.dry_run:
             print(future[["target_hour", "hour", "day_index", "risk"]])
