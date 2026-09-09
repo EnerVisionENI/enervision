@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import quality
 import requests
@@ -32,6 +33,13 @@ import storage
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from botocore.exceptions import BotoCoreError, ClientError
+
+# L'API Mock IoT renvoie un timestamp sans fuseau qui est en réalité de l'heure locale
+# Europe/Paris (constaté : +2h par rapport à l'UTC réel en CEST) et non de l'UTC comme le
+# reste du pipeline le suppose partout ailleurs. Sans cette conversion, l'heure est stockée
+# ~1-2h dans le futur selon la saison, ce qui bloque à 0 tout calcul de fraîcheur en aval
+# (ex. l'horizon affiché au dashboard, cf. Math.max(0, ...) dans DashboardView.vue).
+MOCK_IOT_TZ = ZoneInfo("Europe/Paris")
 
 API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
 INTERVALLE_SECONDES = int(os.environ.get("INTERVALLE_SECONDES", "60"))
@@ -76,6 +84,9 @@ def envoyer_mesure(site_id, mesure):
     les deux. Le préfixe évite une collision de clé le jour où silver/gold seront aussi
     hashés (même site_id/date, bucket source différent)."""
     horodatage = datetime.fromisoformat(mesure["timestamp"])
+    if horodatage.tzinfo is None:
+        horodatage = horodatage.replace(tzinfo=MOCK_IOT_TZ).astimezone(UTC)
+        mesure["timestamp"] = horodatage.isoformat()
     cle = f"{site_id}/{horodatage:%Y-%m-%d}/{horodatage:%H%M%S}.json"
     contenu = json.dumps(mesure, ensure_ascii=False).encode("utf-8")
     empreinte = hashlib.sha256(contenu).hexdigest()
