@@ -309,6 +309,39 @@
           </div>
         </template>
         <p v-else class="pas-de-donnee-kpi">Résumé du jour pas encore calculé pour ce site.</p>
+
+        <div
+          v-if="risqueResume"
+          class="kpi-carte risque-mini"
+          title="Risque qu'une lecture signale une panne dans l'heure : capteur température, humidité ou tension en panne, perte réseau, ou autre cause remontée par l'API (null_reasons / data_quality). Tous sites confondus."
+        >
+          <div class="risque-mini-entete">
+            <div class="kpi-label">
+              Risque panne capteur
+              <span class="risque-mini-badge">nuls, 24h</span>
+            </div>
+            <router-link to="/capteurs" class="risque-mini-lien">détail →</router-link>
+          </div>
+          <div class="risque-mini-corps">
+            <div class="kpi-valeur">
+              {{ Math.round(risqueResume.actuel.risk * 100) }}<span class="kpi-unite">%</span>
+            </div>
+            <svg
+              :viewBox="risqueResume.viewBox"
+              class="risque-mini-svg"
+              preserveAspectRatio="none"
+              role="img"
+              aria-label="Tendance du risque de panne capteur sur les prochaines 24 heures"
+            >
+              <path :d="risqueResume.aire" class="risque-mini-aire" />
+              <path :d="risqueResume.ligne" class="risque-mini-ligne" />
+            </svg>
+          </div>
+          <p class="risque-mini-pic">pic {{ Math.round(risqueResume.pic.risk * 100) }}% à {{ risqueResume.pic.heure }}h</p>
+        </div>
+        <p v-else-if="risqueCapteurIndisponible" class="kpi-carte risque-mini-erreur">
+          Risque panne capteur non actualisé.
+        </p>
       </div>
 
       <div class="grille-bas">
@@ -653,11 +686,54 @@ const chargementAlertes = ref(true);
 const erreurAlertes = ref("");
 const maintenant = ref(new Date());
 
+// Risque de panne capteur heure par heure (table sensor_failure_forecast, réécrite à
+// chaque cycle de ml/scripts/predict_sensor_failure.py). Global, pas par site : le motif
+// horaire et la tendance quotidienne sont confirmés identiques sur les 7 sites, voir le
+// tag "caveat" du run MLflow enervision-sensor-failure-forecast.
+const risqueCapteur = ref([]);
+const risqueCapteurIndisponible = ref(false);
+
 const siteActuel = computed(() => sites.value.find((s) => s.site_id === siteSelectionne.value) || null);
 const metriqueFocusInfo = computed(() => METRIQUES.find((m) => m.cle === metriqueFocus.value));
 const derniereValeurFocus = computed(() => derniereMesure.value?.[metriqueFocus.value] ?? null);
 const qualiteFiable = computed(() => !derniereQualite.value || derniereQualite.value === "good");
 const raisonsQualite = computed(() => derniereRaisons.value.map(libelleRaison).join(", "));
+
+// Sparkline du risque de panne capteur : juste la forme, sans graduations — le détail
+// heure par heure avec échelle vit sur la page Capteurs (/capteurs). Mêmes bornes
+// verticales (50 % à 85 %) que ce graphique détaillé, pour que la forme reste identique
+// entre les deux vues.
+const RISQUE_MINI_VMIN = 0.5;
+const RISQUE_MINI_VMAX = 0.85;
+const RISQUE_MINI_W = 160;
+const RISQUE_MINI_H = 40;
+
+const risqueResume = computed(() => {
+  const points = risqueCapteur.value;
+  if (points.length === 0) return null;
+
+  const xy = (i, risk) => {
+    const x = (i / (points.length - 1)) * RISQUE_MINI_W;
+    const clamped = Math.max(RISQUE_MINI_VMIN, Math.min(RISQUE_MINI_VMAX, risk));
+    const y = RISQUE_MINI_H - ((clamped - RISQUE_MINI_VMIN) / (RISQUE_MINI_VMAX - RISQUE_MINI_VMIN)) * RISQUE_MINI_H;
+    return [x, y];
+  };
+
+  const coords = points.map((p, i) => {
+    const [x, y] = xy(i, Number(p.risk));
+    return { x, y, heure: new Date(p.target_hour).getHours(), risk: Number(p.risk) };
+  });
+
+  const ligne = coords.map((c, i) => `${i === 0 ? "M" : "L"} ${c.x} ${c.y}`).join(" ");
+  const aire = `M 0 ${RISQUE_MINI_H} ` + coords.map((c) => `L ${c.x} ${c.y}`).join(" ") + ` L ${RISQUE_MINI_W} ${RISQUE_MINI_H} Z`;
+
+  // coords[0] est l'heure la plus proche (première ligne renvoyée par l'API, filtrée sur
+  // "maintenant"), pas forcément l'heure pleine en cours.
+  const actuel = coords[0];
+  const pic = coords.reduce((a, b) => (b.risk > a.risk ? b : a));
+
+  return { coords, ligne, aire, actuel, pic, viewBox: `0 0 ${RISQUE_MINI_W} ${RISQUE_MINI_H}` };
+});
 
 // Provenance du modèle, reprise de la première ligne : toutes les lignes d'un même site
 // partagent le même run MLflow. Affichée à l'écran parce que les modèles V1 sont entraînés sur
@@ -1462,6 +1538,18 @@ async function chargerAlertes() {
   }
 }
 
+async function chargerRisqueCapteur() {
+  try {
+    const { data } = await api.get("/sensors/failure-forecast");
+    risqueCapteur.value = data;
+    risqueCapteurIndisponible.value = false;
+  } catch {
+    // Courbe conservée telle quelle en cas d'échec ponctuel : même logique que
+    // chargerAlertes, un cycle raté ne doit pas vider un graphique valide.
+    risqueCapteurIndisponible.value = true;
+  }
+}
+
 async function actualiserToutesLesMesures() {
   const [resultats] = await Promise.all([
     Promise.all(sites.value.map(async (site) => ({ siteId: site.site_id, ok: await chargerHistorique(site) }))),
@@ -1496,6 +1584,7 @@ function demarrerSondage() {
   intervalSondage = setInterval(() => {
     actualiserToutesLesMesures();
     chargerAlertes();
+    chargerRisqueCapteur();
   }, POLL_INTERVAL_MS);
 }
 
@@ -1617,6 +1706,7 @@ async function chargerSites() {
 onMounted(() => {
   chargerSites();
   chargerAlertes();
+  chargerRisqueCapteur();
   intervalHorloge = setInterval(() => {
     maintenant.value = new Date();
   }, 1000);
@@ -1780,6 +1870,82 @@ onBeforeUnmount(() => {
   gap: 10px;
   flex-wrap: wrap;
 }
+
+/* Réutilise .kpi-carte pour le fond/bordure/padding : cette tuile vit dans la même
+   grille que les 5 KPI du jour, à la demande, plutôt que dans un panneau à part. */
+.risque-mini-entete {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.risque-mini-entete .kpi-label {
+  margin-bottom: 0;
+}
+
+.risque-mini-lien {
+  font-size: 0.72em;
+  color: var(--text-muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.risque-mini-lien:hover {
+  color: var(--text);
+}
+
+.risque-mini-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.risque-mini-corps {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 0;
+}
+
+.risque-mini-svg {
+  width: 100%;
+  max-width: 80px;
+  height: 24px;
+  display: block;
+  flex-shrink: 0;
+}
+
+.risque-mini-aire {
+  fill: #a78bfa;
+  fill-opacity: 0.16;
+}
+
+.risque-mini-ligne {
+  fill: none;
+  stroke: #a78bfa;
+  stroke-width: 2;
+}
+
+.risque-mini-pic {
+  margin: 10px 0 0;
+  font-size: 0.68em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.risque-mini-erreur {
+  font-size: 0.78em;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+}
+
 
 .disponibilite {
   font-size: 0.72em;
@@ -2254,7 +2420,7 @@ onBeforeUnmount(() => {
 
 .kpi-grille {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 8px;
   margin-bottom: 16px;
 }

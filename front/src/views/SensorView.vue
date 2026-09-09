@@ -25,6 +25,90 @@
       </span>
     </div>
 
+    <div class="panneau panneau-risque" v-if="courbeRisque || risqueCapteurIndisponible">
+      <div class="panneau-risque-entete">
+        <p class="panneau-risque-titre">risque de panne capteur — prochaines 24h</p>
+        <span class="risque-sous-titre">tous sites confondus</span>
+      </div>
+
+      <svg
+        v-if="courbeRisque"
+        :viewBox="courbeRisque.viewBox"
+        class="risque-svg"
+        role="img"
+        aria-label="Courbe du risque de panne capteur heure par heure pour les prochaines 24 heures, avec échelle en pourcentage"
+      >
+        <line
+          v-for="g in courbeRisque.gridlines"
+          :key="'g' + g.pct"
+          :x1="courbeRisque.padL"
+          :y1="g.y"
+          :x2="courbeRisque.largeurTracee + courbeRisque.padL"
+          :y2="g.y"
+          class="risque-grille"
+        />
+        <text
+          v-for="g in courbeRisque.gridlines"
+          :key="'gl' + g.pct"
+          :x="courbeRisque.padL - 8"
+          :y="g.y + 3"
+          class="risque-axe-y"
+        >{{ g.pct }}%</text>
+
+        <text
+          v-for="c in courbeRisque.heuresAxe"
+          :key="'h' + c.heure"
+          :x="c.x"
+          :y="courbeRisque.bas + 16"
+          class="risque-axe-x"
+        >{{ c.heure }}h</text>
+
+        <path :d="courbeRisque.aire" class="risque-aire" />
+        <path :d="courbeRisque.ligne" class="risque-ligne" />
+        <circle
+          v-for="(c, i) in courbeRisque.coords"
+          :key="i"
+          :cx="c.x"
+          :cy="c.y"
+          :r="c === courbeRisque.pic || c === courbeRisque.creux ? 4.5 : 2.5"
+          :class="c === courbeRisque.pic || c === courbeRisque.creux ? 'risque-point-marquant' : 'risque-point'"
+        >
+          <title>{{ c.heure }}h : {{ Math.round(c.risk * 100) }}%</title>
+        </circle>
+      </svg>
+      <p v-else class="etat-message erreur">Risque non actualisé, nouvelle tentative au prochain cycle.</p>
+
+      <div v-if="courbeRisque" class="risque-stats">
+        <div class="risque-stat">
+          <span class="risque-stat-label">minimum</span>
+          <span class="risque-stat-valeur">{{ Math.round(courbeRisque.creux.risk * 100) }}% <span class="risque-stat-heure">à {{ courbeRisque.creux.heure }}h</span></span>
+        </div>
+        <div class="risque-stat">
+          <span class="risque-stat-label">maximum</span>
+          <span class="risque-stat-valeur risque-stat-max">{{ Math.round(courbeRisque.pic.risk * 100) }}% <span class="risque-stat-heure">à {{ courbeRisque.pic.heure }}h</span></span>
+        </div>
+        <div class="risque-stat">
+          <span class="risque-stat-label">modèle</span>
+          <span class="risque-stat-valeur risque-stat-meta">AUC {{ courbeRisque.aucTest }} · {{ courbeRisque.nJoursEntrainement }} j d'historique</span>
+        </div>
+      </div>
+      <ul v-if="courbeRisque" class="risque-notes">
+        <li>
+          Basé sur les null / champs manquants de la lecture courante (<code>data_quality</code> ≠
+          « good » — capteur température, humidité ou tension en panne, perte réseau...).
+        </li>
+        <li>
+          Un seul modèle pour les 7 sites : le taux de panne horaire est corrélé à 0,93-0,95 entre
+          chaque paire de sites sur l'historique, un motif temporel partagé par toute la flotte
+          simulée, pas des pannes matérielles indépendantes.
+        </li>
+        <li>
+          Expérimental, entraîné sur peu de jours d'historique : une tendance de qualité de
+          données, pas une certitude de panne.
+        </li>
+      </ul>
+    </div>
+
     <p v-if="chargement" class="etat-message">Lecture des capteurs en cours</p>
     <p v-else-if="erreur" class="etat-message erreur">{{ erreur }}</p>
 
@@ -72,6 +156,8 @@ export default {
       intervalleId: null,
       actualisation: false,
       derniereActualisation: null,
+      risqueCapteur: [],
+      risqueCapteurIndisponible: false,
     };
   },
   computed: {
@@ -81,10 +167,78 @@ export default {
     sitesEnAlerte() {
       return Object.values(this.sites).filter((s) => s.capteurs_en_panne.length > 0).length;
     },
+    // Graphique détaillé, avec échelle : contrepartie de la sparkline compacte du Dashboard,
+    // ici pour consulter le risque heure par heure plutôt qu'une simple tendance. Mêmes
+    // bornes verticales (50-85 %) que la sparkline, pour que la forme reste identique entre
+    // les deux vues.
+    courbeRisque() {
+      const points = this.risqueCapteur;
+      if (points.length === 0) return null;
+
+      const vmin = 0.5;
+      const vmax = 0.85;
+      const largeur = 640;
+      const hauteur = 200;
+      const padL = 40;
+      const padR = 12;
+      const padT = 12;
+      const padB = 26;
+      const largeurTracee = largeur - padL - padR;
+      const hauteurTracee = hauteur - padT - padB;
+      const bas = padT + hauteurTracee;
+
+      const xy = (i, risk) => {
+        const x = padL + (i / (points.length - 1)) * largeurTracee;
+        const clamped = Math.max(vmin, Math.min(vmax, risk));
+        const y = padT + (1 - (clamped - vmin) / (vmax - vmin)) * hauteurTracee;
+        return [x, y];
+      };
+
+      const coords = points.map((p, i) => {
+        const [x, y] = xy(i, Number(p.risk));
+        return { x, y, heure: new Date(p.target_hour).getHours(), risk: Number(p.risk) };
+      });
+
+      const ligne = coords.map((c, i) => `${i === 0 ? "M" : "L"} ${c.x} ${c.y}`).join(" ");
+      const aire = `M ${padL} ${bas} ` + coords.map((c) => `L ${c.x} ${c.y}`).join(" ") + ` L ${coords[coords.length - 1].x} ${bas} Z`;
+
+      const pic = coords.reduce((a, b) => (b.risk > a.risk ? b : a));
+      const creux = coords.reduce((a, b) => (b.risk < a.risk ? b : a));
+
+      const gridlines = [0.5, 0.65, 0.8].map((v) => ({
+        pct: Math.round(v * 100),
+        y: padT + (1 - (v - vmin) / (vmax - vmin)) * hauteurTracee,
+      }));
+
+      // Une graduation toutes les 4 heures : au-delà, les libellés se chevauchent sur 24 points.
+      const heuresAxe = coords.filter((_, i) => i % 4 === 0 || i === coords.length - 1);
+
+      const premierPoint = points[0];
+
+      return {
+        coords,
+        aire,
+        ligne,
+        pic,
+        creux,
+        gridlines,
+        heuresAxe,
+        padL,
+        bas,
+        largeurTracee,
+        viewBox: `0 0 ${largeur} ${hauteur}`,
+        aucTest: premierPoint.auc_test != null ? Number(premierPoint.auc_test).toFixed(2) : "—",
+        nJoursEntrainement: premierPoint.n_train_days ?? "—",
+      };
+    },
   },
   mounted() {
     this.chargerCapteurs();
-    this.intervalleId = setInterval(() => this.chargerCapteurs({ silencieux: true }), 60000);
+    this.chargerRisqueCapteur();
+    this.intervalleId = setInterval(() => {
+      this.chargerCapteurs({ silencieux: true });
+      this.chargerRisqueCapteur();
+    }, 60000);
   },
   beforeUnmount() {
     clearInterval(this.intervalleId);
@@ -124,6 +278,17 @@ export default {
     },
     formatHeure(date) {
       return date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    },
+    async chargerRisqueCapteur() {
+      try {
+        const reponse = await api.get("/sensors/failure-forecast");
+        this.risqueCapteur = reponse.data;
+        this.risqueCapteurIndisponible = false;
+      } catch {
+        // Courbe conservée telle quelle en cas d'échec ponctuel : un cycle raté ne doit
+        // pas vider un graphique valide.
+        this.risqueCapteurIndisponible = true;
+      }
     },
     formatDate(valeur) {
       if (!valeur) return "";
@@ -263,6 +428,136 @@ export default {
 
 .etat-message.erreur {
   color: var(--alerte);
+}
+
+.panneau-risque {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 2px;
+  padding: 18px 20px;
+  margin-bottom: 24px;
+}
+
+.panneau-risque-entete {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.panneau-risque-titre {
+  margin: 0;
+  font-weight: 600;
+  font-size: 1em;
+}
+
+.risque-sous-titre {
+  font-family: var(--mono);
+  font-size: 0.76em;
+  color: var(--text-muted);
+}
+
+.risque-svg {
+  width: 100%;
+  max-width: 640px;
+  height: auto;
+  display: block;
+}
+
+.risque-grille {
+  stroke: var(--panel-border);
+  stroke-width: 1;
+}
+
+.risque-axe-y,
+.risque-axe-x {
+  font-family: var(--mono);
+  font-size: 9px;
+  fill: var(--text-muted);
+}
+
+.risque-axe-y {
+  text-anchor: end;
+}
+
+.risque-axe-x {
+  text-anchor: middle;
+}
+
+.risque-aire {
+  fill: #a78bfa;
+  fill-opacity: 0.14;
+}
+
+.risque-ligne {
+  fill: none;
+  stroke: #a78bfa;
+  stroke-width: 2;
+}
+
+.risque-point {
+  fill: #a78bfa;
+}
+
+.risque-point-marquant {
+  fill: var(--text);
+}
+
+.risque-stats {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.risque-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.risque-stat-label {
+  font-size: 0.72em;
+  color: var(--text-muted);
+}
+
+.risque-stat-valeur {
+  font-family: var(--mono);
+  font-size: 0.95em;
+  font-weight: 600;
+}
+
+.risque-stat-max {
+  color: var(--alerte);
+}
+
+.risque-stat-heure {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.risque-stat-meta {
+  font-weight: 400;
+  font-size: 0.85em;
+}
+
+.risque-notes {
+  margin: 14px 0 0;
+  padding: 10px 0 0 16px;
+  border-top: 1px solid var(--panel-border);
+  font-size: 0.74em;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.risque-notes code {
+  font-family: var(--mono);
+  font-size: 0.95em;
 }
 
 .panneaux {

@@ -181,6 +181,31 @@ class PredictionOut(BaseModel):
         return _en_utc(valeur)
 
 
+class SensorFailureForecastOut(BaseModel):
+    """Une heure de risque de panne capteur prédite. Modèle global, pas par site (voir
+    infra/postgres/init/08_sensor_failure_forecast.sql) : `risk` s'applique au parc entier,
+    toutes causes de panne confondues.
+
+    `n_train_days` remonte jusqu'au front à dessein, comme `data_source` pour les prévisions
+    de consommation : le modèle est entraîné sur 9 jours d'historique seulement, l'écran doit
+    pouvoir le signaler plutôt que de présenter ce risque comme une certitude établie."""
+
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+    target_hour: datetime
+    risk: float
+    model_version: str
+    model_stage: str | None = None
+    auc_test: float | None = None
+    n_train_days: int | None = None
+    predicted_at: datetime
+
+    @field_validator("target_hour", "predicted_at")
+    @classmethod
+    def _valider_horodatages(cls, valeur: datetime) -> datetime:
+        return _en_utc(valeur)
+
+
 class RecommandationOut(BaseModel):
     """Fenêtre de dépassement déduite de la prévision et de la puissance souscrite du site.
     Rien n'est persisté : voir api/recommendations.py pour le raisonnement.
