@@ -52,10 +52,9 @@ import pandas as pd
 import statsmodels.formula.api as smf
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
+from core.postgres_store import SENSOR_FAILURE_DAY0, load_failure_training_data, make_pg_connection
 from mlflow.tracking import MlflowClient
 from sklearn.metrics import roc_auc_score
-
-from core.postgres_store import SENSOR_FAILURE_DAY0, load_failure_training_data, make_pg_connection
 
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
 MLFLOW_EXPERIMENT_NAME = "sensor-failure-forecast"

@@ -51,9 +51,8 @@ import pandas as pd
 import psycopg2
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
-from psycopg2.extras import execute_values
-
 from core.postgres_store import SENSOR_FAILURE_DAY0
+from psycopg2.extras import execute_values
 
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
 REGISTERED_NAME = "enervision-sensor-failure-forecast"

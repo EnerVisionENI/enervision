@@ -1447,7 +1447,11 @@ describe("DashboardView", () => {
     await flushPromises();
 
     expect(wrapper.find(".pas-de-donnee-kpi").text()).toBe("Résumé du jour pas encore calculé pour ce site.");
-    expect(wrapper.findAll(".kpi-carte")).toHaveLength(0);
+    // La tuile de risque capteur (.risque-mini, ou .risque-mini-erreur si l'appel échoue)
+    // partage la classe .kpi-carte pour son style, mais dépend d'un appel indépendant
+    // (chargerRisqueCapteur) : sa présence ou non ne dit rien sur le résumé du jour, seule
+    // affaire de ce test.
+    expect(wrapper.findAll(".kpi-carte:not(.risque-mini):not(.risque-mini-erreur)")).toHaveLength(0);
   });
 
   it("recharge le résumé du jour du nouveau site au changement de site", async () => {
